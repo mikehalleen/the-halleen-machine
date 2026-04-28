@@ -1,0 +1,14 @@
+config.toml
+the-machine-ui-venv/
+.aws-sam/
+draft.json
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+__temp_project_video.json
+workspace_settings.json
+_backups/
+__temp_seq_batch_*
+__temp_export_*
+

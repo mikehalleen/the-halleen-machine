@@ -1,0 +1,120 @@
+{
+  "last_node_id": 10,
+  "last_link_id": 10,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [100, 100],
+      "size": [300, 200],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        { "name": "IMAGE", "type": "IMAGE", "links": [], "slot_index": 0 },
+        { "name": "frame_count", "type": "INT", "links": null },
+        { "name": "audio", "type": "AUDIO", "links": null },
+        { "name": "video_info", "type": "VHS_VIDEOINFO", "links": null }
+      ],
+      "properties": { "Node name for S&R": "VHS_LoadVideo" },
+      "widgets_values": {
+        "video": "temp_stitch_lossless.mp4",
+        "force_rate": 0,
+        "force_size": "Disabled",
+        "custom_width": 512,
+        "custom_height": 512,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1
+      }
+    },
+    {
+      "id": 2,
+      "type": "UpscaleModelLoader",
+      "pos": [100, 400],
+      "size": [300, 60],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        { "name": "UPSCALE_MODEL", "type": "UPSCALE_MODEL", "links": [], "slot_index": 0 }
+      ],
+      "properties": { "Node name for S&R": "UpscaleModelLoader" },
+      "widgets_values": ["4xLSDIR.pth"]
+    },
+    {
+      "id": 3,
+      "type": "ImageUpscaleWithModel",
+      "pos": [450, 400],
+      "size": [300, 100],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        { "name": "upscale_model", "type": "UPSCALE_MODEL", "link": null },
+        { "name": "image", "type": "IMAGE", "link": null }
+      ],
+      "outputs": [
+        { "name": "IMAGE", "type": "IMAGE", "links": [], "slot_index": 0 }
+      ],
+      "properties": { "Node name for S&R": "ImageUpscaleWithModel" },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "ImageScale",
+      "pos": [800, 400],
+      "size": [300, 100],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        { "name": "image", "type": "IMAGE", "link": null }
+      ],
+      "outputs": [
+        { "name": "IMAGE", "type": "IMAGE", "links": [], "slot_index": 0 }
+      ],
+      "properties": { "Node name for S&R": "ImageScale" },
+      "widgets_values": ["lanczos", "disabled", 1280, 720, "center"]
+    },
+    {
+      "id": 5,
+      "type": "RIFE VFI",
+      "pos": [450, 100],
+      "size": [300, 100],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        { "name": "frames", "type": "IMAGE", "link": null },
+        { "name": "optional_interpolation_states", "type": "INTERPOLATION_STATES", "link": null }
+      ],
+      "outputs": [
+        { "name": "IMAGE", "type": "IMAGE", "links": [], "slot_index": 0 }
+      ],
+      "properties": { "Node name for S&R": "RIFE VFI" },
+      "widgets_values": ["rife47.pth", 2, 1, true, true, 1.0]
+    },
+    {
+      "id": 6,
+      "type": "SaveImage",
+      "pos": [1200, 100],
+      "size": [300, 200],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        { "name": "images", "type": "IMAGE", "link": null }
+      ],
+      "properties": { "Node name for S&R": "SaveImage" },
+      "widgets_values": ["upscaled_frames/frame"]
+    }
+  ],
+  "links": [],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

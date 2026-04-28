@@ -1,0 +1,255 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 2790123717,
+      "steps": 30,
+      "cfg": 12,
+      "sampler_name": "dpmpp_2m_sde",
+      "scheduler": "karras",
+      "denoise": 1,
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "13",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "4": {
+    "inputs": {
+      "ckpt_name": "sdXL_v10VAEFix.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "PoseCheckPoint"
+    }
+  },
+  "5": {
+    "inputs": {
+      "width": 768,
+      "height": 1152,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "7": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "poses/pose",
+      "images": [
+        "25",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "12": {
+    "inputs": {
+      "images": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "13": {
+    "inputs": {
+      "text": "a man standing in a black suit",
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "LeftPrompt"
+    }
+  },
+  "14": {
+    "inputs": {
+      "preprocessor": "openpose",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "25",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "OpenPoseControl"
+    }
+  },
+  "15": {
+    "inputs": {
+      "images": [
+        "14",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview"
+    }
+  },
+  "16": {
+    "inputs": {
+      "filename_prefix": "cnets/pose",
+      "images": [
+        "14",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "OpenPosePreview"
+    }
+  },
+  "19": {
+    "inputs": {
+      "preprocessor": "depth",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "Shape"
+    }
+  },
+  "20": {
+    "inputs": {
+      "images": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview"
+    }
+  },
+  "21": {
+    "inputs": {
+      "filename_prefix": "cnets/shape",
+      "images": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "ShapePreview"
+    }
+  },
+  "22": {
+    "inputs": {
+      "preprocessor": "hed",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "Outline"
+    }
+  },
+  "23": {
+    "inputs": {
+      "images": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview"
+    }
+  },
+  "24": {
+    "inputs": {
+      "filename_prefix": "cnets/outline",
+      "images": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "OutlinePreview"
+    }
+  },
+  "25": {
+    "inputs": {
+      "factor": 2,
+      "image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "ContrastNode",
+    "_meta": {
+      "title": "Contrast"
+    }
+  }
+}

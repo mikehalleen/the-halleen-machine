@@ -1,0 +1,1049 @@
+{
+  "3": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "42",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "LeftNegPrompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "seed": 3264049,
+      "steps": 30,
+      "cfg": 6,
+      "sampler_name": "dpmpp_2m_sde",
+      "scheduler": "karras",
+      "denoise": 1,
+      "model": [
+        "42",
+        0
+      ],
+      "positive": [
+        "30",
+        0
+      ],
+      "negative": [
+        "30",
+        1
+      ],
+      "latent_image": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "5": {
+    "inputs": {
+      "samples": [
+        "4",
+        0
+      ],
+      "vae": [
+        "15",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "9": {
+    "inputs": {
+      "width": 768,
+      "height": 1152,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "15": {
+    "inputs": {
+      "ckpt_name": "sdXL_v10VAEFix.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "LeftCheckpoint"
+    }
+  },
+  "22": {
+    "inputs": {
+      "preprocessor": "openpose",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "163",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "OpenPoseControl"
+    }
+  },
+  "28": {
+    "inputs": {
+      "images": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "29": {
+    "inputs": {
+      "switch_1": "On",
+      "controlnet_1": "diffusion_pytorch_model_promax.safetensors",
+      "controlnet_strength_1": 0.9,
+      "start_percent_1": 0,
+      "end_percent_1": 0.9,
+      "switch_2": "Off",
+      "controlnet_2": "diffusion_pytorch_model_promax.safetensors",
+      "controlnet_strength_2": 0.5,
+      "start_percent_2": 0,
+      "end_percent_2": 0.5000000000000001,
+      "switch_3": "Off",
+      "controlnet_3": "diffusion_pytorch_model_promax.safetensors",
+      "controlnet_strength_3": 0.5,
+      "start_percent_3": 0,
+      "end_percent_3": 0.5,
+      "image_1": [
+        "22",
+        0
+      ],
+      "image_2": [
+        "31",
+        0
+      ],
+      "image_3": [
+        "39",
+        0
+      ]
+    },
+    "class_type": "CR Multi-ControlNet Stack",
+    "_meta": {
+      "title": "PoseControl"
+    }
+  },
+  "30": {
+    "inputs": {
+      "switch": "On",
+      "base_positive": [
+        "46",
+        0
+      ],
+      "base_negative": [
+        "3",
+        0
+      ],
+      "controlnet_stack": [
+        "29",
+        0
+      ]
+    },
+    "class_type": "CR Apply Multi-ControlNet",
+    "_meta": {
+      "title": "🕹️ CR Apply Multi-ControlNet"
+    }
+  },
+  "31": {
+    "inputs": {
+      "preprocessor": "depth",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "163",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "ControlNet Preprocessor"
+    }
+  },
+  "32": {
+    "inputs": {
+      "images": [
+        "31",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "36": {
+    "inputs": {
+      "images": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "39": {
+    "inputs": {
+      "preprocessor": "hed",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "163",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "ControlNet Preprocessor"
+    }
+  },
+  "40": {
+    "inputs": {
+      "images": [
+        "39",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "42": {
+    "inputs": {
+      "PowerLoraLoaderHeaderWidget": {
+        "type": "PowerLoraLoaderHeaderWidget"
+      },
+      "➕ Add Lora": "",
+      "model": [
+        "15",
+        0
+      ],
+      "clip": [
+        "15",
+        1
+      ]
+    },
+    "class_type": "Power Lora Loader (rgthree)",
+    "_meta": {
+      "title": "LeftLora"
+    }
+  },
+  "46": {
+    "inputs": {
+      "text": "two men stand before a plain white infitinity wall\non the left, a man in a black business suit\non the right, a man in a black business suit\n\n",
+      "clip": [
+        "42",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "LeftPrompt"
+    }
+  },
+  "48": {
+    "inputs": {
+      "preprocessor": "openpose",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "89",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "OpenPoseControl"
+    }
+  },
+  "49": {
+    "inputs": {
+      "images": [
+        "48",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "50": {
+    "inputs": {
+      "preprocessor": "depth",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "89",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "ControlNet Preprocessor"
+    }
+  },
+  "51": {
+    "inputs": {
+      "images": [
+        "50",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "52": {
+    "inputs": {
+      "images": [
+        "57",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "54": {
+    "inputs": {
+      "samples": [
+        "62",
+        0
+      ],
+      "vae": [
+        "15",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "56": {
+    "inputs": {
+      "images": [
+        "90",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "57": {
+    "inputs": {
+      "preprocessor": "hed",
+      "sd_version": "sdxl",
+      "resolution": 512,
+      "preprocessor_override": "None",
+      "image": [
+        "89",
+        0
+      ]
+    },
+    "class_type": "AV_ControlNetPreprocessor",
+    "_meta": {
+      "title": "ControlNet Preprocessor"
+    }
+  },
+  "61": {
+    "inputs": {
+      "switch": "On",
+      "base_positive": [
+        "70",
+        0
+      ],
+      "base_negative": [
+        "65",
+        0
+      ],
+      "controlnet_stack": [
+        "64",
+        0
+      ]
+    },
+    "class_type": "CR Apply Multi-ControlNet",
+    "_meta": {
+      "title": "🕹️ CR Apply Multi-ControlNet"
+    }
+  },
+  "62": {
+    "inputs": {
+      "seed": 3264049,
+      "steps": 30,
+      "cfg": 6,
+      "sampler_name": "dpmpp_2m_sde",
+      "scheduler": "karras",
+      "denoise": 1,
+      "model": [
+        "67",
+        0
+      ],
+      "positive": [
+        "61",
+        0
+      ],
+      "negative": [
+        "61",
+        1
+      ],
+      "latent_image": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "64": {
+    "inputs": {
+      "switch_1": "On",
+      "controlnet_1": "diffusion_pytorch_model_promax.safetensors",
+      "controlnet_strength_1": 1.0000000000000002,
+      "start_percent_1": 0,
+      "end_percent_1": 1,
+      "switch_2": "Off",
+      "controlnet_2": "diffusion_pytorch_model_promax.safetensors",
+      "controlnet_strength_2": 0.5,
+      "start_percent_2": 0,
+      "end_percent_2": 0.5000000000000001,
+      "switch_3": "Off",
+      "controlnet_3": "diffusion_pytorch_model_promax.safetensors",
+      "controlnet_strength_3": 0.5,
+      "start_percent_3": 0,
+      "end_percent_3": 0.5,
+      "image_1": [
+        "48",
+        0
+      ],
+      "image_2": [
+        "50",
+        0
+      ],
+      "image_3": [
+        "57",
+        0
+      ]
+    },
+    "class_type": "CR Multi-ControlNet Stack",
+    "_meta": {
+      "title": "PoseControl"
+    }
+  },
+  "65": {
+    "inputs": {
+      "text": "woman, female",
+      "clip": [
+        "67",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "RightNegPrompt"
+    }
+  },
+  "67": {
+    "inputs": {
+      "PowerLoraLoaderHeaderWidget": {
+        "type": "PowerLoraLoaderHeaderWidget"
+      },
+      "➕ Add Lora": "",
+      "model": [
+        "15",
+        0
+      ],
+      "clip": [
+        "15",
+        1
+      ]
+    },
+    "class_type": "Power Lora Loader (rgthree)",
+    "_meta": {
+      "title": "RightLora"
+    }
+  },
+  "70": {
+    "inputs": {
+      "text": "two men stand before a plain white infitinity wall\non the left, a man in a red business suit\non the right, a man in a red business suit",
+      "clip": [
+        "67",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "RightPrompt"
+    }
+  },
+  "71": {
+    "inputs": {
+      "image": "gradient_right.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "73": {
+    "inputs": {
+      "overlay_resize": "None",
+      "resize_method": "nearest-exact",
+      "rescale_factor": 1,
+      "width": 512,
+      "height": 512,
+      "x_offset": 0,
+      "y_offset": 0,
+      "rotation": 0,
+      "opacity": 0,
+      "base_image": [
+        "5",
+        0
+      ],
+      "overlay_image": [
+        "90",
+        0
+      ],
+      "optional_mask": [
+        "186",
+        1
+      ]
+    },
+    "class_type": "Image Overlay",
+    "_meta": {
+      "title": "Image Overlay"
+    }
+  },
+  "75": {
+    "inputs": {
+      "images": [
+        "73",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "79": {
+    "inputs": {
+      "images": [
+        "163",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "83": {
+    "inputs": {
+      "images": [
+        "163",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "88": {
+    "inputs": {
+      "anything": [
+        "163",
+        0
+      ]
+    },
+    "class_type": "easy cleanGpuUsed",
+    "_meta": {
+      "title": "Clean VRAM Used"
+    }
+  },
+  "89": {
+    "inputs": {
+      "axis": "x",
+      "image": [
+        "163",
+        0
+      ]
+    },
+    "class_type": "ImageFlip+",
+    "_meta": {
+      "title": "🔧 Image Flip"
+    }
+  },
+  "90": {
+    "inputs": {
+      "axis": "x",
+      "image": [
+        "54",
+        0
+      ]
+    },
+    "class_type": "ImageFlip+",
+    "_meta": {
+      "title": "🔧 Image Flip"
+    }
+  },
+  "93": {
+    "inputs": {
+      "pixels": [
+        "163",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "96": {
+    "inputs": {
+      "samples": [
+        "99",
+        0
+      ],
+      "vae": [
+        "104",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "98": {
+    "inputs": {
+      "stitcher": [
+        "101",
+        0
+      ],
+      "inpainted_image": [
+        "96",
+        0
+      ]
+    },
+    "class_type": "InpaintStitchImproved",
+    "_meta": {
+      "title": "✂️ Inpaint Stitch"
+    }
+  },
+  "99": {
+    "inputs": {
+      "seed": 3264048,
+      "steps": 30,
+      "cfg": 6,
+      "sampler_name": "dpmpp_2m_sde",
+      "scheduler": "karras",
+      "denoise": 0.8000000000000002,
+      "model": [
+        "104",
+        0
+      ],
+      "positive": [
+        "100",
+        0
+      ],
+      "negative": [
+        "100",
+        1
+      ],
+      "latent_image": [
+        "100",
+        2
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "100": {
+    "inputs": {
+      "noise_mask": false,
+      "positive": [
+        "105",
+        0
+      ],
+      "negative": [
+        "103",
+        0
+      ],
+      "vae": [
+        "104",
+        2
+      ],
+      "pixels": [
+        "101",
+        1
+      ],
+      "mask": [
+        "101",
+        2
+      ]
+    },
+    "class_type": "InpaintModelConditioning",
+    "_meta": {
+      "title": "InpaintModelConditioning"
+    }
+  },
+  "101": {
+    "inputs": {
+      "downscale_algorithm": "bilinear",
+      "upscale_algorithm": "bicubic",
+      "preresize": false,
+      "preresize_mode": "ensure minimum resolution",
+      "preresize_min_width": 1024,
+      "preresize_min_height": 1024,
+      "preresize_max_width": 16384,
+      "preresize_max_height": 16384,
+      "mask_fill_holes": true,
+      "mask_expand_pixels": 0,
+      "mask_invert": false,
+      "mask_blend_pixels": 32,
+      "mask_hipass_filter": 0.1,
+      "extend_for_outpainting": false,
+      "extend_up_factor": 1,
+      "extend_down_factor": 1,
+      "extend_left_factor": 1,
+      "extend_right_factor": 1,
+      "context_from_mask_extend_factor": 1.3900000000000003,
+      "output_resize_to_target_size": true,
+      "output_target_width": 768,
+      "output_target_height": 1152,
+      "output_padding": "32",
+      "device_mode": "gpu (much faster)",
+      "image": [
+        "198",
+        0
+      ],
+      "mask": [
+        "189",
+        1
+      ],
+      "optional_context_mask": [
+        "137",
+        0
+      ]
+    },
+    "class_type": "InpaintCropImproved",
+    "_meta": {
+      "title": "✂️ Inpaint Crop"
+    }
+  },
+  "103": {
+    "inputs": {
+      "text": "double image, double exposure, floating limbs, parts of multiple images dissolve",
+      "clip": [
+        "104",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "HealNegPrompt"
+    }
+  },
+  "104": {
+    "inputs": {
+      "ckpt_name": "juggernautxl-inpainting.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "InpaintCheckpoint"
+    }
+  },
+  "105": {
+    "inputs": {
+      "text": "two men stand before a plain white infitinity wall\non the left, a man in a black business suit\non the right, a man in a red business suit",
+      "clip": [
+        "104",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "HealPosPrompt"
+    }
+  },
+  "106": {
+    "inputs": {
+      "filename_prefix": "combo/finished/image",
+      "images": [
+        "98",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "136": {
+    "inputs": {
+      "width": 768,
+      "height": 1152,
+      "red": 255,
+      "green": 255,
+      "blue": 255
+    },
+    "class_type": "Image Blank",
+    "_meta": {
+      "title": "Image Blank"
+    }
+  },
+  "137": {
+    "inputs": {
+      "channel": "red",
+      "image": [
+        "136",
+        0
+      ]
+    },
+    "class_type": "ImageToMask",
+    "_meta": {
+      "title": "Convert Image to Mask"
+    }
+  },
+  "155": {
+    "inputs": {
+      "image": "two-young-handsome-businessmen-standing-together-isolate-don-white-background-42261384.webp"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "MainImageAndMask"
+    }
+  },
+  "163": {
+    "inputs": {
+      "upscale_method": "nearest-exact",
+      "width": 768,
+      "height": 1152,
+      "crop": "center",
+      "image": [
+        "155",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Upscale Image"
+    }
+  },
+  "177": {
+    "inputs": {
+      "mode": "diff",
+      "imageA": [
+        "98",
+        0
+      ],
+      "imageB": [
+        "73",
+        0
+      ]
+    },
+    "class_type": "Image Compare (mtb)",
+    "_meta": {
+      "title": "Image Compare (mtb)"
+    }
+  },
+  "178": {
+    "inputs": {
+      "images": [
+        "177",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "186": {
+    "inputs": {
+      "fit": "fill",
+      "method": "lanczos",
+      "scale_as": [
+        "163",
+        0
+      ],
+      "image": [
+        "190",
+        0
+      ],
+      "mask": [
+        "194",
+        0
+      ]
+    },
+    "class_type": "LayerUtility: ImageMaskScaleAs",
+    "_meta": {
+      "title": "LayerUtility: ImageMaskScaleAs"
+    }
+  },
+  "189": {
+    "inputs": {
+      "fit": "fill",
+      "method": "lanczos",
+      "scale_as": [
+        "163",
+        0
+      ],
+      "mask": [
+        "196",
+        0
+      ]
+    },
+    "class_type": "LayerUtility: ImageMaskScaleAs",
+    "_meta": {
+      "title": "LayerUtility: ImageMaskScaleAs"
+    }
+  },
+  "190": {
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "direction": "horizontal",
+      "tolerance": 0,
+      "gradient_stops": "0:255,255,255\n45:255,255,255\n55:0,0,0\n100:0,0,0"
+    },
+    "class_type": "Image Generate Gradient",
+    "_meta": {
+      "title": "Image Generate Gradient"
+    }
+  },
+  "191": {
+    "inputs": {
+      "images": [
+        "190",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "192": {
+    "inputs": {
+      "images": [
+        "186",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "193": {
+    "inputs": {
+      "mask": [
+        "186",
+        1
+      ]
+    },
+    "class_type": "MaskPreview+",
+    "_meta": {
+      "title": "🔧 Mask Preview"
+    }
+  },
+  "194": {
+    "inputs": {
+      "channel": "red",
+      "image": [
+        "190",
+        0
+      ]
+    },
+    "class_type": "ImageToMask",
+    "_meta": {
+      "title": "Convert Image to Mask"
+    }
+  },
+  "195": {
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "direction": "horizontal",
+      "tolerance": 0,
+      "gradient_stops": "0:0,0,0\n35:0,0,0\n45:255,255,255\n55:255,255,255\n65:0,0,0\n100:0,0,0"
+    },
+    "class_type": "Image Generate Gradient",
+    "_meta": {
+      "title": "Image Generate Gradient"
+    }
+  },
+  "196": {
+    "inputs": {
+      "channel": "red",
+      "image": [
+        "195",
+        0
+      ]
+    },
+    "class_type": "ImageToMask",
+    "_meta": {
+      "title": "Convert Image to Mask"
+    }
+  },
+  "197": {
+    "inputs": {
+      "mask": [
+        "196",
+        0
+      ]
+    },
+    "class_type": "MaskPreview+",
+    "_meta": {
+      "title": "🔧 Mask Preview"
+    }
+  },
+  "198": {
+    "inputs": {
+      "anything": [
+        "73",
+        0
+      ]
+    },
+    "class_type": "easy cleanGpuUsed",
+    "_meta": {
+      "title": "Clean VRAM Used"
+    }
+  }
+}
