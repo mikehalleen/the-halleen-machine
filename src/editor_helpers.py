@@ -1090,6 +1090,7 @@ def _eh_load_execution_info_kf(selected_path: str):
     model = proj.get("model", "")
     # timestamp = snapshot.get("meta", {}).get("timestamp", "")
     pose = item.get("pose", "")
+    workflow = Path(item.get("workflow_json", "")).name or "N/A"
     
     # CN settings
     cn = item.get("controlnet_settings", {})
@@ -1113,6 +1114,7 @@ def _eh_load_execution_info_kf(selected_path: str):
         f"**Prompt:** {prompt}",
         f"**Steps:** {steps} | **CFG:** {cfg} | **Sampler:** {sampler} | **Scheduler:** {scheduler}",
         f"**Model:** {model}",
+        f"**Workflow:** {workflow}",
         # f"**Timestamp:** {timestamp}",
         f"**Pose:** {pose}",
         f"**ControlNet:** {cn_str}",
@@ -1219,8 +1221,8 @@ def _eh_load_kf_params(project_dict: dict, kf_id: str, selected_path_from_ui: st
         return data, *([gr.update()] * 25), f"Error: No valid metadata found."
 
     item = snapshot["item_data"]
-    blocked = {"seed", "noise_seed", "selected_image_path", "image_iterations_override", "workflow_json", "join_smoothing_level", "join_offset", "force_generate", "id", "type", "sequence_id"}
-    
+    # blocked = {"seed", "noise_seed", "selected_image_path", "image_iterations_override", "workflow_json", "join_smoothing_level", "join_offset", "force_generate", "id", "type", "sequence_id"}
+    blocked = {"seed", "noise_seed", "selected_image_path", "image_iterations_override", "join_smoothing_level", "join_offset", "force_generate", "id", "type", "sequence_id"}
     for k, v in item.items():
         if k not in blocked:
             node[k] = copy.deepcopy(v)
@@ -1250,7 +1252,7 @@ def _eh_load_kf_params(project_dict: dict, kf_id: str, selected_path_from_ui: st
     gallery_items = get_pose_gallery_list(str(poses_dir)) if poses_dir else []
     selected_index = _resolve_gallery_index(pose_path, gallery_items)
 
-    # STRICT ORDER: Must match app.py kf_load_outputs (27 items total)
+    # STRICT ORDER: Must match app.py kf_load_outputs (28 items total)
     return (
         data,
         *_cn_vals(1), *_cn_vals(2), *_cn_vals(3),
@@ -1264,6 +1266,7 @@ def _eh_load_kf_params(project_dict: dict, kf_id: str, selected_path_from_ui: st
         gr.update(value=_resolve_aux_image(pose_path, "shapes", data)),
         gr.update(value=_resolve_aux_image(pose_path, "outlines", data)),
         gr.update(value=gallery_items, selected_index=selected_index),
+        gr.update(value=Path(kf.get("workflow_json", "")).name),  # ADD THIS
         f"Successfully loaded parameters from {os.path.basename(real_path)}"
     )
 
@@ -3671,7 +3674,13 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
             #     queue=False, show_progress="hidden"
             # )
             # Removed .then(_eh_kf_fields) - was causing save cascade during navigation
-
+            kf_workflow_json.change(
+                _eh_kf_fields,
+                kf_all_fields_inputs,
+                [preview],
+                show_progress="hidden",
+                queue=False
+            )
 
             kf_pose_gallery.select(
                 fn=_eh_pose_gallery_select, 
@@ -4007,6 +4016,7 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 kf_pose, kf_pose_preview, kf_cn_pose_animal, 
                 kf_cn_pose_thumb, kf_cn_shape_thumb, kf_cn_outline_thumb,
                 kf_pose_gallery,
+                kf_workflow_json, 
                 kf_run_status["status_window"]
             ]
             kf_load_params_btn.click(_eh_load_kf_params, inputs=[preview, selected_node, kf_gallery], outputs=kf_load_outputs, show_progress="hidden")

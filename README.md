@@ -1,12 +1,16 @@
 # The Halleen Machine
 
-**Version 1.0.0**  
+**Version 1.0.1**  
 Workflow management system for AI video generation using ComfyUI.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
 Organize AI video projects into structured timelines. Create reusable asset libraries for poses, characters, locations, and styles. Batch operations for generation, upscaling, and exports.
+
+
+New in this version:
+- Fixed workflow dropdown save/load bugs and added workflow to load properties 
 
 ---
 

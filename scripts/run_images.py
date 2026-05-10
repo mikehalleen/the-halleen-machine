@@ -517,6 +517,8 @@ def update_seeds(workflow, seed, cfg=None, sampler_name=None, scheduler=None, st
                 except: pass
             if sampler_name: set_if_exists(node, "sampler_name", sampler_name)
             if scheduler: set_if_exists(node, "scheduler", scheduler)
+        for _, node in find_nodes_by_class(workflow, "RandomNoise"):
+            set_if_exists(node, "noise_seed", int(seed))
 
 def set_image_path_on_titled_node(graph, title, path_str):
     nodes = find_nodes_by_title(graph, title)
