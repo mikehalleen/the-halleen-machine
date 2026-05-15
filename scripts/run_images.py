@@ -53,6 +53,17 @@ RIGHT: [char2.lora_keyword], [char2.prompt]
 """
 
 
+def merge_negatives(*parts):
+    return ", ".join(p.strip() for p in parts if p and p.strip())
+
+def project_neg(cfg_project):
+    neg = dict(cfg_project.get("negatives", {}) or {})
+    if not neg.get("global"):
+        legacy = cfg_project.get("negative_prompt", "")
+        if legacy: neg["global"] = legacy
+    for k in ("keyframes_all", "inbetween_all", "heal_all"): neg.setdefault(k, "")
+    return neg
+
 def is_flux2_workflow(wf_path):
     """Detect Flux2 workflow based on filename"""
     filename = os.path.basename(wf_path)
@@ -75,8 +86,8 @@ def _node_title(node):
 
 def inject_base_loras(graph: dict, lora_list: list):
     if not lora_list: return
-    checkpoint_titles = ["LeftCheckpoint", "RightCheckpoint"]
-    consumer_titles = ["LeftLora", "RightLora"]
+    checkpoint_titles = ["LeftCheckpoint", "RightCheckpoint", "MainCheckpoint"]
+    consumer_titles = ["LeftLora", "RightLora", "MainLora"]
 
     for cp_title in checkpoint_titles:
         cp_loader_nodes = find_nodes_by_title(graph, cp_title)
@@ -392,7 +403,8 @@ def apply_power_lora(node, lora_name, strength):
 def update_checkpoints(workflow, model_name):
     if not model_name: return
     updated_count = 0
-    for title in ("LeftCheckpoint", "RightCheckpoint", "Load Checkpoint"):
+    # for title in ("LeftCheckpoint", "RightCheckpoint", "Load Checkpoint"):
+    for title in ("LeftCheckpoint", "RightCheckpoint", "Load Checkpoint", "MainCheckpoint"):
         nodes = find_nodes_by_title(workflow, title)
         for node_id, node in nodes:
             set_if_exists(node, "ckpt_name", model_name)
@@ -853,8 +865,8 @@ def run(config_path, status_file_override=None):
 
                     if num_chars >= 2:
                         if left_char and right_char:
-                            for t, c in (("LeftLora", left_char), ("RightLora", right_char)):
-                                pass
+                            # for t, c in (("LeftLora", left_char), ("RightLora", right_char)):
+                            #     pass
 
 
                             resolved_template = expand_inline_wildcards(prompt_template_2char)
@@ -871,7 +883,7 @@ def run(config_path, status_file_override=None):
                             all_loras.update(_LORA_RE.findall(left_p_raw)); all_loras.update(_LORA_RE.findall(right_p_raw))
                     elif num_chars == 1:
                         if character:
-                            for _, n in find_nodes_by_title(graph, "LeftLora"): pass
+                            # for _, n in find_nodes_by_title(graph, "LeftLora"): pass
                             simple_p_raw = compose_image_prompt(prompt_template, project, seq, id_conf, character, 0)
                             all_loras.update(_LORA_RE.findall(simple_p_raw))
                     else:
@@ -995,8 +1007,30 @@ def run(config_path, status_file_override=None):
                         else:
                             sp = simple_p_raw if i == 0 else compose_image_prompt(prompt_template, project, seq, id_conf, character, i)
                             final_sp = _LORA_RE.sub("", sp).strip()
-                            set_text_on_titles(graph, "LeftPrompt", final_sp)
+                            set_text_on_titles(graph, "LeftPrompt", final_sp)  ## for backwards compat with workflows that have only LeftPrompt
+                            set_text_on_titles(graph, "MainPrompt", final_sp)
                             print(f"[PROMPT] {final_sp}")
+
+                        pneg = project_neg(project)
+                        kf_negatives = id_conf.get("negatives") or {}
+
+                        if num_chars >= 2:
+                            left_neg = merge_negatives(pneg.get("global", ""), pneg.get("keyframes_all", ""), kf_negatives.get("left", ""))
+                            right_neg = merge_negatives(pneg.get("global", ""), pneg.get("keyframes_all", ""), kf_negatives.get("right", ""))
+                            if left_neg:
+                                set_text_on_titles(graph, "LeftNegPrompt", left_neg)
+                                print(f"[NEGATIVE LEFT] {left_neg}")
+                            if right_neg:
+                                set_text_on_titles(graph, "RightNegPrompt", right_neg)
+                                print(f"[NEGATIVE RIGHT] {right_neg}")
+                        else:
+                            neg_text = merge_negatives(pneg.get("global", ""), pneg.get("keyframes_all", ""), kf_negatives.get("left", ""))
+                            if neg_text:
+                                set_text_on_titles(graph, "NegPrompt", neg_text)
+                                set_text_on_titles(graph, "MainNegPrompt", neg_text)
+                                set_text_on_titles(graph, "LeftNegPrompt", neg_text)
+                                print(f"[NEGATIVE] {neg_text}")
+
 
                         kf_seed_override = id_conf.get("sampler_seed_start")
                         effective_base_seed = int(kf_seed_override) if kf_seed_override is not None else base_seed

@@ -3426,7 +3426,7 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
 
 
                             with gr.Row():
-                                kf_char_left = gr.Dropdown([("", "")], value="", label="Character (primary/left)", info="Use this for most workflows", filterable=False, allow_custom_value=False)
+                                kf_char_left = gr.Dropdown([("", "")], value="", label="Character (main/left)", info="Use this for most workflows", filterable=False, allow_custom_value=False)
                                 kf_char_right = gr.Dropdown([("", "")], value="", label="Character (secondary/right)", info="Only for 2CHAR poses/workflow", filterable=False, allow_custom_value=False)
                             kf_prompt = gr.Textbox(label="Prompt")
                             with gr.Accordion("Advanced", open=False, elem_classes=["themed-accordion", "kf-theme"]):
@@ -3674,6 +3674,14 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
             #     queue=False, show_progress="hidden"
             # )
             # Removed .then(_eh_kf_fields) - was causing save cascade during navigation
+            # kf_workflow_json.change(
+            #     _eh_kf_fields,
+            #     kf_all_fields_inputs,
+            #     [preview],
+            #     show_progress="hidden",
+            #     queue=False
+            # )
+
             kf_workflow_json.change(
                 _eh_kf_fields,
                 kf_all_fields_inputs,
@@ -3681,6 +3689,30 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 show_progress="hidden",
                 queue=False
             )
+
+            # Explicit handlers for ControlNet settings (same pattern as workflow)
+            # Pose ControlNet
+            kf_cn_pose_enable.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_pose_strength.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_pose_start.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_pose_end.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            
+            # Shape ControlNet
+            kf_cn_shape_enable.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_shape_strength.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_shape_start.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_shape_end.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            
+            # Outline ControlNet
+            kf_cn_outline_enable.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_outline_strength.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_outline_start.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+            kf_cn_outline_end.change(_eh_kf_fields, kf_all_fields_inputs, [preview], show_progress="hidden", queue=False)
+
+
+
+
+
 
             kf_pose_gallery.select(
                 fn=_eh_pose_gallery_select, 
