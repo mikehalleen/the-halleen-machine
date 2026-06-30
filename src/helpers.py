@@ -1,13 +1,14 @@
 # helpers.py
 from __future__ import annotations
-import json, os, tempfile, shutil, re, uuid, sys
+import json, os, tempfile, shutil, re, uuid, sys, time
 from pathlib import Path
 from datetime import datetime
 import gradio as gr
 from typing import Any, Dict, List, Tuple, Optional
 from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 
-# print("🔄 helpers.py loaded/reloaded")
+# print("helpers.py loaded/reloaded")
 
 # TOML support for configuration files
 if sys.version_info >= (3, 11):
@@ -47,6 +48,285 @@ WORKFLOWS_DIR = (PROJECT_ROOT / "workflows").resolve()
 
 DUR_CHOICES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 
+DEFAULT_PROJECT_WORKFLOW_FILENAME = "pose_OPEN.json"
+DEFAULT_VIDEO_WORKFLOW_FILENAME = "i2v_base.json"
+IMAGE_MODEL_FAMILY_DEFAULT = "default"
+IMAGE_MODEL_FAMILY_CUSTOM = "custom"
+VIDEO_MODEL_FAMILY_DEFAULT = "default"
+VIDEO_MODEL_FAMILY_CUSTOM = "custom"
+
+
+def _project_dict(project_json_or_dict) -> dict:
+    if isinstance(project_json_or_dict, dict):
+        return project_json_or_dict.get("project", project_json_or_dict) or {}
+    if isinstance(project_json_or_dict, str) and project_json_or_dict.strip():
+        try:
+            data = json.loads(project_json_or_dict)
+            return data.get("project", data) if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def image_model_family(project_json_or_dict) -> str:
+    fam = str(_project_dict(project_json_or_dict).get("image_model_family") or "").strip().lower()
+    if fam == IMAGE_MODEL_FAMILY_CUSTOM:
+        return IMAGE_MODEL_FAMILY_CUSTOM
+    return IMAGE_MODEL_FAMILY_DEFAULT
+
+
+def is_default_image_family(project_json_or_dict) -> bool:
+    return image_model_family(project_json_or_dict) == IMAGE_MODEL_FAMILY_DEFAULT
+
+
+def is_custom_image_family(project_json_or_dict) -> bool:
+    return image_model_family(project_json_or_dict) == IMAGE_MODEL_FAMILY_CUSTOM
+
+
+def project_controls_kf_sampler_settings(project_json_or_dict) -> bool:
+    """True when project JSON should drive KSampler steps/cfg/sampler/scheduler at run time."""
+    return is_default_image_family(project_json_or_dict)
+
+
+def project_default_workflow_filename(project_json_or_dict) -> str:
+    """Stored default_workflow_json from project (Custom UI dropdown value)."""
+    name = str(_project_dict(project_json_or_dict).get("default_workflow_json") or "").strip()
+    if name:
+        return Path(name).name
+    return DEFAULT_PROJECT_WORKFLOW_FILENAME
+
+
+def effective_default_workflow_filename(project_json_or_dict) -> str:
+    """Workflow used for resolution: Default family always pose_OPEN.json."""
+    if is_default_image_family(project_json_or_dict):
+        return DEFAULT_PROJECT_WORKFLOW_FILENAME
+    return project_default_workflow_filename(project_json_or_dict)
+
+
+def resolve_project_default_workflow(project_json_or_dict) -> str:
+    filename = effective_default_workflow_filename(project_json_or_dict)
+    return str((WORKFLOWS_DIR / filename).resolve())
+
+
+def video_model_family(project_json_or_dict) -> str:
+    proj = _project_dict(project_json_or_dict)
+    fam = str(proj.get("video_model_family") or "").strip().lower()
+    if fam == VIDEO_MODEL_FAMILY_CUSTOM:
+        return VIDEO_MODEL_FAMILY_CUSTOM
+    if fam == VIDEO_MODEL_FAMILY_DEFAULT:
+        return VIDEO_MODEL_FAMILY_DEFAULT
+    return infer_video_model_family(project_json_or_dict)
+
+
+def infer_video_model_family(project_json_or_dict) -> str:
+    """Infer family from stored workflow when video_model_family is absent."""
+    stored = stored_video_workflow_filename(project_json_or_dict)
+    if stored and stored != DEFAULT_VIDEO_WORKFLOW_FILENAME:
+        return VIDEO_MODEL_FAMILY_CUSTOM
+    return VIDEO_MODEL_FAMILY_DEFAULT
+
+
+def is_default_video_family(project_json_or_dict) -> bool:
+    return video_model_family(project_json_or_dict) == VIDEO_MODEL_FAMILY_DEFAULT
+
+
+def is_custom_video_family(project_json_or_dict) -> bool:
+    return video_model_family(project_json_or_dict) == VIDEO_MODEL_FAMILY_CUSTOM
+
+
+def stored_video_workflow_filename(project_json_or_dict) -> str:
+    """Basename of project.inbetween_generation.video_workflow_json."""
+    stored = str(
+        (_project_dict(project_json_or_dict).get("inbetween_generation") or {}).get("video_workflow_json")
+        or ""
+    ).strip()
+    if stored:
+        return Path(stored).name
+    return DEFAULT_VIDEO_WORKFLOW_FILENAME
+
+
+def effective_video_workflow_filename(project_json_or_dict) -> str:
+    """Workflow used for in-between runs and capability scans."""
+    if is_default_video_family(project_json_or_dict):
+        return DEFAULT_VIDEO_WORKFLOW_FILENAME
+    return stored_video_workflow_filename(project_json_or_dict)
+
+
+def resolve_project_video_workflow(project_json_or_dict) -> str:
+    filename = effective_video_workflow_filename(project_json_or_dict)
+    return str((WORKFLOWS_DIR / filename).resolve())
+
+
+def should_migrate_video_on_family_change(old_family: str | None, new_family: str | None) -> bool:
+    """True when switching video family from Custom to Default."""
+    old = (old_family or VIDEO_MODEL_FAMILY_DEFAULT).strip().lower()
+    new = (new_family or VIDEO_MODEL_FAMILY_DEFAULT).strip().lower()
+    return new == VIDEO_MODEL_FAMILY_DEFAULT and old == VIDEO_MODEL_FAMILY_CUSTOM
+
+
+def migrate_video_to_default_workflow(project_dict: dict) -> dict:
+    """Normalize in-between workflow to i2v_base when project uses Default video family."""
+    if not isinstance(project_dict, dict) or not is_default_video_family(project_dict):
+        return project_dict
+    proj = project_dict.setdefault("project", {})
+    ib = proj.setdefault("inbetween_generation", {})
+    ib["video_workflow_json"] = str((WORKFLOWS_DIR / DEFAULT_VIDEO_WORKFLOW_FILENAME).resolve())
+    ib["seed_target_title"] = "SlowMoPrimer"
+    ib["seed_exclude_title"] = "WanFixedSeed"
+    return project_dict
+
+
+def video_family_label_to_json(label: str) -> str:
+    return VIDEO_MODEL_FAMILY_CUSTOM if label == "Custom" else VIDEO_MODEL_FAMILY_DEFAULT
+
+
+def video_family_json_to_label(value: str) -> str:
+    return "Custom" if str(value or "").strip().lower() == VIDEO_MODEL_FAMILY_CUSTOM else "Default"
+
+
+def video_workflow_path_to_dropdown(stored: Any) -> str:
+    """Map stored video_workflow_json (often absolute path) to dropdown basename."""
+    name = Path(str(stored or "").strip()).name
+    return name or DEFAULT_VIDEO_WORKFLOW_FILENAME
+
+
+def video_workflow_dropdown_to_path(filename: Any) -> str:
+    """Map workflow dropdown basename to absolute path for project JSON."""
+    name = str(filename or "").strip() or DEFAULT_VIDEO_WORKFLOW_FILENAME
+    return str((WORKFLOWS_DIR / name).resolve())
+
+
+def default_family_pose_workflow_filename(pose_path: str | None) -> str:
+    """Map a keyframe pose path to the Default-family workflow filename."""
+    p = str(pose_path or "").strip()
+    if not p or p == "(No pose)":
+        return DEFAULT_PROJECT_WORKFLOW_FILENAME
+    fname = Path(p).name.upper()
+    if "_2CHAR" in fname:
+        return "pose_2CHAR.json"
+    if "_1CHAR" in fname:
+        return "pose_1CHAR.json"
+    return "pose_1CHAR.json"
+
+
+def resolve_default_family_pose_workflow(pose_path: str | None) -> str:
+    """Absolute path to the Default-family workflow for a pose (or pose_OPEN when empty)."""
+    return str((WORKFLOWS_DIR / default_family_pose_workflow_filename(pose_path)).resolve())
+
+
+def pose_paths_represent_different_pose(stored_pose: str | None, new_pose: str | None) -> bool:
+    """True when basename differs (ignores temp vs project path for the same file)."""
+    try:
+        return os.path.basename(str(stored_pose or "")).lower() != os.path.basename(str(new_pose or "")).lower()
+    except Exception:
+        return str(stored_pose or "") != str(new_pose or "")
+
+
+def workflow_filename_for_pose_change(
+    project_json_or_dict,
+    stored_pose: str | None,
+    new_pose_path: str | None,
+) -> str | None:
+    """Default-family workflow filename after a pose change, or None to keep the current workflow."""
+    if not pose_paths_represent_different_pose(stored_pose, new_pose_path):
+        return None
+    if is_custom_image_family(project_json_or_dict):
+        return None
+    new_pose = str(new_pose_path or "").strip()
+    if not new_pose:
+        return effective_default_workflow_filename(project_json_or_dict)
+    return default_family_pose_workflow_filename(new_pose)
+
+
+def should_migrate_keyframes_on_family_change(old_family: str | None, new_family: str | None) -> bool:
+    """Deprecated: UI must not rewrite existing keyframe workflows on family switch."""
+    return False
+
+
+def should_migrate_keyframes_to_custom_bindings(old_family: str | None, new_family: str | None) -> bool:
+    """True only when the user switches project family from Default to Custom."""
+    old = (old_family or IMAGE_MODEL_FAMILY_DEFAULT).strip().lower()
+    new = (new_family or IMAGE_MODEL_FAMILY_DEFAULT).strip().lower()
+    return new == IMAGE_MODEL_FAMILY_CUSTOM and old == IMAGE_MODEL_FAMILY_DEFAULT
+
+
+def migrate_keyframes_to_custom_reference_bindings(project_dict: dict) -> dict:
+    """Seed reference_bindings from legacy pose/characters when project uses Custom family."""
+    if not isinstance(project_dict, dict) or not is_custom_image_family(project_dict):
+        return project_dict
+
+    import sys
+    from pathlib import Path as _Path
+
+    from workflow_capabilities import scan_workflow_file
+
+    _scripts = _Path(__file__).resolve().parent.parent / "scripts"
+    if str(_scripts) not in sys.path:
+        sys.path.insert(0, str(_scripts))
+    import workflow_controls as wc
+
+    default_wf = project_default_workflow_filename(project_dict)
+    project = project_dict.get("project") or {}
+
+    for seq in (project_dict.get("sequences") or {}).values():
+        if not isinstance(seq, dict):
+            continue
+        for kf in (seq.get("keyframes") or {}).values():
+            if not isinstance(kf, dict):
+                continue
+            wf_raw = str(kf.get("workflow_json") or "").strip()
+            wf_name = _Path(wf_raw).name if wf_raw else default_wf
+            caps = scan_workflow_file(wf_name)
+            if not caps or not caps.image_reference_slots:
+                continue
+            slots = caps.image_reference_slots[: wc.MAX_IMAGE_REFERENCE_SLOTS]
+            bindings = wc.normalize_reference_bindings(kf, slots, project, seq)
+            kf["reference_bindings"] = bindings
+            wc.sync_reference_bindings_to_legacy(kf, bindings, slots)
+    return project_dict
+
+
+def migrate_keyframes_to_default_workflows(project_dict: dict) -> dict:
+    """Rewrite every keyframe workflow_json from pose (repair utility; not called from UI)."""
+    if not isinstance(project_dict, dict) or not is_default_image_family(project_dict):
+        return project_dict
+    for seq in (project_dict.get("sequences") or {}).values():
+        if not isinstance(seq, dict):
+            continue
+        for kf in (seq.get("keyframes") or {}).values():
+            if not isinstance(kf, dict):
+                continue
+            kf["workflow_json"] = resolve_default_family_pose_workflow(kf.get("pose"))
+    return project_dict
+
+
+# Hardcoded KSampler settings for pose library generation (family-independent).
+POSE_GEN_SAMPLER_DEFAULTS: dict[str, Any] = {
+    "cfg": 4.0,
+    "steps": 30,
+    "sampler_name": "dpmpp_2m_sde",
+    "scheduler": "karras",
+}
+
+
+def apply_pose_gen_sampler_defaults(kf_gen: dict) -> None:
+    """Apply optimal pose-generation sampler fields to a keyframe_generation dict."""
+    kf_gen.update(POSE_GEN_SAMPLER_DEFAULTS)
+
+
+def force_pose_gen_sampler_driven(temp_data: dict) -> None:
+    """Pose library temp projects always drive KSampler from hardcoded defaults."""
+    temp_data.setdefault("project", {})["image_model_family"] = IMAGE_MODEL_FAMILY_DEFAULT
+
+
+def image_family_label_to_json(label: str) -> str:
+    return IMAGE_MODEL_FAMILY_CUSTOM if label == "Custom" else IMAGE_MODEL_FAMILY_DEFAULT
+
+
+def image_family_json_to_label(value: str) -> str:
+    return "Custom" if str(value or "").strip().lower() == IMAGE_MODEL_FAMILY_CUSTOM else "Default"
+
+
 # Throttling state for backups
 LAST_BACKUP_TIME = 0.0
 
@@ -77,7 +357,7 @@ DEFAULT_SETTINGS = {
         "timeout_seconds": 3600,
         "output_root": ""  # Empty = must be configured in config.toml
     },
-    "workspace_root": "./samples",
+    "workspace_root": "./projects",
     "models_root": "",  # Empty = must be configured in config.toml
     "loras_root": "",  # Empty = must be configured in config.toml
     "comfyui_restart_script_path": "",
@@ -90,6 +370,7 @@ DEFAULT_SETTINGS = {
         "show_cascade_batches": False,
         "show_delete_others": False,
         "show_project_style_pose": False,
+        "show_workflow_capabilities": False,
     }
 }
 
@@ -136,8 +417,11 @@ DEFAULT_PROJECT = {
             "prompt_template": "",
             "seed_start": 0,
             "advance_seed_by": 1,
-            "seed_target_title": "IterKSampler",
+            "seed_target_title": "SlowMoPrimer",
             "seed_exclude_title": "WanFixedSeed",
+            "fps": 16,
+            "video_steps_default": 14,
+            "fix_slowmo_primer_steps": 2,
             "express_video": False,
             "quarter_size_video": True,
             "lora_normalization_enabled": True,
@@ -149,6 +433,9 @@ DEFAULT_PROJECT = {
             "bg_enabled": True,
             "bg_max": 1.5
         },
+        "image_model_family": IMAGE_MODEL_FAMILY_DEFAULT,
+        "video_model_family": VIDEO_MODEL_FAMILY_DEFAULT,
+        "default_workflow_json": DEFAULT_PROJECT_WORKFLOW_FILENAME,
     },
 "sequences": {}, # Now a dict: id -> seq_obj
 }
@@ -187,28 +474,31 @@ def load_config() -> dict:
                     "retention_count": toml_data.get("backups", {}).get("retention", DEFAULT_SETTINGS["backups"]["retention_count"]),
                     "throttle_seconds": toml_data.get("backups", {}).get("throttle_seconds", DEFAULT_SETTINGS["backups"]["throttle_seconds"]),
                 },
-                "features": toml_data.get("features", DEFAULT_SETTINGS["features"]),
+                "features": {
+                    **DEFAULT_SETTINGS["features"],
+                    **(toml_data.get("features") or {}),
+                },
             }
             
             print("Loaded configuration from config.toml")
             
             # Validate critical paths and warn if empty
             if not config["models_root"]:
-                print("⚠️  WARNING: models_root not configured!")
+                print("WARNING: models_root not configured!")
                 print("   Edit config.toml and set [paths] models = \"your/path/here\"")
             
             if not config["comfy"]["output_root"]:
-                print("⚠️  WARNING: output_root not configured!")
+                print("WARNING: output_root not configured!")
                 print("   Edit config.toml and set [comfyui] output_root = \"your/path/here\"")
             
             return config
             
         except Exception as e:
-            print(f"⚠️  Error loading config.toml: {e}")
+            print(f"Error loading config.toml: {e}")
             print("   Falling back to defaults...")
     
     elif not config_path.exists():
-        print("⚠️  config.toml not found!")
+        print("config.toml not found!")
         print("   Copy config.toml.example to config.toml and configure your paths.")
         print("   Running with default settings (may not work correctly)...")
     
@@ -384,6 +674,17 @@ def _ensure_project(data: Dict[str, Any]) -> Dict[str, Any]:
 
     ib = proj.setdefault("inbetween_generation", {})
     ib.setdefault("duration_default_sec", 3.0)
+    ib.setdefault("fps", 16)
+    ib.setdefault("video_steps_default", 14)
+    ib.setdefault("fix_slowmo_primer_steps", 2)
+    if "video_model_family" not in proj:
+        proj["video_model_family"] = infer_video_model_family(data)
+    else:
+        fam = str(proj.get("video_model_family") or "").strip().lower()
+        if fam == VIDEO_MODEL_FAMILY_CUSTOM:
+            proj["video_model_family"] = VIDEO_MODEL_FAMILY_CUSTOM
+        else:
+            proj["video_model_family"] = VIDEO_MODEL_FAMILY_DEFAULT
 
     # 2. Migrate Structure to V2
     data = migrate_project_v2(data)
@@ -724,15 +1025,33 @@ def cb_save_settings(settings_json_txt: str, workspace_path: str, models_path: s
     return json.dumps(data, indent=2, ensure_ascii=False), f"Settings saved. {now_stamp()}"
 
 def get_project_poses_dir(project_json_or_dict) -> Path | None:
+    return _get_project_subdir(project_json_or_dict, "_poses")
+
+
+def _get_project_subdir(project_json_or_dict, subfolder: str) -> Path | None:
     try:
         data = project_json_or_dict
         output_root = data.get("project", {}).get("comfy", {}).get("output_root")
         project_name = data.get("project", {}).get("name")
-        if not output_root or not project_name: return None
-        base_path = Path(output_root) / project_name / "_poses"
+        if not output_root or not project_name:
+            return None
+        base_path = Path(output_root) / project_name / subfolder
         base_path.mkdir(parents=True, exist_ok=True)
         return base_path
-    except Exception: return None
+    except Exception:
+        return None
+
+
+def get_project_characters_dir(project_json_or_dict) -> Path | None:
+    return _get_project_subdir(project_json_or_dict, "_characters")
+
+
+def get_project_locations_dir(project_json_or_dict) -> Path | None:
+    return _get_project_subdir(project_json_or_dict, "_locations")
+
+
+def get_project_styles_dir(project_json_or_dict) -> Path | None:
+    return _get_project_subdir(project_json_or_dict, "_styles")
 
 def _get_temp_dir(project_json: str | Dict) -> Path | None:
     try:
@@ -764,8 +1083,9 @@ def cb_refresh_all_lists(workspace_dir, models_dir, loras_dir, project_json: str
         pose_gallery_update,  
     )
 
+
 def cb_list_json_files(base_dir: str, current_value: str = None):
-    print(f"🔥 cb_list_json_files DEFINITELY CALLED with base_dir={repr(base_dir)}")
+    print(f"cb_list_json_files DEFINITELY CALLED with base_dir={repr(base_dir)}")
     print(f"[DEBUG] cb_list_json_files called with base_dir={base_dir}")
     base = (base_dir or "").strip()
     p = Path(base) if base else Path.cwd()
@@ -808,6 +1128,62 @@ def cb_list_workflow_files(base_dir: str, current_value: str = None):
         except Exception: pass
     return gr.update(choices=choices, value=value_to_set)
 
+
+def cb_refresh_video_workflow_dropdown(current_value: str | None = None):
+    """Rescan workflows/ for Generation Defaults video workflow dropdown."""
+    upd = cb_list_workflow_files(str(WORKFLOWS_DIR), current_value)
+    if not isinstance(upd, dict):
+        return gr.update()
+    choices = (upd.get("choices") or [""])[1:]
+    value = upd.get("value") or video_workflow_path_to_dropdown(current_value)
+    if value and value not in choices:
+        value = video_workflow_path_to_dropdown(current_value)
+    return gr.update(choices=choices, value=value)
+
+
+def cb_master_refresh(
+    workspace_dir,
+    models_dir,
+    loras_dir,
+    project_json,
+    current_model: str,
+    current_lora: str,
+    current_kf_workflow: str,
+    current_video_workflow: str,
+    current_pose: str,
+    current_project: str,
+):
+    """Refresh file/model/lora/workflow lists plus video workflow Generation Defaults dropdown."""
+    (
+        project_list_update,
+        model_list_update,
+        lora_files_list,
+        workflow_list_update,
+        pose_dropdown_update,
+        pose_gallery_update,
+    ) = cb_refresh_all_lists(
+        workspace_dir,
+        models_dir,
+        loras_dir,
+        project_json,
+        current_model,
+        current_lora,
+        current_kf_workflow,
+        current_pose,
+        current_project,
+    )
+    video_workflow_update = cb_refresh_video_workflow_dropdown(current_video_workflow)
+    return (
+        project_list_update,
+        model_list_update,
+        lora_files_list,
+        workflow_list_update,
+        video_workflow_update,
+        pose_dropdown_update,
+        pose_gallery_update,
+    )
+
+
 def cb_list_pose_files(base_dir: str, current_value: str = None):
     p = Path(str(base_dir or "").strip())
     choices = [("(No pose)", "")]; value_to_set = "" 
@@ -822,8 +1198,12 @@ def cb_list_pose_files(base_dir: str, current_value: str = None):
     return gr.update(choices=choices, value=value_to_set)
 
 def get_pose_gallery_list(base_dir: str) -> List[Tuple[str, str]]:
-    p = Path(str(base_dir or "").strip())
-    if not p.is_dir(): return []
+    s = str(base_dir or "").strip()
+    if not s:
+        return []
+    p = Path(s)
+    if not p.is_dir():
+        return []
     img_exts = {".png", ".jpg", ".jpeg", ".webp"}
     try:
         files = sorted(
@@ -833,6 +1213,42 @@ def get_pose_gallery_list(base_dir: str) -> List[Tuple[str, str]]:
         )
         return [(str(fp), fp.stem) for fp in files]
     except Exception: return []
+
+
+def gallery_selected_index_for_path(
+    gallery_items: List[Tuple[str, str]],
+    highlight_path: str | None,
+) -> int | None:
+    """Index into gallery_items for a filesystem path, or None."""
+    if not highlight_path:
+        return None
+    try:
+        norm = str(Path(highlight_path).resolve()).lower()
+        for i, (path, _) in enumerate(gallery_items):
+            if str(Path(path).resolve()).lower() == norm:
+                return i
+    except Exception:
+        pass
+    return None
+
+
+def gallery_gr_update(
+    base_dir: str,
+    highlight_path: str | None = None,
+    *,
+    label_filename: bool = False,
+):
+    """Build gr.Gallery update from a directory scan; optional highlight by path."""
+    raw = get_pose_gallery_list(base_dir)
+    if label_filename:
+        value = [(path, Path(path).name) for path, _ in raw]
+    else:
+        value = list(raw)
+    idx = gallery_selected_index_for_path(raw, highlight_path)
+    if idx is not None:
+        return gr.update(value=value, selected_index=idx)
+    return gr.update(value=value)
+
 
 def refresh_pose_components(project_json: str, current_pose_val: str = None):
     poses_dir_path = get_project_poses_dir(project_json)
@@ -910,7 +1326,9 @@ def cb_save_as(save_as_name_or_path: str, settings_json: str, current_project: d
     data = _ensure_nonempty_api_base(data, settings_json)
     if data.get("project", {}).get("is_protected_from_empty_save") and not data.get("sequences"):
         raise gr.Error("Save As aborted: A protected project cannot be saved with an empty sequence list.")
+    data["project"]["active_writer"] = "ui"
     atomic_write(p, data)
+    scaffold_project_files_dir(p.parent, p.stem)
 
     return (data, str(p))
 
@@ -985,7 +1403,9 @@ def cb_create_new_project(name_or_base: str, settings_json: str):
     data, new_seq_id = _add_sequence(data)
     data, new_kf_id = _add_keyframe(data, new_seq_id)
 
+    data["project"]["active_writer"] = "ui"
     atomic_write(p, data)
+    scaffold_project_files_dir(p.parent, p.stem)
 
     return (data, str(p))
 
@@ -1064,14 +1484,14 @@ def cb_save_project(current_file_path: str, current_project: dict, settings_json
                 
                 # Critical Block 1: Sequence Loss
                 if existing_seqs and not new_seqs:
-                    print(f"🛑 [SAFETY BLOCK] Save aborted! Attempted to overwrite {len(existing_seqs)} sequences with empty data. This indicates UI state loss.")
+                    print(f"[SAFETY BLOCK] Save aborted! Attempted to overwrite {len(existing_seqs)} sequences with empty data. This indicates UI state loss.")
                     return
 
                 # Critical Block 2: Name Reversion
                 existing_name = existing_data.get("project", {}).get("name", "")
                 new_name = data.get("project", {}).get("name", "")
                 if not new_name and existing_name:
-                    print(f"🛑 [SAFETY BLOCK] Project name corrupted (was '{existing_name}', now empty)")
+                    print(f"[SAFETY BLOCK] Project name corrupted (was '{existing_name}', now empty)")
                     return
 
             except Exception as read_err:
@@ -1082,10 +1502,11 @@ def cb_save_project(current_file_path: str, current_project: dict, settings_json
         if data.get("project", {}).get("is_protected_from_empty_save") and not data.get("sequences"):
              print("Save skipped: Protected project cannot be saved empty.")
              return
-             
 
+        data["project"]["active_writer"] = "ui"
         atomic_write(p, data)
- 
+        scaffold_project_files_dir(p.parent, p.stem)
+
         print(f"SAVE -> {p.name}")
 
     except Exception as e: print(f"Error saving file: {e}")
@@ -1216,7 +1637,7 @@ def ensure_settings() -> dict:
 #                 if "last_open_project_path" in runtime_state:
 #                     data["last_open_project_path"] = runtime_state["last_open_project_path"]
 #         except Exception as e:
-#             print(f"⚠️  Warning: Could not load runtime state from {SETTINGS_PATH}: {e}")
+#             print(f"Warning: Could not load runtime state from {SETTINGS_PATH}: {e}")
     
 #     return data
 
@@ -1258,6 +1679,36 @@ def _auto_version_path(dest_path: Path) -> Path:
             return new_path
             
     return parent / f"{base_stem}_{int(datetime.now().timestamp())}{suffix}"
+
+
+_ABOUT_PROJECT_FILES_TEMPLATE = """\
+# About this folder
+
+This folder holds everything The Halleen Machine and its agent companion
+generate while working on **{project}** — preview images, QC staging, run
+logs, and any one-off scripts the agent writes for this project. None of it
+is required to open or edit the project file itself — `{project}.json` next
+to this folder is the source of truth. Safe to delete and let the tools
+regenerate, except: if a `skill/` subfolder exists here, it holds
+project-specific guidance worth keeping.
+"""
+
+
+def project_files_dir(workspace_root, project_name: str) -> Path:
+    """Sibling churn folder for a project: {workspace_root}/{name}-files/."""
+    return Path(workspace_root) / f"{project_name}-files"
+
+
+def scaffold_project_files_dir(workspace_root, project_name: str) -> Path:
+    """Create {name}-files/previews/ + _about-this-folder.md. Idempotent."""
+    base = project_files_dir(workspace_root, project_name)
+    (base / "previews").mkdir(parents=True, exist_ok=True)
+    about = base / "_about-this-folder.md"
+    if not about.exists():
+        about.write_text(
+            _ABOUT_PROJECT_FILES_TEMPLATE.format(project=project_name), encoding="utf-8"
+        )
+    return base
 
 # def _auto_version_path(dest_path: Path) -> Path:
 #     """If path exists, find a new path by appending _(2), _(3), etc."""
@@ -1328,8 +1779,6 @@ def write_image_metadata(file_path: str, metadata_dict: dict):
     Writes custom metadata into PNG (tEXt) chunks.
     """
     import json
-    from PIL import Image
-    from PIL.PngImagePlugin import PngInfo
     try:
         img = Image.open(file_path)
         metadata_str = json.dumps(metadata_dict, ensure_ascii=False)
@@ -1345,14 +1794,79 @@ def write_image_metadata(file_path: str, metadata_dict: dict):
         print(f"[METADATA] Error writing metadata: {e}")
         return False
 
+def wait_for_file_stable(
+    file_path: str,
+    *,
+    timeout_s: float = 60.0,
+    poll_s: float = 0.25,
+    stable_polls: int = 3,
+    min_size: int = 1,
+) -> bool:
+    """Wait until a file exists and its size is unchanged (SaveImage flush / Windows)."""
+    path = Path(file_path)
+    deadline = time.time() + timeout_s
+    last_size = -1
+    stable = 0
+    while time.time() < deadline:
+        try:
+            if not path.is_file():
+                stable = 0
+                last_size = -1
+            else:
+                size = path.stat().st_size
+                if size >= min_size and size == last_size:
+                    stable += 1
+                    if stable >= stable_polls:
+                        return True
+                else:
+                    stable = 0
+                    last_size = size
+        except OSError:
+            stable = 0
+            last_size = -1
+        time.sleep(poll_s)
+    return False
+
+
+def inject_the_machine_snapshot(file_path: str, snapshot: dict) -> bool:
+    """Write the_machine_snapshot via temp file + atomic replace (avoids Windows read races)."""
+    if not file_path or not os.path.exists(file_path):
+        return False
+    path = Path(file_path)
+    if path.suffix.lower() not in (".png",):
+        return False
+
+    tmp_path = path.with_name(path.name + ".thm.tmp")
+    try:
+        wait_for_file_stable(str(path), timeout_s=30.0)
+        with Image.open(path) as img:
+            img.load()
+            metadata = PngInfo()
+            for k, v in img.info.items():
+                if k != "the_machine_snapshot":
+                    metadata.add_text(k, str(v))
+            metadata.add_text("the_machine_snapshot", json.dumps(snapshot, ensure_ascii=False))
+            img.save(tmp_path, format="PNG", pnginfo=metadata)
+        os.replace(tmp_path, path)
+        return True
+    except Exception as e:
+        print(f"[METADATA] Error injecting snapshot: {e}")
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        return False
+
+
 def get_png_metadata(image_path: str) -> Dict[str, Any]:
     """Reads 'the_machine_snapshot' from PNG metadata."""
     try:
         if not os.path.exists(image_path):
             return {}
         with Image.open(image_path) as img:
-            meta = img.info
-            snapshot_str = meta.get("the_machine_snapshot")
+            img.load()
+            snapshot_str = img.info.get("the_machine_snapshot")
             return json.loads(snapshot_str) if snapshot_str else {}
     except Exception as e:
         print(f"Error reading metadata from {image_path}: {e}")
@@ -1375,7 +1889,64 @@ def get_png_metadata(image_path: str) -> Dict[str, Any]:
 # ============================================================================
 # PHASE 3: ATOMIC LOAD FUNCTION
 # ============================================================================
-def load_project_complete(filepath: str, settings_json: str, form_registry, get_style_test_images_fn):
+def first_outline_node_id(project_data: dict) -> str | None:
+    """First sidebar outline node id (sequence, keyframe, or video)."""
+    data = project_data if isinstance(project_data, dict) else {}
+    rows = _rows_with_times(data)
+    return rows[0][1] if rows else None
+
+
+def outline_node_exists(project_data: dict, node_id: str | None) -> bool:
+    """Whether node_id is still a valid sidebar outline row (sequence, keyframe, or video)."""
+    if not node_id:
+        return False
+    data = project_data if isinstance(project_data, dict) else {}
+    return any(row_id == node_id for _, row_id in _rows_with_times(data))
+
+
+def keyframe_workflow_basename_for_node(project_data: dict, node_id: str | None) -> str | None:
+    """Basename of workflow_json when node_id is a keyframe; otherwise None."""
+    if not node_id:
+        return None
+    data = _ensure_project(project_data if isinstance(project_data, dict) else {})
+    for seq in (data.get("sequences") or {}).values():
+        if not isinstance(seq, dict):
+            continue
+        kf = (seq.get("keyframes") or {}).get(node_id)
+        if isinstance(kf, dict):
+            wf_raw = str(kf.get("workflow_json") or "").strip()
+            return Path(wf_raw).name if wf_raw else None
+    return None
+
+
+def outline_selector_load_update(project_data: dict, preserve_selection: bool = False) -> tuple[Any, Any]:
+    """Editor outline Radio: choices + value for atomic project load (avoids Gradio preprocess errors).
+
+    preserve_selection=True skips the value reset (used by in-place reload, so it
+    doesn't fire a spurious node_selector.change cascade that races the caller's
+    own restore-selection step)."""
+    data = project_data if isinstance(project_data, dict) else {}
+    rows = _rows_with_times(data)
+    if not rows:
+        return gr.update(choices=[], value=None), gr.update(value=None)
+    if preserve_selection:
+        return gr.update(choices=rows), gr.update()
+    first_id = first_outline_node_id(data)
+    return gr.update(choices=rows, value=first_id), gr.update(value=first_id)
+
+
+def _wrap_form_value_for_load(entry: dict[str, Any], val: Any) -> Any:
+    """Wrap a loaded form value; include dropdown choices so Gradio preprocess succeeds."""
+    path = entry.get("path", "")
+    if path == "project.default_workflow_json":
+        wf_val = val if val else DEFAULT_PROJECT_WORKFLOW_FILENAME
+        return cb_list_workflow_files(str(WORKFLOWS_DIR), wf_val)
+    if path == "project.inbetween_generation.video_workflow_json":
+        return cb_refresh_video_workflow_dropdown(val)
+    return gr.update(value=val)
+
+
+def load_project_complete(filepath: str, settings_json: str, form_registry, get_style_test_images_fn, preserve_selection: bool = False):
     """
     PHASE 3: Atomic load function that replaces buffer states and .then() chains.
     
@@ -1418,10 +1989,17 @@ def load_project_complete(filepath: str, settings_json: str, form_registry, get_
             # Print first few values as sample
             print(f"[LOAD_COMPLETE] Step 2 sample values (first 10): {[f'{type(v).__name__}:{str(v)[:30]}' for v in form_values[:10]]}")
         
-        # CRITICAL FIX: Wrap all form values in gr.update to ensure consistent update mechanism
-        # This prevents Gradio from getting confused about component state
-        form_values_wrapped = [gr.update(value=v) for v in form_values]
-        print(f"[LOAD_COMPLETE] Step 2b: Wrapped {len(form_values_wrapped)} form values in gr.update")
+        registry = getattr(form_registry, "_registry", None)
+        if registry and len(registry) == len(form_values):
+            form_values_wrapped = [
+                _wrap_form_value_for_load(entry, val)
+                for entry, val in zip(registry, form_values)
+            ]
+        else:
+            form_values_wrapped = [gr.update(value=v) for v in form_values]
+        print(f"[LOAD_COMPLETE] Step 2b: Wrapped {len(form_values_wrapped)} form values for load")
+
+        outline_update, selected_node_update = outline_selector_load_update(project_data, preserve_selection=preserve_selection)
         
         # 3. Calculate refresh outputs (for master_refresh_outputs)
         try:
@@ -1435,18 +2013,24 @@ def load_project_complete(filepath: str, settings_json: str, form_registry, get_
         
         # Extract current values from loaded project to ensure dropdowns show correct selections
         current_model = project_data.get("project", {}).get("model", "")
-        current_workflow = project_data.get("project", {}).get("inbetween_generation", {}).get("video_workflow_json", "")
-        
-        refresh_outputs = cb_refresh_all_lists(
-            workspace_dir, 
-            models_dir, 
-            loras_dir, 
+        selected_nid = first_outline_node_id(project_data)
+        current_kf_workflow = (
+            keyframe_workflow_basename_for_node(project_data, selected_nid)
+            or effective_default_workflow_filename(project_data)
+        )
+        current_video_workflow = effective_video_workflow_filename(project_data)
+
+        refresh_outputs = cb_master_refresh(
+            workspace_dir,
+            models_dir,
+            loras_dir,
             project_data,  # Pass dict directly (Phase 2 contract)
-            current_model,  # Pass actual model from project
+            current_model,
             "",  # current_lora
-            current_workflow,  # Pass actual workflow from project
+            current_kf_workflow,
+            current_video_workflow,
             "",  # current_pose
-            loaded_filepath  # current_project path
+            loaded_filepath,  # current_project path
         )
         print(f"[LOAD_COMPLETE] Step 3: Refresh outputs calculated, count={len(refresh_outputs) if isinstance(refresh_outputs, (list, tuple)) else 'unknown'}")
         
@@ -1488,12 +2072,14 @@ def load_project_complete(filepath: str, settings_json: str, form_registry, get_
         )
         print(f"[LOAD_COMPLETE] Step 7: UI lock updates calculated (is_locked={is_locked})")
         
-        # Build return tuple
+        # Build return tuple (outline before form so sidebar choices exist when preview handlers run)
         result = (
             project_data,          # preview_code
             loaded_filepath,       # current_file_path
+            outline_update,        # node_selector
+            selected_node_update,  # selected_node
             *form_values_wrapped,  # All form field values (wrapped in gr.update)
-            *refresh_outputs,      # master_refresh_outputs: [file_picker, model_dd, lora_file_state, kf_workflow_json, refresh_sink, kf_pose_gallery]
+            *refresh_outputs,      # master_refresh_outputs: [file_picker, model_dd, lora_file_state, kf_workflow_json, video_workflow_dd, refresh_sink, kf_pose_gallery]
             file_name_md,          # current_file_name
             poses_dir_str,         # poses_dir_state
             pose_gallery_update,   # pose_gallery

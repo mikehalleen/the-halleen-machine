@@ -9,7 +9,7 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "LeftNegPrompt"
+      "title": "MainNegPrompt"
     }
   },
   "4": {
@@ -75,7 +75,7 @@
     },
     "class_type": "CheckpointLoaderSimple",
     "_meta": {
-      "title": "LeftCheckpoint"
+      "title": "MainCheckpoint"
     }
   },
   "22": {
@@ -247,7 +247,7 @@
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
-      "title": "LeftLora"
+      "title": "MainLora"
     }
   },
   "46": {
@@ -260,7 +260,7 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "LeftPrompt"
+      "title": "MainPrompt"
     }
   },
   "83": {
@@ -287,15 +287,6 @@
       "title": "Clean VRAM Used"
     }
   },
-  "162": {
-    "inputs": {
-      "image": "One_man_standing_medium_close_up_shot,_((one_man)),_behind_him_a_fabric_curtain,_looks_at_viewer,_ey.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "MainImageAndMask"
-    }
-  },
   "170": {
     "inputs": {
       "upscale_method": "nearest-exact",
@@ -303,7 +294,7 @@
       "height": 720,
       "crop": "center",
       "image": [
-        "162",
+        "172",
         0
       ]
     },
@@ -323,6 +314,15 @@
     "class_type": "SaveImage",
     "_meta": {
       "title": "Save Image"
+    }
+  },
+  "172": {
+    "inputs": {
+      "image": ""
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "MainImageAndMask"
     }
   }
 }

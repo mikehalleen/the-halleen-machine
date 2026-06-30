@@ -45,9 +45,9 @@ loras = ""
 
 # Where this app will save your project files
 # Use relative path to keep projects with the app, or absolute path for elsewhere
-# Relative: "./samples" (uses samples folder shipped with app)
+# Relative: "./projects"
 # Absolute: "D:/MyProjects" or "/home/username/machine-projects"
-workspace = "./samples"
+workspace = "./projects"
 
 
 [backups]
@@ -80,6 +80,13 @@ upscale_model = "4x_NMKD-Siax_200k.pth"
 
 # model for interpolation
 interpolation_model = "xrife47.pth"
+
+[agent]
+# Python interpreter for thm-agent CLI and pipeline scripts (written by setup.py).
+# Agents must use this path — never system python.
+# Windows example: "./the-machine-ui-venv/Scripts/python.exe"
+# Linux/Mac example: "./the-machine-ui-venv/bin/python"
+python = ""
 
 [advanced]
 # Optional: Script to restart ComfyUI server when using the restart button

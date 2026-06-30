@@ -1,0 +1,44 @@
+{
+  "project": {
+    "name": "minimal_project",
+    "characters": [],
+    "settings": [],
+    "styles": [],
+    "width": 1152,
+    "height": 768,
+    "comfy": {
+      "api_base": "http://127.0.0.1:8188",
+      "timeout_seconds": 3600,
+      "output_root": "D:/ComfyUI/output"
+    },
+    "inbetween_generation": {
+      "duration_default_sec": 3
+    }
+  },
+  "sequence_order": [
+    "seq1"
+  ],
+  "sequences": {
+    "seq1": {
+      "id": "seq1",
+      "type": "sequence",
+      "keyframes": {
+        "kf1": {
+          "id": "kf1",
+          "sequence_id": "seq1",
+          "type": "keyframe",
+          "layout_prompt": "establishing shot"
+        }
+      },
+      "keyframe_order": [
+        "kf1"
+      ],
+      "videos": {},
+      "video_order": [],
+      "video_plan": {
+        "open_start": false,
+        "open_end": true
+      }
+    }
+  }
+}

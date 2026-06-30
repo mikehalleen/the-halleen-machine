@@ -131,7 +131,7 @@ def load_config() -> dict:
     config_path = Path("config.toml")
     
     if not config_path.exists():
-        print("❌ config.toml not found!")
+        print("config.toml not found!")
         print("   Run 'python setup.py' first to configure paths.")
         sys.exit(1)
     
@@ -141,7 +141,7 @@ def load_config() -> dict:
         try:
             import tomli as tomllib
         except ImportError:
-            print("❌ tomli not installed (required for Python < 3.11)")
+            print("tomli not installed (required for Python < 3.11)")
             print("   Run: pip install tomli")
             sys.exit(1)
     
@@ -149,12 +149,12 @@ def load_config() -> dict:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
     except Exception as e:
-        print(f"❌ Failed to parse config.toml: {e}")
+        print(f"Failed to parse config.toml: {e}")
         sys.exit(1)
     
     install_path = data.get("comfyui", {}).get("install_path", "")
     if not install_path:
-        print("❌ [comfyui] install_path not set in config.toml")
+        print("[comfyui] install_path not set in config.toml")
         print("   Run 'python setup.py' to configure.")
         sys.exit(1)
     
@@ -180,7 +180,7 @@ def clone_node(name: str, url: str, recursive: bool, dest_dir: Path, dry_run: bo
     node_path = dest_dir / name
     
     if node_path.exists():
-        print(f"  ✓ Already exists: {name}")
+        print(f"  Already exists: {name}")
         return True
     
     if dry_run:
@@ -196,14 +196,14 @@ def clone_node(name: str, url: str, recursive: bool, dest_dir: Path, dry_run: bo
         
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"  ❌ Failed to clone {name}: {result.stderr.strip()}")
+            print(f"  Failed to clone {name}: {result.stderr.strip()}")
             return False
         
-        print(f"  ✓ Cloned: {name}")
+        print(f"  Cloned: {name}")
         return True
         
     except Exception as e:
-        print(f"  ❌ Error cloning {name}: {e}")
+        print(f"  Error cloning {name}: {e}")
         return False
 
 
@@ -225,12 +225,12 @@ def install_requirements(name: str, node_path: Path, pip_path: Path, dry_run: bo
             text=True
         )
         if result.returncode != 0:
-            print(f"  ⚠️  Requirements install warning for {name}: {result.stderr.strip()[:200]}")
+            print(f"  Requirements install warning for {name}: {result.stderr.strip()[:200]}")
             # Don't fail on requirements - they often have version conflicts that still work
         return True
         
     except Exception as e:
-        print(f"  ⚠️  Error installing requirements for {name}: {e}")
+        print(f"  Error installing requirements for {name}: {e}")
         return True  # Continue anyway
 
 
@@ -242,7 +242,7 @@ def install_node(name: str, comfy_root: Path, dry_run: bool = False) -> tuple[bo
         (cloned: bool, was_existing: bool)
     """
     if name not in NODE_REGISTRY:
-        print(f"  ❌ Unknown node: {name}")
+        print(f"  Unknown node: {name}")
         return False, False
     
     url, recursive, category, description = NODE_REGISTRY[name]
@@ -253,7 +253,7 @@ def install_node(name: str, comfy_root: Path, dry_run: bool = False) -> tuple[bo
     was_existing = node_path.exists()
     
     if was_existing:
-        print(f"  ✓ Already exists: {name}")
+        print(f"  Already exists: {name}")
         # Still install requirements in case they were updated
         install_requirements(name, node_path, pip_path, dry_run)
         return True, True
@@ -282,7 +282,7 @@ def list_nodes():
     for name, (url, recursive, category, desc) in NODE_REGISTRY.items():
         if category == "core":
             rec = " [recursive]" if recursive else ""
-            print(f"  • {name}{rec}")
+            print(f"  {name}{rec}")
             print(f"    {desc}")
     print()
     
@@ -290,7 +290,7 @@ def list_nodes():
     print()
     for name, (url, recursive, category, desc) in NODE_REGISTRY.items():
         if category == "2char":
-            print(f"  • {name}")
+            print(f"  {name}")
             print(f"    {desc}")
     print()
     

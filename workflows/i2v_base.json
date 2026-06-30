@@ -293,19 +293,6 @@
       "title": "Save Video"
     }
   },
-  "201": {
-    "inputs": {
-      "filename_prefix": "",
-      "images": [
-        "87",
-        0
-      ]
-    },
-    "class_type": "SaveImage",
-    "_meta": {
-      "title": "Save Image"
-    }
-  },
   "202": {
     "inputs": {
       "image": "example.png"

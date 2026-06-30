@@ -676,37 +676,6 @@
       "widgets_values": []
     },
     {
-      "id": 201,
-      "type": "SaveImage",
-      "pos": [
-        2366.0672912835225,
-        497.03605046743127
-      ],
-      "size": [
-        270,
-        270
-      ],
-      "flags": {},
-      "order": 21,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 362
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.50",
-        "Node name for S&R": "SaveImage"
-      },
-      "widgets_values": [
-        ""
-      ]
-    },
-    {
       "id": 94,
       "type": "CreateVideo",
       "pos": [
@@ -1088,6 +1057,37 @@
       "widgets_values": [
         "wan_2.1_vae.safetensors"
       ]
+    },
+    {
+      "id": 201,
+      "type": "SaveImage",
+      "pos": [
+        2375.220613416784,
+        500.0871578451858
+      ],
+      "size": [
+        270,
+        270
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 362
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.50",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        ""
+      ]
     }
   ],
   "links": [
@@ -1384,10 +1384,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.5054470284992977,
+      "scale": 1.3109994191500056,
       "offset": [
-        247.82362954583624,
-        437.37835939223413
+        -1475.8385491672798,
+        -329.4134231367234
       ]
     },
     "frontendVersion": "1.36.14",

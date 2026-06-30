@@ -14,11 +14,19 @@ from PIL import Image
 import subprocess
 from run_helpers import handle_pose_batch
 
-from test_gen_helpers import handle_test_generation
-from test_gen_helpers import run_pose_preview_task
-from test_video_helpers import handle_test_video_generation
+from single_gen_helpers import handle_test_generation
+from single_gen_helpers import run_pose_preview_task
+from single_video_helpers import handle_test_video_generation
 
-from assets_helpers import _inject_lora_simple, handle_pose_generation, save_or_update_pose, _resolve_asset_aux, save_uploaded_pose, handle_pose_qc
+from assets_helpers import (
+    _asset_item_dir,
+    _inject_lora_simple,
+    handle_pose_generation,
+    save_or_update_pose,
+    _resolve_asset_aux,
+    save_uploaded_pose,
+    handle_pose_qc,
+)
 from qc_helpers import handle_pose_qc
 from run_helpers import ( 
     purge_sequence_keyframes, purge_sequence_inbetweens, 
@@ -30,9 +38,28 @@ from run_helpers import (
     build_export_panel, handle_export_task, list_existing_exports, handle_sequence_export_task,
     # save_uploaded_audio, list_project_audio, refresh_audio_list_ui
     save_uploaded_audio, list_project_audio, refresh_audio_list_ui,
-    build_enhance_manager, handle_upscale_batch, cancel_upscale_batch, handle_qc_batch
+    build_enhance_manager, handle_upscale_batch, cancel_upscale_batch, handle_qc_batch,
+    check_comfyui_status
 )
 
+
+from workflow_capabilities import (
+    compose_keyframe_reference_prelude_text,
+    compose_reference_present_hint,
+    compose_reference_present_slots,
+    format_capabilities_markdown,
+    format_video_capabilities_markdown,
+    generations_seed_visible,
+    keyframe_editor_visibility,
+    video_workflow_name_from_project,
+    log_capabilities,
+    log_video_capabilities,
+    scan_video_workflow_file,
+    video_frame_input_support_from_scan,
+    scan_workflow_file,
+    show_capabilities_panel,
+    workflow_supports_image_references,
+)
 
 from helpers import (
     WORKFLOWS_DIR, DEFAULT_KF_USE_ANIMAL_POSE, 
@@ -41,9 +68,22 @@ from helpers import (
     _derive_videos_for_seq, _fmt_clock, _sequence_effective_length, 
     _project_effective_length, _rows_with_times,
     parse_nid, cb_save_project, get_project_poses_dir,
-    get_node_by_id, get_pose_gallery_list, ensure_settings,
-    _sanitize_filename
+    get_node_by_id, get_pose_gallery_list, gallery_gr_update, ensure_settings,
+    _sanitize_filename,
+    is_custom_image_family,
+    is_default_image_family,
+    effective_default_workflow_filename,
+    workflow_filename_for_pose_change,
+    project_default_workflow_filename,
+    resolve_project_default_workflow,
 )
+
+import sys as _sys
+from pathlib import Path as _Path
+_SCRIPTS = _Path(__file__).resolve().parent.parent / "scripts"
+if str(_SCRIPTS) not in _sys.path:
+    _sys.path.insert(0, str(_SCRIPTS))
+import workflow_controls as wc  # noqa: E402
 
 
 
@@ -150,7 +190,8 @@ def _refresh_video_chain(seq: Dict[str, Any], default_dur: float, full_data: Dic
                 continue
         
         # Create new video for this gap
-        count = 0
+        _, vid_floor = _id_allocation_floor(full_data or {})
+        count = max(vid_floor + 1, 0)
         while (f"vid{count}" in new_vids or 
                f"vid{count}" in old_vids or 
                f"vid{count}" in global_vid_ids):
@@ -742,6 +783,19 @@ def _move_keyframe_down(data: Dict[str, Any], seq_id: str, kf_id: str) -> Tuple[
     return data, kf_id
 
 
+def _id_allocation_floor(data: Dict[str, Any]) -> Tuple[int, int]:
+    floor = (data.get("project") or {}).get("id_allocation_floor") or {}
+    try:
+        kf = int(floor.get("keyframe") or 0)
+    except (TypeError, ValueError):
+        kf = 0
+    try:
+        vid = int(floor.get("video") or 0)
+    except (TypeError, ValueError):
+        vid = 0
+    return kf, vid
+
+
 def _add_keyframe(data: Dict[str, Any], seq_id: str) -> Tuple[Dict[str, Any], str]:
     data = _ensure_project(data)
     seq = data["sequences"].get(seq_id)
@@ -754,6 +808,8 @@ def _add_keyframe(data: Dict[str, Any], seq_id: str) -> Tuple[Dict[str, Any], st
             if k.startswith("id"):
                 try: max_id = max(max_id, int(k[2:]))
                 except: pass
+    kf_floor, _ = _id_allocation_floor(data)
+    max_id = max(max_id, kf_floor)
     kid = f"id{max_id + 1}"
     
     # 2. Object
@@ -764,7 +820,7 @@ def _add_keyframe(data: Dict[str, Any], seq_id: str) -> Tuple[Dict[str, Any], st
         "pose": "",
         "layout": "",
         "template": "",
-        "workflow_json": str(Path(WORKFLOWS_DIR) / "pose_OPEN.json"), 
+        "workflow_json": resolve_project_default_workflow(data), 
         "negatives": {"left":"", "right":"", "heal":""},
         "characters": ["", ""],
         "selected_image_path": None,
@@ -1038,6 +1094,7 @@ def _read_metadata_png(path: str) -> dict | None:
     try:
         if not path or not os.path.exists(path): return None
         with Image.open(path) as img:
+            img.load()
             meta = img.info.get("the_machine_snapshot")
             return json.loads(meta) if meta else None
     except Exception as e:
@@ -1560,15 +1617,15 @@ def _eh_add_kf(project_dict: dict, nid: str):
     print(f"Resolved seq_id: '{seq_id}'")
     
     if not seq_id: 
-        print(f"❌ NO SEQ_ID - returning early")
+        print(f"NO SEQ_ID - returning early")
         print(f"=== END ADD KEYFRAME ===\n")
         return data, gr.update(), nid, gr.update()
     
-    print(f"✓ Adding keyframe to sequence '{seq_id}'")
+    print(f"Adding keyframe to sequence '{seq_id}'")
     data, new_sel = _add_keyframe(data, seq_id)
     left, sel, proj = _refresh_left(data, keep_id=new_sel)
     
-    print(f"✓ Keyframe added: {new_sel}")
+    print(f"Keyframe added: {new_sel}")
     print(f"=== END ADD KEYFRAME ===\n")
     
     return data, left, sel, proj
@@ -1647,34 +1704,67 @@ def _eh_kf_fields(project_dict: dict, loaded_nid: str, loaded_proj: str, pose_ui
     return data
 
 
-def _eh_vid_fields(project_dict: dict, loaded_nid: str, loaded_proj: str, length: str, prompt: str, neg: str, is_reset: bool = False):
+def _vid_length_ui_updates(data: dict, loaded_nid: str):
+    """Return gr.update for clip-length radio label and reset button."""
+    v, kind, _, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "vid":
+        return gr.update(), gr.update()
+    val = v.get("duration_override_sec") if "duration_override_sec" in v else None
+    default_dur = int(
+        float(data.get("project", {}).get("inbetween_generation", {}).get("duration_default_sec", 3.0))
+    )
+    radio_value, label_text, reset_label = _get_vid_dur_ui_vals(val, default_dur)
+    return gr.update(value=radio_value, label=label_text), gr.update(value=reset_label)
+
+
+def _apply_vid_field_updates(
+    project_dict: dict,
+    loaded_nid: str,
+    loaded_proj: str,
+    length: str,
+    prompt: str,
+    neg: str,
+    is_reset: bool = False,
+):
     data = _ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({})
     data = copy.deepcopy(data)
-    
-    if not _check_ownership(data, loaded_nid, loaded_proj): return data
+
+    if not _check_ownership(data, loaded_nid, loaded_proj):
+        return data
     v, kind, _, _ = _resolve_node_context(data, loaded_nid)
-    if kind != "vid": return data
+    if kind != "vid":
+        return data
 
     if is_reset:
         v.pop("duration_override_sec", None)
     else:
-        if length is None: 
+        if length is None:
             v.pop("duration_override_sec", None)
         else:
-            try: 
+            try:
                 v["duration_override_sec"] = int(length)
-            except (ValueError, TypeError): 
+            except (ValueError, TypeError):
                 v.pop("duration_override_sec", None)
-                
+
     v["inbetween_prompt"] = prompt or ""
     v["negative_prompt"] = neg or ""
     return data
 
+
+def _eh_vid_fields(project_dict: dict, loaded_nid: str, loaded_proj: str, length: str, prompt: str, neg: str, is_reset: bool = False):
+    return _apply_vid_field_updates(project_dict, loaded_nid, loaded_proj, length, prompt, neg, is_reset=is_reset)
+
+
+def _eh_vid_length_change(project_dict: dict, loaded_nid: str, loaded_proj: str, length: str, prompt: str, neg: str):
+    data = _apply_vid_field_updates(project_dict, loaded_nid, loaded_proj, length, prompt, neg)
+    length_upd, btn_upd = _vid_length_ui_updates(data, loaded_nid)
+    return data, length_upd, btn_upd
+
+
 def _eh_reset_vid_length(project_dict, loaded_nid, loaded_proj, prompt, neg):
-    # 1. Update the JSON state (removes the key)
-    new_data = _eh_vid_fields(project_dict, loaded_nid, loaded_proj, None, prompt, neg, is_reset=True)
-    # 2. Return the state and the ID to trigger the refresh
-    return new_data, loaded_nid
+    data = _apply_vid_field_updates(project_dict, loaded_nid, loaded_proj, None, prompt, neg, is_reset=True)
+    length_upd, btn_upd = _vid_length_ui_updates(data, loaded_nid)
+    return data, length_upd, btn_upd
 
 def _eh_seq_text_fields(project_dict: dict, loaded_nid: str, loaded_proj: str, setting_val: str, style_val: str, action_val: str):
     data = _ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({})
@@ -1699,6 +1789,161 @@ def _update_seq_field(project_dict: dict, loaded_nid: str, loaded_proj: str, key
         seq[key] = value
     return data
 
+
+def _eh_seq_setting_id_change(
+    project_dict: dict,
+    loaded_nid: str,
+    loaded_proj: str,
+    new_setting_id: str,
+):
+    data = copy.deepcopy(_ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({}))
+    if not _check_ownership(data, loaded_nid, loaded_proj):
+        return data
+    seq, kind, _, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "seq":
+        return data
+    prev = str(seq.get("setting_asset_last_id") or seq.get("setting_id") or "").strip()
+    new_id = str(new_setting_id or "").strip()
+    if prev and new_id != prev:
+        seq.pop("setting_reference_image", None)
+    seq["setting_id"] = new_id
+    seq["setting_asset_last_id"] = new_id
+    return data
+
+
+def _eh_seq_style_id_change(
+    project_dict: dict,
+    loaded_nid: str,
+    loaded_proj: str,
+    new_style_id: str,
+):
+    data = copy.deepcopy(_ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({}))
+    if not _check_ownership(data, loaded_nid, loaded_proj):
+        return data
+    seq, kind, _, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "seq":
+        return data
+    prev = str(seq.get("style_asset_last_id") or seq.get("style_id") or "").strip()
+    new_id = str(new_style_id or "").strip()
+    if prev and new_id != prev:
+        seq.pop("style_reference_image", None)
+    seq["style_id"] = new_id
+    seq["style_asset_last_id"] = new_id
+    return data
+
+
+def _sequence_ref_gallery_pair_update(
+    project_dict: dict,
+    seq: dict[str, Any] | None,
+    *,
+    collection_key: str,
+    asset_id: str,
+    resolve_path_fn,
+) -> tuple[Any, Any]:
+    """Gallery + empty hint for one sequence location/style row."""
+    hide_empty = gr.update(visible=False)
+    hide_gal = gr.update(visible=False, value=[])
+    if not asset_id or not isinstance(seq, dict):
+        return hide_empty, hide_gal
+    proj = project_dict.get("project") or {}
+    asset_dir = _asset_item_dir(project_dict, collection_key, asset_id)
+    highlight = resolve_path_fn(proj, seq)
+    if asset_dir and os.path.isdir(asset_dir):
+        gal = gallery_gr_update(str(asset_dir), highlight)
+        gal["visible"] = True
+        gal["height"] = _ASSETS_ASSET_REF_GALLERY_HEIGHT
+        return hide_empty, gal
+    return gr.update(visible=True, value=KF_REF_GALLERY_EMPTY_MSG), hide_gal
+
+
+def _eh_refresh_sequence_ref_galleries(preview: Any, selected_node: str | None):
+    hide_empty = gr.update(visible=False)
+    hide_gal = gr.update(visible=False, value=[])
+
+    if isinstance(preview, str) and preview.strip():
+        try:
+            data = _ensure_project(json.loads(preview))
+        except Exception:
+            data = _ensure_project({})
+    elif isinstance(preview, dict):
+        data = _ensure_project(preview)
+    else:
+        data = _ensure_project({})
+
+    if not selected_node:
+        return hide_empty, hide_gal, hide_empty, hide_gal
+
+    node, kind, seq, _ = _resolve_node_context(data, selected_node)
+    if kind != "seq":
+        return hide_empty, hide_gal, hide_empty, hide_gal
+
+    setting_id = str(seq.get("setting_id") or seq.get("setting_asset") or "").strip()
+    style_id = str(seq.get("style_id") or "").strip()
+    setting_empty, setting_gal = _sequence_ref_gallery_pair_update(
+        data,
+        seq,
+        collection_key="settings",
+        asset_id=setting_id,
+        resolve_path_fn=wc.resolve_sequence_setting_reference_path,
+    )
+    style_empty, style_gal = _sequence_ref_gallery_pair_update(
+        data,
+        seq,
+        collection_key="styles",
+        asset_id=style_id,
+        resolve_path_fn=wc.resolve_sequence_style_reference_path,
+    )
+    return setting_empty, setting_gal, style_empty, style_gal
+
+
+def _eh_seq_setting_gallery_select(
+    project_dict: dict,
+    loaded_nid: str,
+    loaded_proj: str,
+    evt: gr.SelectData,
+):
+    data = copy.deepcopy(_ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({}))
+    if not _check_ownership(data, loaded_nid, loaded_proj):
+        return data
+    if evt is None or evt.index is None:
+        return data
+    seq, kind, _, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "seq":
+        return data
+    setting_id = str(seq.get("setting_id") or seq.get("setting_asset") or "").strip()
+    asset_dir = _asset_item_dir(data, "settings", setting_id)
+    if not asset_dir:
+        return data
+    items = get_pose_gallery_list(str(asset_dir))
+    if not (0 <= evt.index < len(items)):
+        return data
+    seq["setting_reference_image"] = str(items[evt.index][0])
+    return data
+
+
+def _eh_seq_style_gallery_select(
+    project_dict: dict,
+    loaded_nid: str,
+    loaded_proj: str,
+    evt: gr.SelectData,
+):
+    data = copy.deepcopy(_ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({}))
+    if not _check_ownership(data, loaded_nid, loaded_proj):
+        return data
+    if evt is None or evt.index is None:
+        return data
+    seq, kind, _, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "seq":
+        return data
+    style_id = str(seq.get("style_id") or "").strip()
+    asset_dir = _asset_item_dir(data, "styles", style_id)
+    if not asset_dir:
+        return data
+    items = get_pose_gallery_list(str(asset_dir))
+    if not (0 <= evt.index < len(items)):
+        return data
+    seq["style_reference_image"] = str(items[evt.index][0])
+    return data
 
 
 # ---- OTHER HANDLERS ----
@@ -1797,23 +2042,38 @@ def _resolve_aux_image(base_path: str | None, subfolder: str, project_dict: dict
         return None
     except Exception: return None
 
-def _eh_handle_pose_change(pose_path: str, current_workflow_path: str, project_dict: dict, nid: str):
-    # Normalize pose path into a stable on-disk path (so comparisons are meaningful).
-    p = ""
-    if pose_path:
-        try:
-            from helpers import get_project_poses_dir
-            poses_dir = get_project_poses_dir(project_dict)
-            path_obj = Path(pose_path)
-            if not path_obj.is_absolute() and poses_dir:
-                p = str(poses_dir / path_obj.name)
-            else:
-                p = pose_path
-        except Exception:
-            p = pose_path
+def _normalize_pose_path_for_keyframe(project_dict: dict, pose_path: str) -> str:
+    """Resolve a UI pose path to a stable on-disk path when possible."""
+    if not pose_path:
+        return ""
+    try:
+        poses_dir = get_project_poses_dir(project_dict)
+        path_obj = Path(pose_path)
+        if not path_obj.is_absolute() and poses_dir:
+            return str(poses_dir / path_obj.name)
+        return pose_path
+    except Exception:
+        return pose_path
 
-    # Determine whether this is a REAL pose change (user picked a new pose)
-    # vs a pose being re-set during keyframe navigation/load.
+
+def _eh_workflow_update_if_pose_changed(project_dict: dict, loaded_nid: str, new_pose_path: str):
+    """Update workflow dropdown only when the user picks a different pose (Default family)."""
+    data = project_dict if isinstance(project_dict, dict) else {}
+    kf, kind, _, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "kf" or not kf:
+        return gr.update()
+    stored_pose = kf.get("pose", "") or ""
+    stored_wf = Path(str(kf.get("workflow_json") or "")).name
+    normalized_new = _normalize_pose_path_for_keyframe(data, new_pose_path or "")
+    wf_name = workflow_filename_for_pose_change(data, stored_pose, normalized_new)
+    if wf_name is None or (stored_wf and wf_name == stored_wf):
+        return gr.update()
+    return gr.update(value=wf_name)
+
+
+def _eh_handle_pose_change(pose_path: str, current_workflow_path: str, project_dict: dict, nid: str):
+    p = _normalize_pose_path_for_keyframe(project_dict if isinstance(project_dict, dict) else {}, pose_path or "")
+
     stored_pose = ""
     try:
         node, kind, _, _ = _resolve_node_context(project_dict if isinstance(project_dict, dict) else {}, nid)
@@ -1822,41 +2082,8 @@ def _eh_handle_pose_change(pose_path: str, current_workflow_path: str, project_d
     except Exception:
         stored_pose = ""
 
-    # def _norm(s: str) -> str:
-    #     try:
-    #         return os.path.abspath(os.path.normpath(s))
-    #     except Exception:
-    #         return s or ""
-
-    # is_real_pose_change = False
-    # if p or stored_pose:
-    #     # If pose differs from what's stored on the keyframe, it's a real user-driven change.
-    #     is_real_pose_change = (_norm(p) != _norm(stored_pose))
-    def _basename(s: str) -> str:
-        try:
-            return os.path.basename(s).lower() if s else ""
-        except Exception:
-            return ""
-
-    is_real_pose_change = False
-    if p or stored_pose:
-        # Compare by filename only - same file can appear via temp path or stored path
-        is_real_pose_change = (_basename(p) != _basename(stored_pose))
-    print(f"[DEBUG POSE] p={p}, stored_pose={stored_pose}, nid={nid}, is_real_change={is_real_pose_change}")
-
-    # Apply workflow auto-selection ONLY on real pose change.
-    new_workflow_path_val = gr.update()
-    if is_real_pose_change:
-        if not p:  # Pose cleared
-            new_workflow_path_val = gr.update(value="pose_OPEN.json")
-        else:
-            fname = os.path.basename(p).upper()
-            if "_1CHAR" in fname:
-                new_workflow_path_val = gr.update(value="pose_1CHAR.json")
-            elif "_2CHAR" in fname:
-                new_workflow_path_val = gr.update(value="pose_2CHAR.json")
-            else:
-                new_workflow_path_val = gr.update(value="pose_1CHAR.json")
+    wf_name = workflow_filename_for_pose_change(project_dict, stored_pose, p)
+    new_workflow_path_val = gr.update(value=wf_name) if wf_name is not None else gr.update()
 
     animal_flag = "_ANIMAL" in p
     preview_val = p if p else None
@@ -2034,17 +2261,9 @@ def _eh_refresh_pose_previews(project_dict: dict, loaded_nid: str):
     gallery_items = get_pose_gallery_list(str(poses_dir)) if poses_dir else []
     sel_idx = _resolve_gallery_index(pose_path, gallery_items)
     
-    # Auto-select workflow based on pose filename (_1CHAR, _2CHAR)
-    new_workflow = "pose_1CHAR.json"  # default
-    if pose_path:
-        fname = os.path.basename(pose_path).upper()
-        if "_2CHAR" in fname:
-            new_workflow = "pose_2CHAR.json"
-        elif "_1CHAR" in fname:
-            new_workflow = "pose_1CHAR.json"
-    else:
-        new_workflow = "pose_OPEN.json"
-    
+    # Workflow is not changed on navigation/load — only on explicit pose change handlers.
+    new_workflow = gr.update()
+
     # Animal pose flag
     animal_flag = "_ANIMAL" in pose_path.upper() if pose_path else False
     
@@ -2054,7 +2273,7 @@ def _eh_refresh_pose_previews(project_dict: dict, loaded_nid: str):
         gr.update(value=pose_thumb),                             # kf_cn_pose_thumb
         gr.update(value=shape_thumb),                            # kf_cn_shape_thumb
         gr.update(value=outline_thumb),                          # kf_cn_outline_thumb
-        gr.update(value=new_workflow),                           # kf_workflow_json
+        new_workflow,                                              # kf_workflow_json
         gr.update(value=animal_flag),                            # kf_cn_pose_animal
     )
 
@@ -2252,11 +2471,6 @@ def _eh_generate_pose_for_keyframe(project_dict: dict, nid: str, kf_prompt: str,
             char_prompt = char.get("prompt", "") or ""
             lora_tags = re.findall(r'__lora:[^_]+__', char_prompt)
             parts.extend(lora_tags)
-            
-            # Get trigger keywords
-            lora_keyword = char.get("lora_keyword", "").strip()
-            if lora_keyword:
-                parts.append(lora_keyword)
             
             if parts:
                 lora_suffix = ", " + " ".join(parts)
@@ -2537,17 +2751,17 @@ def _eh_delete_all_but_this_image(pre_txt: str, loaded_nid: str, loaded_proj: st
     data = pre_txt if isinstance(pre_txt, dict) else {}
     
     if not _check_ownership(data, loaded_nid, loaded_proj):
-        yield (_dumps(data), gr.update(), selected_path)
+        yield (data, gr.update(), selected_path)
         return
     
-    yield (_dumps(data), gr.update(value=None), "")
+    yield (data, gr.update(value=None), "")
     time.sleep(0.3)
     
     node, kind, _, seq_id = _resolve_node_context(data, loaded_nid)
     if kind != "kf" or not selected_path:
         kf_files = _get_kf_gallery_images(data, loaded_nid)
         choices = [(Path(p).name, p) for p in kf_files]
-        yield (_dumps(data), gr.update(choices=choices, value=selected_path), selected_path)
+        yield (data, gr.update(choices=choices, value=selected_path), selected_path)
         return
         
     kf_dir = _get_kf_dir(data, seq_id, node["id"])
@@ -2566,7 +2780,7 @@ def _eh_delete_all_but_this_image(pre_txt: str, loaded_nid: str, loaded_proj: st
     
     dd_update, img_update = _dropdown_update_for_kf(data, loaded_nid, new_selection)
     sel_out = img_update.get("value") if isinstance(img_update, dict) else None
-    yield (_dumps(data), dd_update, sel_out or "")
+    yield (data, dd_update, sel_out or "")
 
 def _eh_delete_all_but_this_video(project_dict: dict, loaded_nid: str, loaded_proj: str, selected_path: str):
     data = project_dict if isinstance(project_dict, dict) else {}
@@ -2774,15 +2988,27 @@ def _eh_node_selected(project_dict: dict, raw_value, cur_sel: str):
     if kind == "vid":
         v = node
         
-        # Find start/end labels
         def _label(kfid):
             if not kfid: return "Open", None
             k = seq["keyframes"].get(kfid, {})
             return Path(k.get("pose", "")).stem or "No pose", k.get("selected_image_path")
 
+        def _vid_frame_label(side: str, kf_id, supported: bool) -> str:
+            if not kf_id:
+                return "Open"
+            if not supported:
+                return f"{side} (not supported by workflow)"
+            return f"{side} Image"
+
+        wf_scan = scan_video_workflow_file(video_workflow_name_from_project(data))
+        supports_start, supports_end = video_frame_input_support_from_scan(wf_scan)
+
         _, s_path = _label(v.get("start_keyframe_id"))
         _, e_path = _label(v.get("end_keyframe_id"))
-        
+        if not supports_start:
+            s_path = None
+        if not supports_end:
+            e_path = None
 
         val = v.get("duration_override_sec")
         default_dur = int(float(data["project"]["inbetween_generation"].get("duration_default_sec", 3.0)))
@@ -2790,7 +3016,14 @@ def _eh_node_selected(project_dict: dict, raw_value, cur_sel: str):
         radio_value, label_text, reset_label = _get_vid_dur_ui_vals(val, default_dur)
 
         vid_vals = [
-            gr.update(value=s_path), gr.update(value=e_path), 
+            gr.update(
+                value=s_path,
+                label=_vid_frame_label("Start", v.get("start_keyframe_id"), supports_start),
+            ),
+            gr.update(
+                value=e_path,
+                label=_vid_frame_label("End", v.get("end_keyframe_id"), supports_end),
+            ),
             gr.update(value=radio_value, label=label_text),
             gr.update(value=v.get("inbetween_prompt", "")), gr.update(value=v.get("negative_prompt", "")),
             gr.update(value=reset_label)
@@ -2801,7 +3034,7 @@ def _eh_node_selected(project_dict: dict, raw_value, cur_sel: str):
         if sel_vid and sel_vid not in vid_files: vid_files.insert(0, sel_vid)
         
         vid_gal_upd = gr.update(choices=[(Path(p).name, p) for p in vid_files], value=sel_vid)
-        vid_play_upd = gr.update(value=sel_vid)
+        vid_play_upd = gr.update(value=sel_vid, autoplay=False)
         
         suffix_list = list(base_return_suffix)
         suffix_list[3] = vid_gal_upd
@@ -3048,7 +3281,7 @@ def _eh_conditional_video_refresh(project_dict: dict, loaded_nid: str, result_tu
     if not val_norm:
         val_norm = result_path
     
-    return data, gr.update(choices=choices_for_ui, value=val_norm), gr.update(value=val_norm)
+    return data, gr.update(choices=choices_for_ui, value=val_norm), gr.update(value=val_norm, autoplay=True)
 
 def _eh_run_and_curate_video(project_dict: dict, nid: str, count: int, seed_input: str, path_at_start: str, current_selection: str):
     """
@@ -3202,8 +3435,671 @@ def _update_project_field(project_dict, path, value):
     return data
 
 
-def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_path: gr.State, generation_result_buffer: gr.State, features: Dict = {}):
-    
+def _parse_settings_features(settings_raw: Any, fallback: Dict | None = None) -> Dict:
+    features: Dict = dict(fallback or {})
+    if isinstance(settings_raw, dict):
+        features = {**features, **(settings_raw.get("features") or {})}
+    elif isinstance(settings_raw, str) and settings_raw.strip():
+        try:
+            features = {**features, **(json.loads(settings_raw).get("features") or {})}
+        except Exception:
+            pass
+    return features
+
+
+def _eh_refresh_workflow_capabilities(
+    workflow_name: str,
+    project_dict: Any,
+    settings_raw: Any = None,
+    ui_features: Dict | None = None,
+):
+    if isinstance(project_dict, str):
+        try:
+            data = _ensure_project(json.loads(project_dict))
+        except Exception:
+            data = _ensure_project({})
+    elif isinstance(project_dict, dict):
+        data = _ensure_project(project_dict)
+    else:
+        data = _ensure_project({})
+
+    features = _parse_settings_features(settings_raw, ui_features)
+
+    caps = scan_workflow_file(workflow_name)
+    log_capabilities(caps, workflow_name or "")
+    has_workflow = bool((workflow_name or "").strip())
+    show = has_workflow and show_capabilities_panel(data, features)
+    return (
+        caps.to_dict(),
+        gr.update(value=format_capabilities_markdown(caps), visible=show),
+        gr.update(visible=show, open=show),
+    )
+
+
+def _eh_refresh_video_workflow_capabilities(
+    project_dict: Any = None,
+    settings_raw: Any = None,
+    ui_features: Dict | None = None,
+):
+    if isinstance(project_dict, dict):
+        data = _ensure_project(project_dict)
+    else:
+        data = _ensure_project({})
+
+    features = _parse_settings_features(settings_raw, ui_features)
+    workflow_name = video_workflow_name_from_project(data)
+    scan = scan_video_workflow_file(workflow_name)
+    log_video_capabilities(scan, workflow_name or "")
+    has_workflow = bool((workflow_name or "").strip())
+    show = has_workflow and show_capabilities_panel(data, features)
+    return (
+        scan.to_dict(),
+        gr.update(value=format_video_capabilities_markdown(scan), visible=show),
+        gr.update(visible=show, open=show),
+    )
+
+
+def _eh_generations_seed_visibility(
+    workflow_name: str,
+    project_dict: Any = None,
+    settings_raw: Any = None,
+    ui_features: Dict | None = None,
+):
+    """Refresh Generations seed fields from keyframe + project video workflow scans."""
+    if isinstance(project_dict, dict):
+        data = _ensure_project(project_dict)
+    else:
+        data = _ensure_project({})
+
+    features = _parse_settings_features(settings_raw, ui_features)
+    kf_caps = scan_workflow_file(workflow_name)
+    vid_scan = scan_video_workflow_file(video_workflow_name_from_project(data))
+    return (
+        gr.update(visible=generations_seed_visible(kf_caps, features)),
+        gr.update(visible=generations_seed_visible(kf_caps, features, video=True, video_scan=vid_scan)),
+    )
+
+
+def _eh_keyframe_field_visibility(
+    workflow_name: str,
+    project_dict: Any = None,
+    settings_raw: Any = None,
+    ui_features: Dict | None = None,
+):
+    """Apply capability-driven visibility to keyframe Properties and Generations fields."""
+    features = _parse_settings_features(settings_raw, ui_features)
+    caps = scan_workflow_file(workflow_name)
+    default_family = is_default_image_family(project_dict)
+    custom_family = is_custom_image_family(project_dict)
+    vis = keyframe_editor_visibility(
+        caps,
+        default_image_family=default_family,
+        custom_image_family=custom_family,
+    )
+    vid_scan = scan_video_workflow_file(video_workflow_name_from_project(project_dict))
+    show_kf_seed = generations_seed_visible(caps, features)
+    show_vid_seed = generations_seed_visible(caps, features, video=True, video_scan=vid_scan)
+    return (
+        gr.update(visible=vis.show_pose_group),
+        gr.update(visible=vis.show_pose_cn_controls),
+        gr.update(visible=vis.show_char_left),
+        gr.update(visible=vis.show_char_right),
+        gr.update(visible=vis.show_reference_slots_group),
+        gr.update(visible=vis.show_prompt),
+        gr.update(visible=vis.show_inject_lora),
+        gr.update(visible=vis.show_neg_left),
+        gr.update(visible=vis.show_neg_right),
+        gr.update(visible=vis.show_neg_heal),
+        gr.update(visible=show_kf_seed),
+        gr.update(visible=show_vid_seed),
+    )
+
+
+KF_REF_SLOT_UI_COUNT = 4
+KF_REF_SEMANTIC_UNSET = "—"
+KF_REF_GALLERY_EMPTY_MSG = "_Generate reference images in the **Assets** tab._"
+
+# Match Assets → Poses tab Pose Library gallery (auto-fill grid, no column overlap).
+_ASSETS_POSE_GALLERY_HEIGHT = 200
+_ASSETS_ASSET_REF_GALLERY_HEIGHT = 160
+_KF_REF_SLOT_GALLERY_HEIGHT = _ASSETS_POSE_GALLERY_HEIGHT  # same thumbnail proportions as pose library; 2×2 saves height vs 4 stacked rows
+_ASSETS_POSE_GALLERY_CSS = """
+<style>
+  #kf_pose_gallery .grid-container,
+  #kf_ref_slot_gallery_0 .grid-container,
+  #kf_ref_slot_gallery_1 .grid-container,
+  #kf_ref_slot_gallery_2 .grid-container,
+  #kf_ref_slot_gallery_3 .grid-container,
+  #seq_setting_ref_gallery .grid-container,
+  #seq_style_ref_gallery .grid-container {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+  #kf_ref_slots_group .form {
+    gap: 0.5rem;
+  }
+</style>
+"""
+
+
+def _reference_slot_semantic_choices(project_dict: dict) -> list[str]:
+    proj = (project_dict.get("project") or {})
+    chars = proj.get("characters") or []
+    char_names = sorted(
+        [str(c.get("name")) for c in chars if isinstance(c, dict) and c.get("name")],
+        key=lambda s: s.lower(),
+    )
+    settings = proj.get("settings") or []
+    setting_names = sorted(
+        [str(s.get("name")) for s in settings if isinstance(s, dict) and s.get("name")],
+        key=lambda s: s.lower(),
+    )
+    styles = proj.get("styles") or []
+    style_names = sorted(
+        [str(s.get("name")) for s in styles if isinstance(s, dict) and s.get("name")],
+        key=lambda s: s.lower(),
+    )
+    return [KF_REF_SEMANTIC_UNSET, "Poses", *char_names, *setting_names, *style_names]
+
+
+def _character_id_for_name(project_dict: dict, name: str) -> str:
+    target = str(name or "").strip().lower()
+    for ch in (project_dict.get("project") or {}).get("characters") or []:
+        if isinstance(ch, dict) and str(ch.get("name", "")).strip().lower() == target:
+            return str(ch.get("id") or "")
+    return ""
+
+
+def _setting_id_for_name(project_dict: dict, name: str) -> str:
+    target = str(name or "").strip().lower()
+    for item in (project_dict.get("project") or {}).get("settings") or []:
+        if isinstance(item, dict) and str(item.get("name", "")).strip().lower() == target:
+            return str(item.get("id") or "")
+    return ""
+
+
+def _style_id_for_name(project_dict: dict, name: str) -> str:
+    target = str(name or "").strip().lower()
+    for item in (project_dict.get("project") or {}).get("styles") or []:
+        if isinstance(item, dict) and str(item.get("name", "")).strip().lower() == target:
+            return str(item.get("id") or "")
+    return ""
+
+
+def _semantic_display_from_binding(
+    binding: dict[str, Any],
+    project_dict: dict,
+    sequence: dict[str, Any] | None,
+) -> str:
+    sem = wc._binding_semantic(binding)
+    if sem == "pose":
+        return "Poses"
+    if sem == "character":
+        cid = str(binding.get("character_id") or "")
+        for ch in (project_dict.get("project") or {}).get("characters") or []:
+            if isinstance(ch, dict) and (ch.get("id") == cid or str(ch.get("name", "")).strip().lower() == cid.lower()):
+                return str(ch.get("name") or cid)
+        return KF_REF_SEMANTIC_UNSET
+    if sem == "location":
+        sid = wc.effective_setting_id_for_binding(binding, sequence)
+        if sid:
+            return wc._setting_display_name_for_id(project_dict.get("project") or {}, sid)
+        return KF_REF_SEMANTIC_UNSET
+    if sem == "style":
+        style_id = wc.effective_style_id_for_binding(binding, sequence)
+        if style_id:
+            return wc._style_display_name_for_id(project_dict.get("project") or {}, style_id)
+        return KF_REF_SEMANTIC_UNSET
+    return KF_REF_SEMANTIC_UNSET
+
+
+def _dropdown_value_in_choices(display: str, choices: list[str]) -> str:
+    if display in choices:
+        return display
+    return KF_REF_SEMANTIC_UNSET
+
+
+def _binding_from_semantic_choice(
+    choice: str,
+    project_dict: dict,
+    sequence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    val = str(choice or KF_REF_SEMANTIC_UNSET).strip()
+    if val == KF_REF_SEMANTIC_UNSET:
+        return {"semantic": "unset"}
+    if val == "Poses":
+        return {"semantic": "pose"}
+    cid = _character_id_for_name(project_dict, val)
+    if cid:
+        return {"semantic": "character", "character_id": cid}
+    sid = _setting_id_for_name(project_dict, val)
+    if sid:
+        seq_sid = str((sequence or {}).get("setting_id") or (sequence or {}).get("setting_asset") or "").strip()
+        if sid == seq_sid:
+            return {"semantic": "location", "source": "sequence"}
+        return {"semantic": "location", "setting_id": sid}
+    style_id = _style_id_for_name(project_dict, val)
+    if style_id:
+        seq_style = str((sequence or {}).get("style_id") or "").strip()
+        if style_id == seq_style:
+            return {"semantic": "style", "source": "sequence"}
+        return {"semantic": "style", "style_id": style_id}
+    return {"semantic": "unset"}
+
+
+def _reference_slot_gallery_dir(
+    project_dict: dict,
+    binding: dict[str, Any],
+    sequence: dict[str, Any] | None,
+) -> str:
+    sem = wc._binding_semantic(binding)
+    if sem == "pose":
+        poses_dir = get_project_poses_dir(project_dict)
+        return str(poses_dir) if poses_dir else ""
+    if sem == "character":
+        cid = str(binding.get("character_id") or "").strip()
+        asset_dir = _asset_item_dir(project_dict, "characters", cid) if cid else None
+        return str(asset_dir) if asset_dir else ""
+    if sem == "location":
+        sid = wc.effective_setting_id_for_binding(binding, sequence)
+        asset_dir = _asset_item_dir(project_dict, "settings", sid) if sid else None
+        return str(asset_dir) if asset_dir else ""
+    if sem == "style":
+        style_id = wc.effective_style_id_for_binding(binding, sequence)
+        asset_dir = _asset_item_dir(project_dict, "styles", style_id) if style_id else None
+        return str(asset_dir) if asset_dir else ""
+    return ""
+
+
+def _reference_slot_gallery_updates(
+    binding: dict[str, Any],
+    resolved_path: str,
+    project_dict: dict,
+    sequence: dict[str, Any] | None,
+) -> tuple[Any, Any]:
+    """Gallery + empty-hint updates for one reference slot row."""
+    sem = wc._binding_semantic(binding)
+    if sem == "unset":
+        return gr.update(visible=False), gr.update(visible=False, value=[])
+    gallery_dir = _reference_slot_gallery_dir(project_dict, binding, sequence)
+    highlight = wc._pinned_reference_path(binding) or resolved_path
+    if gallery_dir and os.path.isdir(gallery_dir):
+        gal = gallery_gr_update(gallery_dir, highlight)
+        gal["visible"] = True
+        return gr.update(visible=False), gal
+    return (
+        gr.update(visible=True, value=KF_REF_GALLERY_EMPTY_MSG),
+        gr.update(visible=False, value=[]),
+    )
+
+
+def _hidden_ref_slot_dropdown_update(project_dict: dict | None = None) -> dict:
+    """Reset semantic dropdowns when slots are hidden (keep full choices so Gradio never rejects stale values)."""
+    choices = (
+        _reference_slot_semantic_choices(project_dict)
+        if isinstance(project_dict, dict)
+        else [KF_REF_SEMANTIC_UNSET]
+    )
+    return gr.update(choices=choices, value=KF_REF_SEMANTIC_UNSET, visible=False)
+
+
+def _eh_refresh_reference_slot_ui(workflow_name: str, preview: Any, selected_node: str | None):
+    """Populate Custom-family reference slot rows from workflow scan + keyframe bindings."""
+    hide_row = gr.update(visible=False)
+    hide_gal = gr.update(visible=False, value=[])
+    hide_empty = gr.update(visible=False)
+    hide_group = gr.update(visible=False)
+    hide_pose = gr.update(visible=False)
+
+    if isinstance(preview, str) and preview.strip():
+        try:
+            data = _ensure_project(json.loads(preview))
+        except Exception:
+            data = _ensure_project({})
+    elif isinstance(preview, dict):
+        data = _ensure_project(preview)
+    else:
+        data = _ensure_project({})
+
+    hide_dd = _hidden_ref_slot_dropdown_update(data)
+    row_updates = [hide_row] * KF_REF_SLOT_UI_COUNT
+    dd_updates = [hide_dd] * KF_REF_SLOT_UI_COUNT
+    empty_updates = [hide_empty] * KF_REF_SLOT_UI_COUNT
+    gallery_updates = [hide_gal] * KF_REF_SLOT_UI_COUNT
+
+    if not selected_node or not is_custom_image_family(data):
+        return (hide_group, *row_updates, *dd_updates, *empty_updates, *gallery_updates, hide_pose)
+
+    node, kind, seq, _ = _resolve_node_context(data, selected_node)
+    if kind != "kf":
+        return (hide_group, *row_updates, *dd_updates, *empty_updates, *gallery_updates, hide_pose)
+
+    caps = scan_workflow_file(workflow_name) if workflow_name else None
+    if not caps or not caps.image_reference_slots:
+        return (hide_group, *row_updates, *dd_updates, *empty_updates, *gallery_updates, hide_pose)
+
+    slots = caps.image_reference_slots[:KF_REF_SLOT_UI_COUNT]
+    proj = data.get("project") or {}
+    choices = _reference_slot_semantic_choices(data)
+    bindings = wc.normalize_reference_bindings(node, slots, proj, seq)
+    paths = wc.resolve_reference_paths_from_bindings(node, slots, proj, seq)
+
+    for i, slot in enumerate(slots):
+        bk = wc.binding_key_for_slot(slot)
+        binding = bindings.get(bk) or {}
+        sem_display = _semantic_display_from_binding(binding, data, seq)
+        path = paths.get(bk, wc.path_for_image_slot(slot, paths))
+        row_updates[i] = gr.update(visible=True)
+        dd_updates[i] = gr.update(
+            choices=choices,
+            value=_dropdown_value_in_choices(sem_display, choices),
+            visible=True,
+            label=f"Slot {i + 1}",
+            interactive=True,
+        )
+        empty_up, gal_up = _reference_slot_gallery_updates(binding, path, data, seq)
+        empty_updates[i] = empty_up
+        gallery_updates[i] = gal_up
+
+    return (
+        gr.update(visible=True),
+        *row_updates,
+        *dd_updates,
+        *empty_updates,
+        *gallery_updates,
+        hide_pose,
+    )
+
+
+def _ref_slot_semantic_choice_changed(
+    prev: str | None,
+    choice: str,
+    display_from_binding: str,
+) -> bool:
+    """True when the user picked a new semantic (not a programmatic refresh re-fire)."""
+    return not (
+        choice == prev
+        or (prev is None and choice == display_from_binding)
+    )
+
+
+def _eh_ref_slot_suppress_writes_on() -> bool:
+    return True
+
+
+def _eh_ref_slot_suppress_writes_off() -> bool:
+    return False
+
+
+def _eh_seed_reference_slot_last_choices(
+    project_dict: dict,
+    selected_node: str | None,
+    workflow_name: str,
+) -> dict:
+    """Persist missing reference_slot_last_choice from bindings on keyframe load."""
+    data = _ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({})
+    data = copy.deepcopy(data)
+    if not selected_node:
+        return data
+    kf, kind, seq, _ = _resolve_node_context(data, selected_node)
+    if kind != "kf":
+        return data
+
+    caps = scan_workflow_file(workflow_name) if workflow_name else None
+    if not caps or not caps.image_reference_slots:
+        return data
+
+    slots = caps.image_reference_slots[:KF_REF_SLOT_UI_COUNT]
+    bindings = kf.get("reference_bindings") or {}
+    last_choices: dict[str, str] = dict(kf.get("reference_slot_last_choice") or {})
+    changed = False
+    for slot in slots:
+        bk = wc.binding_key_for_slot(slot)
+        if bk in last_choices:
+            continue
+        binding = bindings.get(bk)
+        if not isinstance(binding, dict) or wc._binding_semantic(binding) == "unset":
+            continue
+        display = _semantic_display_from_binding(binding, data, seq)
+        if display != KF_REF_SEMANTIC_UNSET:
+            last_choices[bk] = display
+            changed = True
+    if changed:
+        kf["reference_slot_last_choice"] = last_choices
+    return data
+
+
+def _eh_reference_slot_semantic_change_one(
+    project_dict: dict,
+    loaded_nid: str,
+    loaded_proj: str,
+    workflow_name: str,
+    slot_index: int,
+    choice: str,
+) -> dict:
+    """Apply one reference-slot semantic dropdown change."""
+    data = _ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({})
+    data = copy.deepcopy(data)
+    if not _check_ownership(data, loaded_nid, loaded_proj):
+        return data
+    kf, kind, seq, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "kf":
+        return data
+
+    caps = scan_workflow_file(workflow_name) if workflow_name else None
+    if not caps or not caps.image_reference_slots:
+        return data
+
+    slots = caps.image_reference_slots[:KF_REF_SLOT_UI_COUNT]
+    if slot_index < 0 or slot_index >= len(slots):
+        return data
+
+    slot = slots[slot_index]
+    bk = wc.binding_key_for_slot(slot)
+    bindings: dict[str, dict[str, Any]] = {
+        str(k): dict(v) for k, v in (kf.get("reference_bindings") or {}).items() if isinstance(v, dict)
+    }
+    last_choices: dict[str, str] = dict(kf.get("reference_slot_last_choice") or {})
+    prev = last_choices.get(bk)
+    old_binding = bindings.get(bk) or {}
+    choice = str(choice or KF_REF_SEMANTIC_UNSET).strip() or KF_REF_SEMANTIC_UNSET
+    new_binding = _binding_from_semantic_choice(choice, data, seq)
+    merged = wc.merge_binding_on_semantic_choice(old_binding, new_binding, prev, choice)
+    display = _semantic_display_from_binding(old_binding, data, seq)
+    choice_changed = _ref_slot_semantic_choice_changed(prev, choice, display)
+    bindings[bk] = wc.ensure_binding_default_reference_image(
+        merged,
+        data.get("project") or {},
+        seq,
+        pose_path=str(kf.get("pose") or ""),
+        choice_changed=choice_changed,
+    )
+    last_choices[bk] = choice
+    kf["reference_slot_last_choice"] = last_choices
+    wc.enforce_one_pose_binding(bindings)
+    wc.sync_reference_bindings_to_legacy(kf, bindings, slots)
+    return data
+
+
+def _eh_kf_workflow_remap_reference_bindings(
+    project_dict: dict,
+    loaded_nid: str,
+    loaded_proj: str,
+    workflow_name: str,
+):
+    """On workflow change, remap reference_bindings by slot index so pins survive key renames."""
+    data = _ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({})
+    data = copy.deepcopy(data)
+    if not _check_ownership(data, loaded_nid, loaded_proj):
+        return data
+    kf, kind, seq, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "kf":
+        return data
+
+    caps = scan_workflow_file(workflow_name) if workflow_name else None
+    if not caps or not caps.image_reference_slots:
+        return data
+
+    slots = caps.image_reference_slots[:KF_REF_SLOT_UI_COUNT]
+    bindings = wc.normalize_reference_bindings(kf, slots, data.get("project") or {}, seq)
+    kf["reference_bindings"] = bindings
+    wc.sync_reference_bindings_to_legacy(kf, bindings, slots)
+    kf["reference_slot_last_choice"] = wc.remap_reference_slot_last_choice(
+        kf.get("reference_slot_last_choice") or {}, slots
+    )
+    return data
+
+
+def _eh_reference_slot_gallery_select(
+    project_dict: dict,
+    loaded_nid: str,
+    loaded_proj: str,
+    workflow_name: str,
+    slot_index: int,
+    evt: gr.SelectData,
+):
+    data = copy.deepcopy(_ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({}))
+    if not _check_ownership(data, loaded_nid, loaded_proj):
+        return data
+    if evt is None or evt.index is None:
+        return data
+    kf, kind, seq, _ = _resolve_node_context(data, loaded_nid)
+    if kind != "kf":
+        return data
+
+    caps = scan_workflow_file(workflow_name) if workflow_name else None
+    if not caps or not caps.image_reference_slots:
+        return data
+
+    slots = caps.image_reference_slots[:KF_REF_SLOT_UI_COUNT]
+    if slot_index < 0 or slot_index >= len(slots):
+        return data
+
+    slot = slots[slot_index]
+    bk = wc.binding_key_for_slot(slot)
+    bindings: dict[str, dict[str, Any]] = {
+        str(k): dict(v) for k, v in (kf.get("reference_bindings") or {}).items() if isinstance(v, dict)
+    }
+    binding = bindings.get(bk) or {"semantic": "unset"}
+    gallery_dir = _reference_slot_gallery_dir(data, binding, seq)
+    if not gallery_dir:
+        return data
+    items = get_pose_gallery_list(gallery_dir)
+    if not (0 <= evt.index < len(items)):
+        return data
+    path = str(items[evt.index][0])
+    binding = dict(binding)
+    binding["reference_image"] = path
+    bindings[bk] = binding
+    last_choices: dict[str, str] = dict(kf.get("reference_slot_last_choice") or {})
+    last_choices[bk] = _semantic_display_from_binding(binding, data, seq)
+    kf["reference_slot_last_choice"] = last_choices
+    wc.sync_reference_bindings_to_legacy(kf, bindings, slots)
+    return data
+
+
+KF_REF_PREVIEW_MAX_SLOTS = 4
+
+
+def _hidden_kf_ref_preview_slot():
+    return gr.update(value=None, visible=False, label="")
+
+
+def _hidden_kf_reference_prelude():
+    return gr.update(value="", visible=False)
+
+
+def _eh_kf_prompt_reference_preview(workflow_name: str, preview: Any, selected_node: str | None):
+    """Per-slot reference thumbnails, prelude preview, and Prompt field info."""
+    hidden_slots = tuple(
+        _hidden_kf_ref_preview_slot() for _ in range(KF_REF_PREVIEW_MAX_SLOTS)
+    )
+    hide_group = gr.update(visible=False)
+    hide_prelude = _hidden_kf_reference_prelude()
+    empty_prompt_info = gr.update(info="")
+
+    if isinstance(preview, str) and preview.strip():
+        try:
+            data = _ensure_project(json.loads(preview))
+        except Exception:
+            data = _ensure_project({})
+    elif isinstance(preview, dict):
+        data = _ensure_project(preview)
+    else:
+        data = _ensure_project({})
+
+    if not selected_node:
+        return (
+            *hidden_slots,
+            hide_group,
+            hide_prelude,
+            gr.update(info="Select a keyframe to see active image references."),
+        )
+
+    node, kind, seq, _ = _resolve_node_context(data, selected_node)
+    if kind != "kf":
+        return (*hidden_slots, hide_group, hide_prelude, empty_prompt_info)
+
+    proj = data.get("project") or {}
+    caps = scan_workflow_file(workflow_name) if workflow_name else None
+    if caps and not workflow_supports_image_references(caps):
+        return (*hidden_slots, hide_group, hide_prelude, empty_prompt_info)
+
+    slots = compose_reference_present_slots(proj, seq or {}, node or {}, workflow_name, caps=caps)
+    if not slots:
+        hint = compose_reference_present_hint(proj, seq or {}, node or {}, workflow_name, caps=caps)
+        return (
+            *hidden_slots,
+            hide_group,
+            hide_prelude,
+            gr.update(info=hint) if hint else empty_prompt_info,
+        )
+
+    prelude_text = compose_keyframe_reference_prelude_text(
+        proj, seq or {}, node or {}, workflow_name, caps=caps
+    )
+    slot_updates: list[Any] = []
+    for i in range(KF_REF_PREVIEW_MAX_SLOTS):
+        if i < len(slots):
+            slot_updates.append(
+                gr.update(
+                    value=slots[i].path,
+                    visible=True,
+                    label=slots[i].caption,
+                )
+            )
+        else:
+            slot_updates.append(_hidden_kf_ref_preview_slot())
+
+    return (
+        *slot_updates,
+        gr.update(visible=True),
+        gr.update(value=prelude_text, visible=bool(prelude_text)),
+        empty_prompt_info,
+    )
+
+
+_eh_kf_prompt_hint = _eh_kf_prompt_reference_preview
+
+
+def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_path: gr.State, generation_result_buffer: gr.State, features: Dict = {}, comfyui_status_md: gr.Markdown = None, comfyui_api_base: gr.State = None):
+    ui_features = features or {}
+
+    def _refresh_wf_caps(workflow_name, project_dict, settings_raw):
+        return _eh_refresh_workflow_capabilities(
+            workflow_name, project_dict, settings_raw, ui_features
+        )
+
+    def _refresh_kf_field_visibility(workflow_name, project_dict, settings_raw):
+        return _eh_keyframe_field_visibility(
+            workflow_name, project_dict, settings_raw, ui_features
+        )
+
+    def _refresh_video_wf_caps(project_dict, settings_raw):
+        return _eh_refresh_video_workflow_capabilities(project_dict, settings_raw, ui_features)
+
+    def _refresh_generations_seed_visibility(workflow_name, project_dict, settings_raw):
+        return _eh_generations_seed_visibility(workflow_name, project_dict, settings_raw, ui_features)
+
     try: data0 = _ensure_project(_loads(preview.value or ""))
     except Exception: data0 = _ensure_project({})
     initial_rows = _rows_with_times(data0)
@@ -3272,15 +4168,44 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                     # Seq Middle Column
                     with gr.Column(scale=1): 
                         with gr.Accordion("Properties", open=True, elem_classes=["themed-accordion", "seq-theme"]) as seq_props:
+                            gr.HTML(_ASSETS_POSE_GALLERY_CSS)
                             with gr.Row():
                                 seq_open_start = gr.Checkbox(False, label="Open start")
                                 seq_open_end   = gr.Checkbox(True,  label="Open end")
                                 with gr.Row():
                                     seq_flip_btn = gr.Button("↔ Flip Orientation", variant="secondary", size="sm")
                             seq_setting_dd = gr.Dropdown(label="Location", choices=[("", "")], info="Define these in the Assets tab", value="", interactive=True, allow_custom_value=False, filterable=False)
+                            seq_setting_gallery_empty = gr.Markdown(KF_REF_GALLERY_EMPTY_MSG, visible=False)
+                            seq_setting_ref_gallery = gr.Gallery(
+                                label="Location reference",
+                                elem_id="seq_setting_ref_gallery",
+                                height=_ASSETS_ASSET_REF_GALLERY_HEIGHT,
+                                object_fit="contain",
+                                allow_preview=False,
+                                interactive=True,
+                                visible=False,
+                                show_download_button=False,
+                            )
                             seq_setting_md = gr.Textbox(label="Location modifier prompt", info="Additional modifiers apply only to this sequence, ie. Day/Night", lines=1, interactive=True, scale=3)
-                            seq_lora = gr.Dropdown(label="Inject LoRA", info="Injects into Style prompt, but can be copied into any prompt", choices=[], interactive=True, scale=1)
+                            seq_lora = gr.Dropdown(
+                                label="Inject LoRA",
+                                info="Pick a LoRA to add a tag to the style prompt (clears after each pick)",
+                                choices=[],
+                                value=None,
+                                interactive=True,
+                            )
                             seq_style_dd = gr.Dropdown(label="Style",  info="Define these in the Assets tab", choices=[("", "")], value="", interactive=True, allow_custom_value=False, filterable=False)
+                            seq_style_gallery_empty = gr.Markdown(KF_REF_GALLERY_EMPTY_MSG, visible=False)
+                            seq_style_ref_gallery = gr.Gallery(
+                                label="Style reference",
+                                elem_id="seq_style_ref_gallery",
+                                height=_ASSETS_ASSET_REF_GALLERY_HEIGHT,
+                                object_fit="contain",
+                                allow_preview=False,
+                                interactive=True,
+                                visible=False,
+                                show_download_button=False,
+                            )
                             seq_style_prompt_md = gr.Textbox(label="Style Prompt", info="Additional modifiers apply only to this sequence, ie. Camera style",  lines=1, interactive=True)
                             seq_action_prompt_md = gr.Textbox(label="Sequence In-between Positive Prompt", info="Applies individually to every in-between, use for consistency not narrative", lines=1, interactive=True)
                             # seq_len = gr.Markdown("Sequence length: 0 sec", visible=True)
@@ -3356,86 +4281,177 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                     with gr.Column(scale=1):
                         with gr.Accordion("Properties", open=True, elem_classes=["themed-accordion", "kf-theme"]) as kf_props:
 
-                            with gr.Column(variant="panel"):
-                                header = gr.Markdown("Pose")
+                            with gr.Group(visible=True) as kf_pose_group:
+                                with gr.Column(variant="panel"):
+                                    header = gr.Markdown("Pose")
 
-                                with gr.Row(equal_height=False):
-                                    kf_pose_preview = gr.Image(label="Current Pose", visible=True, interactive=False, show_label=True, height=120, scale=0, min_width=140, show_download_button=False)
-                                    kf_pose = gr.Textbox(label="Pose Path", visible=False, interactive=True)
-                                    with gr.Column(scale=1, min_width=120,elem_classes=["pose-buttons-col"]):
-                                        kf_clear_pose_btn = gr.Button("Clear Pose",  variant="secondary")
-                                        kf_generate_pose_btn = gr.Button("Auto Generate Pose",  variant="secondary")
-                                        kf_pose_upload_btn = gr.UploadButton(
-                                            "Upload Pose", 
-                                            file_types=["image"], 
-                                            file_count="single",
-                                            variant="secondary"
-                                        )
-                                with gr.Row():
-                                    kf_flip_horiz = gr.Checkbox(label="Flip Horizontal", value=False)                        
-                                    kf_copy_pose_prompt_btn = gr.Button("Get Pose Prompt", variant="secondary", visible=features.get("show_generation_info", False))
+                                    with gr.Row(equal_height=False):
+                                        kf_pose_preview = gr.Image(label="Current Pose", visible=True, interactive=False, show_label=True, height=120, scale=0, min_width=140, show_download_button=False)
+                                        kf_pose = gr.Textbox(label="Pose Path", visible=False, interactive=True)
+                                        with gr.Column(scale=1, min_width=120, elem_classes=["pose-buttons-col"]):
+                                            kf_clear_pose_btn = gr.Button("Clear Pose", variant="secondary")
+                                            kf_generate_pose_btn = gr.Button("Auto Generate Pose", variant="secondary")
+                                            kf_pose_upload_btn = gr.UploadButton(
+                                                "Upload Pose",
+                                                file_types=["image"],
+                                                file_count="single",
+                                                variant="secondary",
+                                            )
+                                    with gr.Row():
+                                        kf_flip_horiz = gr.Checkbox(label="Flip Horizontal", value=False)
+                                        kf_copy_pose_prompt_btn = gr.Button("Get Pose Prompt", variant="secondary", visible=features.get("show_generation_info", False))
 
-                                with gr.Row():
-
-                                    with gr.Accordion("Pose Library and Options", open=False, elem_classes=["themed-accordion", "kf-theme"]):
-
-                                        with gr.Column(variant="panel"):
-                                            subheader = gr.Markdown("<span style='font-size: 0.85em; font-style: italic; color: #999;'>Library manager is found in Assets</span>")
-
-                                            with gr.Row():
-                                                # kf_pose_gallery = gr.Gallery(label="Pose Library", height=200, columns=4, interactive=True, show_label=True, object_fit="contain", elem_id="kf_pose_gallery")
-                                                kf_pose_gallery = gr.Gallery(label="Pose Library", height=200, columns=4, interactive=True, show_label=True, object_fit="contain", elem_id="kf_pose_gallery", allow_preview=False)
-                                                
-                                            with gr.Row():
-                                                # kf_flip_horiz = gr.Checkbox(label="Flip Horizontal", value=False)
-                                                kf_flip_vert = gr.Checkbox(label="Flip Vertical", value=False)
-                                        # Pose Group
-                                        with gr.Column(variant="panel"):
-                                            with gr.Row():
-                                                with gr.Column():
+                                    with gr.Row():
+                                        with gr.Accordion(
+                                            "Pose Library and Options",
+                                            open=False,
+                                            elem_classes=["themed-accordion", "kf-theme"],
+                                        ) as kf_pose_library_accordion:
+                                            with gr.Column(variant="panel"):
+                                                subheader = gr.Markdown(
+                                                    "<span style='font-size: 0.85em; font-style: italic; color: #999;'>Library manager is found in Assets</span>"
+                                                )
+                                                with gr.Row():
+                                                    kf_pose_gallery = gr.Gallery(
+                                                        label="Pose Library",
+                                                        height=_ASSETS_POSE_GALLERY_HEIGHT,
+                                                        interactive=True,
+                                                        show_label=True,
+                                                        object_fit="contain",
+                                                        elem_id="kf_pose_gallery",
+                                                        allow_preview=False,
+                                                    )
+                                                with gr.Row():
+                                                    kf_flip_vert = gr.Checkbox(label="Flip Vertical", value=False)
+                                            with gr.Group(visible=True) as kf_cn_controls_group:
+                                                with gr.Column(variant="panel"):
                                                     with gr.Row():
-                                                        kf_cn_pose_enable = gr.Checkbox(label="Pose", value=(DEFAULT_KF_CN_SETTINGS["1"]["switch"] == "On"))
-                                                        kf_cn_pose_animal = gr.Checkbox(label="Animal", value=DEFAULT_KF_USE_ANIMAL_POSE)
-                                                    kf_cn_pose_strength = gr.Slider(label="Strength", value=DEFAULT_KF_CN_SETTINGS["1"]["strength"], minimum=0.0, maximum=1.0, step=0.01)
-                                                    kf_cn_pose_start = gr.Slider(label="Start %", value=DEFAULT_KF_CN_SETTINGS["1"]["start_percent"], minimum=0.0, maximum=1.0, step=0.01, visible=False)
-                                                    kf_cn_pose_end = gr.Slider(label="Scope", value=DEFAULT_KF_CN_SETTINGS["1"]["end_percent"], minimum=0.0, maximum=1.0, step=0.01)
-                                                with gr.Column(scale=0, min_width=150):
-                                                    kf_cn_pose_thumb = gr.Image(show_label=False, interactive=False, show_download_button=False, height=140, container=False)
-
-                                        # Shape Group
-                                        with gr.Column(variant="panel"):
-                                            with gr.Row():
-                                                with gr.Column():
-                                                    kf_cn_shape_enable = gr.Checkbox(label="Shape", value=(DEFAULT_KF_CN_SETTINGS["2"]["switch"] == "On"))
-                                                    kf_cn_shape_strength = gr.Slider(label="Strength", value=DEFAULT_KF_CN_SETTINGS["2"]["strength"], minimum=0.0, maximum=1.0, step=0.01)
-                                                    kf_cn_shape_start = gr.Slider(label="Start %", value=DEFAULT_KF_CN_SETTINGS["2"]["start_percent"], minimum=0.0, maximum=1.0, step=0.01, visible=False)
-                                                    kf_cn_shape_end = gr.Slider(label="Scope", value=DEFAULT_KF_CN_SETTINGS["2"]["end_percent"], minimum=0.0, maximum=1.0, step=0.01)
-                                                with gr.Column(scale=0, min_width=150):
-                                                    kf_cn_shape_thumb = gr.Image(show_label=False, interactive=False, show_download_button=False, height=140, container=False)
-
-                                        # Outline Group
-                                        with gr.Column(variant="panel"):
-                                            with gr.Row():
-                                                with gr.Column():
-                                                    kf_cn_outline_enable = gr.Checkbox(label="Outline", value=(DEFAULT_KF_CN_SETTINGS["3"]["switch"] == "On"))
-                                                    kf_cn_outline_strength = gr.Slider(label="Strength", value=DEFAULT_KF_CN_SETTINGS["3"]["strength"], minimum=0.0, maximum=1.0, step=0.01)
-                                                    kf_cn_outline_start = gr.Slider(label="Start %", value=DEFAULT_KF_CN_SETTINGS["3"]["start_percent"], minimum=0.0, maximum=1.0, step=0.01, visible=False)
-                                                    kf_cn_outline_end = gr.Slider(label="Scope", value=DEFAULT_KF_CN_SETTINGS["3"]["end_percent"], minimum=0.0, maximum=1.0, step=0.01)
-                                                with gr.Column(scale=0, min_width=150):
-                                                    kf_cn_outline_thumb = gr.Image(show_label=False, interactive=False, show_download_button=False, height=140, container=False)
-
+                                                        with gr.Column():
+                                                            with gr.Row():
+                                                                kf_cn_pose_enable = gr.Checkbox(label="Pose", value=(DEFAULT_KF_CN_SETTINGS["1"]["switch"] == "On"))
+                                                                kf_cn_pose_animal = gr.Checkbox(label="Animal", value=DEFAULT_KF_USE_ANIMAL_POSE)
+                                                            kf_cn_pose_strength = gr.Slider(label="Strength", value=DEFAULT_KF_CN_SETTINGS["1"]["strength"], minimum=0.0, maximum=1.0, step=0.01)
+                                                            kf_cn_pose_start = gr.Slider(label="Start %", value=DEFAULT_KF_CN_SETTINGS["1"]["start_percent"], minimum=0.0, maximum=1.0, step=0.01, visible=False)
+                                                            kf_cn_pose_end = gr.Slider(label="Scope", value=DEFAULT_KF_CN_SETTINGS["1"]["end_percent"], minimum=0.0, maximum=1.0, step=0.01)
+                                                        with gr.Column(scale=0, min_width=150):
+                                                            kf_cn_pose_thumb = gr.Image(show_label=False, interactive=False, show_download_button=False, height=140, container=False)
+                                                with gr.Column(variant="panel"):
+                                                    with gr.Row():
+                                                        with gr.Column():
+                                                            kf_cn_shape_enable = gr.Checkbox(label="Shape", value=(DEFAULT_KF_CN_SETTINGS["2"]["switch"] == "On"))
+                                                            kf_cn_shape_strength = gr.Slider(label="Strength", value=DEFAULT_KF_CN_SETTINGS["2"]["strength"], minimum=0.0, maximum=1.0, step=0.01)
+                                                            kf_cn_shape_start = gr.Slider(label="Start %", value=DEFAULT_KF_CN_SETTINGS["2"]["start_percent"], minimum=0.0, maximum=1.0, step=0.01, visible=False)
+                                                            kf_cn_shape_end = gr.Slider(label="Scope", value=DEFAULT_KF_CN_SETTINGS["2"]["end_percent"], minimum=0.0, maximum=1.0, step=0.01)
+                                                        with gr.Column(scale=0, min_width=150):
+                                                            kf_cn_shape_thumb = gr.Image(show_label=False, interactive=False, show_download_button=False, height=140, container=False)
+                                                with gr.Column(variant="panel"):
+                                                    with gr.Row():
+                                                        with gr.Column():
+                                                            kf_cn_outline_enable = gr.Checkbox(label="Outline", value=(DEFAULT_KF_CN_SETTINGS["3"]["switch"] == "On"))
+                                                            kf_cn_outline_strength = gr.Slider(label="Strength", value=DEFAULT_KF_CN_SETTINGS["3"]["strength"], minimum=0.0, maximum=1.0, step=0.01)
+                                                            kf_cn_outline_start = gr.Slider(label="Start %", value=DEFAULT_KF_CN_SETTINGS["3"]["start_percent"], minimum=0.0, maximum=1.0, step=0.01, visible=False)
+                                                            kf_cn_outline_end = gr.Slider(label="Scope", value=DEFAULT_KF_CN_SETTINGS["3"]["end_percent"], minimum=0.0, maximum=1.0, step=0.01)
+                                                        with gr.Column(scale=0, min_width=150):
+                                                            kf_cn_outline_thumb = gr.Image(show_label=False, interactive=False, show_download_button=False, height=140, container=False)
 
                             with gr.Row():
                                 kf_char_left = gr.Dropdown([("", "")], value="", label="Character (main/left)", info="Use this for most workflows", filterable=False, allow_custom_value=False)
-                                kf_char_right = gr.Dropdown([("", "")], value="", label="Character (secondary/right)", info="Only for 2CHAR poses/workflow", filterable=False, allow_custom_value=False)
-                            kf_prompt = gr.Textbox(label="Prompt")
+                                kf_char_right = gr.Dropdown([("", "")], value="", label="Character (secondary/right)", info="When the workflow has a second character reference slot (e.g. THM-CharacterReference-2) or 2CHAR prompts", filterable=False, allow_custom_value=False)
+                            with gr.Accordion(
+                                "Reference Images",
+                                open=False,
+                                visible=False,
+                                elem_id="kf_ref_slots_group",
+                                elem_classes=["themed-accordion", "kf-theme"],
+                            ) as kf_ref_slots_group:
+                                gr.HTML(_ASSETS_POSE_GALLERY_CSS)
+                                kf_ref_slot_rows: list[gr.Group] = []
+                                kf_ref_slot_semantic: list[gr.Dropdown] = []
+                                kf_ref_slot_gallery_empty: list[gr.Markdown] = []
+                                kf_ref_slot_gallery: list[gr.Gallery] = []
+
+                                def _build_ref_slot_cell(slot_idx: int) -> None:
+                                    with gr.Group(visible=False) as slot_row:
+                                        kf_ref_slot_semantic.append(
+                                            gr.Dropdown(
+                                                choices=[KF_REF_SEMANTIC_UNSET],
+                                                value=KF_REF_SEMANTIC_UNSET,
+                                                label="Semantic",
+                                                filterable=True,
+                                                allow_custom_value=True,
+                                            )
+                                        )
+                                        kf_ref_slot_gallery_empty.append(
+                                            gr.Markdown(KF_REF_GALLERY_EMPTY_MSG, visible=False)
+                                        )
+                                        kf_ref_slot_gallery.append(
+                                            gr.Gallery(
+                                                label="",
+                                                elem_id=f"kf_ref_slot_gallery_{slot_idx}",
+                                                height=_KF_REF_SLOT_GALLERY_HEIGHT,
+                                                object_fit="contain",
+                                                allow_preview=False,
+                                                interactive=True,
+                                                visible=False,
+                                                show_download_button=False,
+                                            )
+                                        )
+                                    kf_ref_slot_rows.append(slot_row)
+
+                                for _row_pair in ((0, 1), (2, 3)):
+                                    with gr.Row(equal_height=True):
+                                        for _slot_idx in _row_pair:
+                                            with gr.Column(scale=1, min_width=180):
+                                                _build_ref_slot_cell(_slot_idx)
+                            with gr.Group(visible=False) as kf_ref_preview_group:
+                                with gr.Row():
+                                    kf_ref_preview_images: list[gr.Image] = []
+                                    for _ in range(KF_REF_PREVIEW_MAX_SLOTS):
+                                        kf_ref_preview_images.append(
+                                            gr.Image(
+                                                label="",
+                                                visible=False,
+                                                interactive=False,
+                                                show_label=True,
+                                                height=120,
+                                                scale=0,
+                                                min_width=140,
+                                                show_download_button=False,
+                                            )
+                                        )
+                            kf_reference_prelude_tb = gr.Textbox(
+                                label="Reference prelude",
+                                info="Prepended at generation; reference image1, image2, … in your prompt below.",
+                                lines=3,
+                                max_lines=6,
+                                interactive=False,
+                                visible=False,
+                            )
+                            kf_prompt = gr.Textbox(
+                                label="Prompt",
+                                info="Select a keyframe to see active image references.",
+                            )
                             with gr.Accordion("Advanced", open=False, elem_classes=["themed-accordion", "kf-theme"]):
-                                kf_lora = gr.Dropdown(label="Inject LoRA", choices=[], interactive=True)
+                                kf_lora = gr.Dropdown(
+                                    label="Inject LoRA",
+                                    info="Pick a LoRA to add a tag to the prompt (clears after each pick)",
+                                    choices=[],
+                                    value=None,
+                                    interactive=True,
+                                )
                                 with gr.Row():
                                     kf_neg_left = gr.Textbox(label="Negative (left)")
                                     kf_neg_right = gr.Textbox(label="Negative (right)")
                                     kf_neg_heal = gr.Textbox(label="Negative (heal)")
                                 kf_workflow_json = gr.Dropdown(label="Workflow", choices=[""], value="", interactive=True, filterable=False, allow_custom_value=False)
+                                with gr.Accordion(
+                                    "Workflow capabilities",
+                                    open=bool(features.get("show_workflow_capabilities", False)),
+                                    visible=bool(features.get("show_workflow_capabilities", False)),
+                                    elem_classes=["themed-accordion", "kf-theme"],
+                                ) as kf_wf_caps_accordion:
+                                    kf_workflow_capabilities_md = gr.Markdown("_Select a workflow._")
+                                kf_workflow_capabilities = gr.State(None)
                                 kf_template = gr.Textbox(label="Template", visible=False) 
                                 kf_load_params_btn = gr.Button("Load Properties from Selected Image", variant="secondary")
 
@@ -3513,9 +4529,23 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                                     clear_vid_len_btn = gr.Button("Default (3 sec)") 
                             vid_prompt = gr.Textbox(label="In-between prompt", info="Applies only to this In-bewteen", lines=1, interactive=True)
                             with gr.Accordion("Advanced", open=False):
-                                vid_lora = gr.Dropdown(label="Add a LoRA", info="Wan2.2 two-part loras must be named _low_noise/_high_noise or be registered in scripts/lora_registry.py.  Pick either here.", choices=[], interactive=True)
+                                vid_lora = gr.Dropdown(
+                                    label="Add a LoRA",
+                                    info="Pick a LoRA to inject into the in-between prompt (clears after each pick). Wan2.2 dual loras: _low_noise/_high_noise or scripts/lora_registry.py.",
+                                    choices=[],
+                                    value=None,
+                                    interactive=True,
+                                )
                                 vid_neg = gr.Textbox(label="Negative prompt")
                                 vid_load_params_btn = gr.Button("Load Properties from Selected Video",  variant="secondary")
+                                with gr.Accordion(
+                                    "Workflow capabilities",
+                                    open=bool(features.get("show_workflow_capabilities", False)),
+                                    visible=bool(features.get("show_workflow_capabilities", False)),
+                                    elem_classes=["themed-accordion", "vid-theme"],
+                                ) as vid_wf_caps_accordion:
+                                    vid_workflow_capabilities_md = gr.Markdown("_Uses project default video workflow._")
+                                vid_workflow_capabilities = gr.State(None)
                         with gr.Accordion("Status", open=False, elem_classes=["themed-accordion", "vid-theme"]) as vid_batch_accordion:
                             vid_run_status = build_run_status_ui()
                     with gr.Column(scale=1):
@@ -3535,7 +4565,7 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                                 # proj_w = data0.get("project", {}).get("width", 1280)
                                 # proj_h = data0.get("project", {}).get("height", 720)
                                 # vid_player = gr.Video(show_label=False, interactive=False, autoplay=True, loop=True, show_share_button=False, width=proj_w, height=proj_h)
-                                vid_player = gr.Video(show_label=False, interactive=False, autoplay=True, loop=True, show_share_button=False, elem_classes=["constrained-video"])
+                                vid_player = gr.Video(show_label=False, interactive=False, autoplay=False, loop=True, show_share_button=False, elem_classes=["constrained-video"])
                                 # vid_player = gr.Video(show_label=False, interactive=False, autoplay=True, loop=True, show_share_button=False)
 
 
@@ -3556,6 +4586,7 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
             outline_sig = gr.State(value=_outline_signature(data0))
             kf_gallery_selection = gr.State(value=None) 
             dummy_rerun_trigger = gr.State(value="")
+            ref_slot_ui_suppressing_writes = gr.State(value=False)
 
             # Helper for constructing node_selector output list (order matters!)
             node_selector_outputs = [
@@ -3576,34 +4607,90 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 kf_pose_gallery
             ]
 
-            node_selector.change(
-                _eh_node_selected,
-                inputs=[preview, node_selector, selected_node],
-                outputs=node_selector_outputs,
-                show_progress="hidden", queue=True
-            )
-            
-            # Rehydrate / Refresh logic
-            gr.on(triggers=[], fn=_rehydrate_if_changed, inputs=[preview, selected_node, outline_sig], outputs=[node_selector, selected_node, proj_len, outline_sig], show_progress="hidden", queue=False)
-            # preview.change(_rehydrate_if_changed, inputs=[preview, selected_node, outline_sig], outputs=[node_selector, selected_node, proj_len, outline_sig], show_progress="hidden", queue=False)
-            
-            # Sequence Field Bindings
-            # seq_text_fields_inputs = [preview, loaded_node_id, seq_setting_md, seq_style_prompt_md, seq_action_prompt_md]
-            seq_text_fields_inputs = [preview, loaded_node_id, loaded_project_name, seq_setting_md, seq_style_prompt_md, seq_action_prompt_md]
-            for comp in [seq_setting_md, seq_style_prompt_md, seq_action_prompt_md]:
-                comp.change(_eh_seq_text_fields, seq_text_fields_inputs, [preview], show_progress="hidden", queue=True)
+            kf_visibility_outputs = [
+                kf_pose_group,
+                kf_cn_controls_group,
+                kf_char_left,
+                kf_char_right,
+                kf_ref_slots_group,
+                kf_prompt,
+                kf_lora,
+                kf_neg_left,
+                kf_neg_right,
+                kf_neg_heal,
+                kf_seed_input,
+                vid_seed_input,
+            ]
 
-            seq_setting_dd.change(fn=lambda t, n, p, v: _update_seq_field(t, n, p, "setting_id", v), inputs=[preview, loaded_node_id, loaded_project_name, seq_setting_dd], outputs=[preview], queue=True)            # LoRA Injectors
-            seq_lora.change(_eh_inject_lora, inputs=[preview, selected_node, seq_lora, seq_style_prompt_md], outputs=[preview, seq_style_prompt_md, seq_lora], show_progress="hidden", queue=False)
-            kf_lora.change(_eh_inject_lora, inputs=[preview, selected_node, kf_lora, kf_prompt], outputs=[preview, kf_prompt, kf_lora], show_progress="hidden", queue=False)
-            vid_lora.change(_eh_inject_lora, inputs=[preview, selected_node, vid_lora, vid_prompt], outputs=[preview, vid_prompt, vid_lora], show_progress="hidden", queue=False)
-            
-            # seq_style_dd.change(fn=lambda t, n, v: _update_seq_field(t, n, "style_id", v), inputs=[preview, selected_node, seq_style_dd], outputs=[preview], queue=False)
-            seq_style_dd.change(fn=lambda t, n, p, v: _update_seq_field(t, n, p, "style_id", v), inputs=[preview, loaded_node_id, loaded_project_name, seq_style_dd], outputs=[preview], queue=True)
+            kf_ref_slot_ui_outputs = [
+                kf_ref_slots_group,
+                *kf_ref_slot_rows,
+                *kf_ref_slot_semantic,
+                *kf_ref_slot_gallery_empty,
+                *kf_ref_slot_gallery,
+                kf_pose_group,
+            ]
 
+            seq_ref_gallery_outputs = [
+                seq_setting_gallery_empty,
+                seq_setting_ref_gallery,
+                seq_style_gallery_empty,
+                seq_style_ref_gallery,
+            ]
 
-            # seq_open_start.change(lambda pre, nid, v: _eh_open_flag(pre, nid, "open_start", v), [preview, selected_node, seq_open_start], [preview, node_selector, selected_node, proj_len, seq_len], show_progress="hidden", queue=False)
-            seq_open_start.change(lambda pre, nid, proj, v: _eh_open_flag(pre, nid, proj, "open_start", v), [preview, loaded_node_id, loaded_project_name, seq_open_start], [preview, node_selector, selected_node, proj_len, seq_len], show_progress="hidden", queue=True)
+            kf_prompt_hint_inputs = [kf_workflow_json, preview, selected_node]
+            kf_prompt_ref_preview_outputs = [
+                *kf_ref_preview_images,
+                kf_ref_preview_group,
+                kf_reference_prelude_tb,
+                kf_prompt,
+            ]
+
+            def _append_ref_slot_ui_refresh(chain, *, with_visibility: bool = False, with_seed: bool = False):
+                """Chain programmatic reference-slot UI refresh with write-suppression guard."""
+                if with_seed:
+                    chain = chain.then(
+                        fn=_eh_seed_reference_slot_last_choices,
+                        inputs=[preview, selected_node, kf_workflow_json],
+                        outputs=[preview],
+                        show_progress="hidden",
+                        queue=False,
+                    )
+                chain = chain.then(
+                    fn=_eh_ref_slot_suppress_writes_on,
+                    inputs=None,
+                    outputs=[ref_slot_ui_suppressing_writes],
+                    show_progress="hidden",
+                    queue=False,
+                ).then(
+                    fn=_eh_refresh_reference_slot_ui,
+                    inputs=[kf_workflow_json, preview, selected_node],
+                    outputs=kf_ref_slot_ui_outputs,
+                    show_progress="hidden",
+                    queue=False,
+                )
+                if with_visibility:
+                    chain = chain.then(
+                        fn=_refresh_kf_field_visibility,
+                        inputs=[kf_workflow_json, preview, settings_json],
+                        outputs=kf_visibility_outputs,
+                        show_progress="hidden",
+                        queue=False,
+                    )
+                return chain.then(
+                    fn=_eh_kf_prompt_reference_preview,
+                    inputs=[kf_workflow_json, preview, selected_node],
+                    outputs=kf_prompt_ref_preview_outputs,
+                    show_progress="hidden",
+                    queue=False,
+                ).then(
+                    fn=_eh_ref_slot_suppress_writes_off,
+                    inputs=None,
+                    outputs=[ref_slot_ui_suppressing_writes],
+                    show_progress="hidden",
+                    queue=False,
+                )
+
             # Sequence Assets display - refresh when node selection changes
             def _update_seq_assets(pre, raw_value):
                 data = pre if isinstance(pre, dict) else {}
@@ -3615,17 +4702,133 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 else:
                     seq_id = None
                 return _build_sequence_assets_html(data, seq_id)
-            
-            node_selector.change(
-                fn=_update_seq_assets,
-                inputs=[preview, node_selector],
-                outputs=[seq_assets_display],
-                show_progress="hidden"
+
+            _node_select_chain = node_selector.change(
+                _eh_node_selected,
+                inputs=[preview, node_selector, selected_node],
+                outputs=node_selector_outputs,
+                show_progress="hidden",
+                queue=True,
+            ).then(
+                fn=_refresh_wf_caps,
+                inputs=[kf_workflow_json, preview, settings_json],
+                outputs=[kf_workflow_capabilities, kf_workflow_capabilities_md, kf_wf_caps_accordion],
+                show_progress="hidden",
+                queue=False,
+            ).then(
+                fn=_refresh_video_wf_caps,
+                inputs=[preview, settings_json],
+                outputs=[vid_workflow_capabilities, vid_workflow_capabilities_md, vid_wf_caps_accordion],
+                show_progress="hidden",
+                queue=False,
+            ).then(
+                fn=_eh_refresh_sequence_ref_galleries,
+                inputs=[preview, selected_node],
+                outputs=seq_ref_gallery_outputs,
+                show_progress="hidden",
+                queue=False,
+            )
+            _append_ref_slot_ui_refresh(
+                _node_select_chain.then(
+                    fn=_update_seq_assets,
+                    inputs=[preview, selected_node],
+                    outputs=[seq_assets_display],
+                    show_progress="hidden",
+                    queue=False,
+                ),
+                with_visibility=True,
+                with_seed=True,
             )
 
+            # Rehydrate / Refresh logic
+            gr.on(triggers=[], fn=_rehydrate_if_changed, inputs=[preview, selected_node, outline_sig], outputs=[node_selector, selected_node, proj_len, outline_sig], show_progress="hidden", queue=False)
+            # preview.change(_rehydrate_if_changed, inputs=[preview, selected_node, outline_sig], outputs=[node_selector, selected_node, proj_len, outline_sig], show_progress="hidden", queue=False)
 
-            # seq_open_end.change(lambda pre, nid, v: _eh_open_flag(pre, nid, "open_end", v), [preview, selected_node, seq_open_end], [preview, node_selector, selected_node, proj_len, seq_len], show_progress="hidden", queue=False)
-            seq_open_end.change(lambda pre, nid, proj, v: _eh_open_flag(pre, nid, proj, "open_end", v), [preview, loaded_node_id, loaded_project_name, seq_open_end], [preview, node_selector, selected_node, proj_len, seq_len], show_progress="hidden", queue=True)
+            preview.change(
+                fn=_refresh_generations_seed_visibility,
+                inputs=[kf_workflow_json, preview, settings_json],
+                outputs=[kf_seed_input, vid_seed_input],
+                queue=False,
+                show_progress="hidden",
+            ).then(
+                fn=_refresh_video_wf_caps,
+                inputs=[preview, settings_json],
+                outputs=[vid_workflow_capabilities, vid_workflow_capabilities_md, vid_wf_caps_accordion],
+                queue=False,
+                show_progress="hidden",
+            )
+            
+            # Sequence Field Bindings
+            # seq_text_fields_inputs = [preview, loaded_node_id, seq_setting_md, seq_style_prompt_md, seq_action_prompt_md]
+            seq_text_fields_inputs = [preview, loaded_node_id, loaded_project_name, seq_setting_md, seq_style_prompt_md, seq_action_prompt_md]
+            for comp in [seq_setting_md, seq_style_prompt_md, seq_action_prompt_md]:
+                comp.change(_eh_seq_text_fields, seq_text_fields_inputs, [preview], show_progress="hidden", queue=True)
+
+            _seq_setting_chain = seq_setting_dd.change(
+                _eh_seq_setting_id_change,
+                inputs=[preview, loaded_node_id, loaded_project_name, seq_setting_dd],
+                outputs=[preview],
+                queue=True,
+            ).then(
+                fn=_eh_refresh_sequence_ref_galleries,
+                inputs=[preview, selected_node],
+                outputs=seq_ref_gallery_outputs,
+                show_progress="hidden",
+                queue=False,
+            )
+            _append_ref_slot_ui_refresh(_seq_setting_chain)
+
+            _seq_style_chain = seq_style_dd.change(
+                _eh_seq_style_id_change,
+                inputs=[preview, loaded_node_id, loaded_project_name, seq_style_dd],
+                outputs=[preview],
+                queue=True,
+            ).then(
+                fn=_eh_refresh_sequence_ref_galleries,
+                inputs=[preview, selected_node],
+                outputs=seq_ref_gallery_outputs,
+                show_progress="hidden",
+                queue=False,
+            )
+            _append_ref_slot_ui_refresh(_seq_style_chain)
+
+            _seq_setting_gal_chain = seq_setting_ref_gallery.select(
+                fn=_eh_seq_setting_gallery_select,
+                inputs=[preview, loaded_node_id, loaded_project_name],
+                outputs=[preview],
+                show_progress="hidden",
+                queue=True,
+            ).then(
+                fn=_eh_refresh_sequence_ref_galleries,
+                inputs=[preview, selected_node],
+                outputs=seq_ref_gallery_outputs,
+                show_progress="hidden",
+                queue=False,
+            )
+            _append_ref_slot_ui_refresh(_seq_setting_gal_chain)
+
+            _seq_style_gal_chain = seq_style_ref_gallery.select(
+                fn=_eh_seq_style_gallery_select,
+                inputs=[preview, loaded_node_id, loaded_project_name],
+                outputs=[preview],
+                show_progress="hidden",
+                queue=True,
+            ).then(
+                fn=_eh_refresh_sequence_ref_galleries,
+                inputs=[preview, selected_node],
+                outputs=seq_ref_gallery_outputs,
+                show_progress="hidden",
+                queue=False,
+            )
+            _append_ref_slot_ui_refresh(_seq_style_gal_chain)
+
+            # LoRA Injectors
+            seq_lora.select(_eh_inject_lora, inputs=[preview, selected_node, seq_lora, seq_style_prompt_md], outputs=[preview, seq_style_prompt_md, seq_lora], show_progress="hidden", queue=False)
+            kf_lora.select(_eh_inject_lora, inputs=[preview, selected_node, kf_lora, kf_prompt], outputs=[preview, kf_prompt, kf_lora], show_progress="hidden", queue=False)
+            vid_lora.select(_eh_inject_lora, inputs=[preview, selected_node, vid_lora, vid_prompt], outputs=[preview, vid_prompt, vid_lora], show_progress="hidden", queue=False)
+
+            # seq_open_start.change(lambda pre, nid, v: _eh_open_flag(pre, nid, "open_start", v), [preview, selected_node, seq_open_start], [preview, node_selector, selected_node, proj_len, seq_len], show_progress="hidden", queue=False)
+            seq_open_start.change(lambda pre, nid, proj, v: _eh_open_flag(pre, nid, proj, "open_start", v), [preview, loaded_node_id, loaded_project_name, seq_open_start], [preview, node_selector, selected_node, proj_len, seq_len], show_progress="hidden", queue=True)
             # seq_flip_btn.click(_eh_flip_orientation, [preview, selected_node], [preview, node_selector, selected_node, proj_len, seq_len], show_progress="hidden", queue=False)
             seq_flip_btn.click(_eh_flip_orientation, [preview, loaded_node_id, loaded_project_name], [preview, node_selector, selected_node, proj_len, seq_len], show_progress="hidden", queue=False)
             # Keyframe Field Bindings
@@ -3656,9 +4859,81 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 return _eh_kf_fields(project_dict, loaded_nid, loaded_proj, *fields)
             
             for comp in [kf_char_left, kf_char_right, kf_flip_horiz, kf_flip_vert]:
-                comp.change(_eh_char_change_guarded, kf_all_fields_inputs, [preview], show_progress="hidden", queue=True)
+                comp.change(_eh_char_change_guarded, kf_all_fields_inputs, [preview], show_progress="hidden", queue=True).then(
+                    fn=_eh_kf_prompt_hint,
+                    inputs=kf_prompt_hint_inputs,
+                    outputs=kf_prompt_ref_preview_outputs,
+                    show_progress="hidden",
+                    queue=False,
+                )
 
+            def _make_ref_slot_semantic_handler(slot_index: int):
+                def _handler(
+                    project_dict,
+                    loaded_nid,
+                    loaded_proj,
+                    workflow_name,
+                    suppress_writes,
+                    choice,
+                ):
+                    if suppress_writes:
+                        return project_dict
+                    data = _ensure_project(project_dict) if isinstance(project_dict, dict) else _ensure_project({})
+                    _, kind, _, _ = _resolve_node_context(data, loaded_nid)
+                    if kind != "kf":
+                        return project_dict
+                    return _eh_reference_slot_semantic_change_one(
+                        project_dict,
+                        loaded_nid,
+                        loaded_proj,
+                        workflow_name,
+                        slot_index,
+                        choice,
+                    )
 
+                return _handler
+
+            for slot_i, dd in enumerate(kf_ref_slot_semantic):
+                _append_ref_slot_ui_refresh(
+                    dd.change(
+                        _make_ref_slot_semantic_handler(slot_i),
+                        inputs=[
+                            preview,
+                            loaded_node_id,
+                            loaded_project_name,
+                            kf_workflow_json,
+                            ref_slot_ui_suppressing_writes,
+                            dd,
+                        ],
+                        outputs=[preview],
+                        show_progress="hidden",
+                        queue=True,
+                    ),
+                    with_visibility=True,
+                )
+
+            def _make_ref_slot_gallery_handler(index: int):
+                def _handler(proj, nid, pname, wf, evt: gr.SelectData):
+                    return _eh_reference_slot_gallery_select(proj, nid, pname, wf, index, evt)
+
+                return _handler
+
+            for slot_i, gal in enumerate(kf_ref_slot_gallery):
+                _append_ref_slot_ui_refresh(
+                    gal.select(
+                        fn=_make_ref_slot_gallery_handler(slot_i),
+                        inputs=[
+                            preview,
+                            loaded_node_id,
+                            loaded_project_name,
+                            kf_workflow_json,
+                        ],
+                        outputs=[preview],
+                        show_progress="hidden",
+                        queue=True,
+                    ),
+                    with_visibility=True,
+                )
 
 
             # for comp in kf_all_fields_inputs[3:]: # Skip first 3
@@ -3682,13 +4957,26 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
             #     queue=False
             # )
 
-            kf_workflow_json.change(
+            _kf_workflow_chain = kf_workflow_json.change(
                 _eh_kf_fields,
                 kf_all_fields_inputs,
                 [preview],
                 show_progress="hidden",
                 queue=False
+            ).then(
+                fn=_eh_kf_workflow_remap_reference_bindings,
+                inputs=[preview, loaded_node_id, loaded_project_name, kf_workflow_json],
+                outputs=[preview],
+                show_progress="hidden",
+                queue=False,
+            ).then(
+                fn=_refresh_wf_caps,
+                inputs=[kf_workflow_json, preview, settings_json],
+                outputs=[kf_workflow_capabilities, kf_workflow_capabilities_md, kf_wf_caps_accordion],
+                show_progress="hidden",
+                queue=False,
             )
+            _append_ref_slot_ui_refresh(_kf_workflow_chain, with_visibility=True)
 
             # Explicit handlers for ControlNet settings (same pattern as workflow)
             # Pose ControlNet
@@ -3720,6 +5008,12 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 outputs=[kf_pose], 
                 show_progress="hidden"
             ).then(
+                fn=_eh_workflow_update_if_pose_changed,
+                inputs=[preview, loaded_node_id, kf_pose],
+                outputs=[kf_workflow_json],
+                show_progress="hidden",
+                queue=False,
+            ).then(
                 _eh_kf_fields,
                 inputs=kf_all_fields_inputs,
                 outputs=[preview],
@@ -3729,6 +5023,12 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 inputs=[preview, loaded_node_id],
                 outputs=[kf_pose_preview, kf_pose_gallery, kf_cn_pose_thumb, kf_cn_shape_thumb, kf_cn_outline_thumb, kf_workflow_json, kf_cn_pose_animal],
                 show_progress="hidden"
+            ).then(
+                fn=_eh_kf_prompt_hint,
+                inputs=kf_prompt_hint_inputs,
+                outputs=kf_prompt_ref_preview_outputs,
+                show_progress="hidden",
+                queue=False,
             )
             # kf_clear_pose_btn.click(fn=_eh_clear_pose, inputs=[kf_pose_gallery], outputs=[kf_pose, kf_pose_gallery], show_progress="hidden", queue=False)
             kf_clear_pose_btn.click(
@@ -3744,50 +5044,91 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 ], 
                 show_progress="hidden", 
                 queue=False
+            ).then(
+                fn=_eh_kf_prompt_hint,
+                inputs=kf_prompt_hint_inputs,
+                outputs=kf_prompt_ref_preview_outputs,
+                show_progress="hidden",
+                queue=False,
             )
             
             kf_generate_pose_btn.click(
                 fn=_eh_generate_pose_for_keyframe,
-                inputs=[preview, selected_node, kf_prompt, kf_char_left],
+                inputs=[preview, loaded_node_id, kf_prompt, kf_char_left],
                 outputs=[kf_pose, kf_pose_preview, kf_pose_gallery, kf_cn_pose_thumb, kf_cn_shape_thumb, kf_cn_outline_thumb]
+            ).then(
+                fn=_eh_workflow_update_if_pose_changed,
+                inputs=[preview, loaded_node_id, kf_pose],
+                outputs=[kf_workflow_json],
+                show_progress="hidden",
+                queue=False,
+            ).then(
+                _eh_kf_fields,
+                inputs=kf_all_fields_inputs,
+                outputs=[preview],
+                show_progress="hidden",
+            ).then(
+                _eh_refresh_pose_previews,
+                inputs=[preview, loaded_node_id],
+                outputs=[kf_pose_preview, kf_pose_gallery, kf_cn_pose_thumb, kf_cn_shape_thumb, kf_cn_outline_thumb, kf_workflow_json, kf_cn_pose_animal],
+                show_progress="hidden",
+            ).then(
+                fn=_eh_kf_prompt_hint,
+                inputs=kf_prompt_hint_inputs,
+                outputs=kf_prompt_ref_preview_outputs,
+                show_progress="hidden",
+                queue=False,
             )
             kf_pose_upload_btn.upload(
                 fn=_eh_upload_pose_for_keyframe,
-                inputs=[preview, selected_node, kf_pose_upload_btn],
+                inputs=[preview, loaded_node_id, kf_pose_upload_btn],
                 outputs=[kf_pose, kf_pose_preview, kf_pose_gallery, kf_cn_pose_thumb, kf_cn_shape_thumb, kf_cn_outline_thumb]
+            ).then(
+                fn=_eh_workflow_update_if_pose_changed,
+                inputs=[preview, loaded_node_id, kf_pose],
+                outputs=[kf_workflow_json],
+                show_progress="hidden",
+                queue=False,
+            ).then(
+                _eh_kf_fields,
+                inputs=kf_all_fields_inputs,
+                outputs=[preview],
+                show_progress="hidden",
+            ).then(
+                _eh_refresh_pose_previews,
+                inputs=[preview, loaded_node_id],
+                outputs=[kf_pose_preview, kf_pose_gallery, kf_cn_pose_thumb, kf_cn_shape_thumb, kf_cn_outline_thumb, kf_workflow_json, kf_cn_pose_animal],
+                show_progress="hidden",
+            ).then(
+                fn=_eh_kf_prompt_hint,
+                inputs=kf_prompt_hint_inputs,
+                outputs=kf_prompt_ref_preview_outputs,
+                show_progress="hidden",
+                queue=False,
             )
 
             # Video Field Bindings
             # vid_all_fields_inputs = [preview, selected_node, vid_length, vid_prompt, vid_neg]
             vid_all_fields_inputs = [preview, loaded_node_id, loaded_project_name, vid_length, vid_prompt, vid_neg]
             
-            # Change on radio triggers save THEN UI refresh to update labels
+            # Change on radio triggers save and immediate label refresh
             vid_length.change(
-                _eh_vid_fields, 
-                vid_all_fields_inputs, 
-                [preview], 
-                show_progress="hidden", 
-                queue=False
-            ).then(
-                fn=_eh_node_selected,
-                inputs=[preview, selected_node, selected_node],
-                outputs=node_selector_outputs,
-                show_progress="hidden"
+                _eh_vid_length_change,
+                vid_all_fields_inputs,
+                [preview, vid_length, clear_vid_len_btn],
+                show_progress="hidden",
+                queue=False,
             )
 
             vid_prompt.blur(_eh_vid_fields, vid_all_fields_inputs, [preview], show_progress="hidden", queue=True)
 
-            # Reset button clears the value and refreshes labels
+            # Reset button clears override and refreshes length label
             clear_vid_len_btn.click(
                 fn=_eh_reset_vid_length,
                 inputs=[preview, loaded_node_id, loaded_project_name, vid_prompt, vid_neg],
-                outputs=[preview, selected_node],
-                show_progress="hidden"
-            ).then(
-                fn=_eh_node_selected,
-                inputs=[preview, selected_node, selected_node],
-                outputs=node_selector_outputs,
-                show_progress="hidden"
+                outputs=[preview, vid_length, clear_vid_len_btn],
+                show_progress="hidden",
+                queue=False,
             )
             vid_neg.blur(_eh_vid_fields, vid_all_fields_inputs, [preview], show_progress="hidden", queue=True)
 
@@ -3836,6 +5177,12 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 inputs=[current_file_path, preview, settings_json],
                 outputs=[]
             ).then(
+                fn=lambda pj, url: check_comfyui_status(pj, api_base=url),
+                inputs=[preview, comfyui_api_base],
+                outputs=[comfyui_status_md],
+                queue=False,
+                show_progress="hidden"
+            ).then(
                 _eh_run_and_curate_image,
                 inputs=[preview, selected_node, kf_generate_count, kf_seed_input, current_file_path, selected_node],
                 outputs=[
@@ -3850,6 +5197,12 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 _eh_conditional_image_refresh,
                 inputs=[preview, loaded_node_id, generation_result_buffer],
                 outputs=[kf_gallery, main_preview_image, kf_gallery_selection],
+                show_progress="hidden"
+            ).then(
+                fn=lambda pj, url: check_comfyui_status(pj, api_base=url),
+                inputs=[preview, comfyui_api_base],
+                outputs=[comfyui_status_md],
+                queue=False,
                 show_progress="hidden"
             )
 
@@ -3868,6 +5221,12 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 inputs=[current_file_path, preview, settings_json],
                 outputs=[]
             ).then(
+                fn=lambda pj, url: check_comfyui_status(pj, api_base=url),
+                inputs=[preview, comfyui_api_base],
+                outputs=[comfyui_status_md],
+                queue=False,
+                show_progress="hidden"
+            ).then(
                 _eh_run_and_curate_video,
                 inputs=[preview, selected_node, vid_generate_count, vid_seed_input, current_file_path, selected_node],
                 outputs=[
@@ -3881,6 +5240,12 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 _eh_conditional_video_refresh,
                 inputs=[preview, loaded_node_id, generation_result_buffer],
                 outputs=[preview, vid_gallery_dd, vid_player],
+                show_progress="hidden"
+            ).then(
+                fn=lambda pj, url: check_comfyui_status(pj, api_base=url),
+                inputs=[preview, comfyui_api_base],
+                outputs=[comfyui_status_md],
+                queue=False,
                 show_progress="hidden"
             )
 
@@ -3994,12 +5359,14 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                     seq_export_mgr["source_layer"],
                     seq_export_mgr["audio_dd"],
                     seq_export_mgr["animatic"],
+                    seq_export_mgr["debug_labels"],
                 ],
                 outputs=[
                     seq_export_mgr["log"],
                     seq_export_mgr["download"],
                     seq_export_mgr["history_dd"],
                 ],
+                show_progress="full",
             )
 
 
@@ -4078,4 +5445,4 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 show_progress="hidden", queue=False
             )
 
-    return kf_workflow_json, kf_pose, vid_lora, node_selector, node_selector_outputs, seq_lora, kf_pose_gallery, kf_lora, proj_len
+    return kf_workflow_json, kf_pose, vid_lora, node_selector, selected_node, node_selector_outputs, seq_lora, kf_pose_gallery, kf_lora, proj_len

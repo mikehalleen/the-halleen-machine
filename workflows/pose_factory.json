@@ -8,7 +8,7 @@
       "scheduler": "karras",
       "denoise": 1,
       "model": [
-        "4",
+        "29",
         0
       ],
       "positive": [
@@ -250,6 +250,18 @@
     "class_type": "ContrastNode",
     "_meta": {
       "title": "Contrast"
+    }
+  },
+  "29": {
+    "inputs": {
+      "model": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "ModelPassThrough",
+    "_meta": {
+      "title": "THM-Lora"
     }
   }
 }

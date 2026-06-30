@@ -121,7 +121,7 @@ def load_config() -> dict:
     config_path = Path("config.toml")
     
     if not config_path.exists():
-        print("❌ config.toml not found!")
+        print("config.toml not found!")
         print("   Run 'python setup.py' first to configure paths.")
         sys.exit(1)
     
@@ -132,7 +132,7 @@ def load_config() -> dict:
         try:
             import tomli as tomllib
         except ImportError:
-            print("❌ tomli not installed (required for Python < 3.11)")
+            print("tomli not installed (required for Python < 3.11)")
             print("   Run: pip install tomli")
             sys.exit(1)
     
@@ -140,13 +140,13 @@ def load_config() -> dict:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
     except Exception as e:
-        print(f"❌ Failed to parse config.toml: {e}")
+        print(f"Failed to parse config.toml: {e}")
         sys.exit(1)
     
     # Extract paths
     install_path = data.get("comfyui", {}).get("install_path", "")
     if not install_path:
-        print("❌ [comfyui] install_path not set in config.toml")
+        print("[comfyui] install_path not set in config.toml")
         print("   Run 'python setup.py' to configure.")
         sys.exit(1)
     
@@ -181,7 +181,7 @@ def download_file(url: str, dest_path: Path, dry_run: bool = False) -> bool:
         True if successful, False otherwise
     """
     if not url:
-        print(f"  ⚠️  No URL configured for this model")
+        print(f"  No URL configured for this model")
         return False
     
     if dry_run:
@@ -191,7 +191,7 @@ def download_file(url: str, dest_path: Path, dry_run: bool = False) -> bool:
     
     # Check if file exists
     if dest_path.exists():
-        print(f"  ✓ Already exists: {dest_path.name}")
+        print(f"  Already exists: {dest_path.name}")
         return True
     
     # Ensure directory exists
@@ -221,7 +221,7 @@ def download_file(url: str, dest_path: Path, dry_run: bool = False) -> bool:
         except urllib.error.HTTPError as e:
             if e.code == 416:  # Range not satisfiable - file complete
                 temp_path.rename(dest_path)
-                print(f"  ✓ Download complete: {dest_path.name}")
+                print(f"  Download complete: {dest_path.name}")
                 return True
             raise
         
@@ -258,30 +258,30 @@ def download_file(url: str, dest_path: Path, dry_run: bool = False) -> bool:
         
         # Rename temp to final
         temp_path.rename(dest_path)
-        print(f"  ✓ Downloaded: {dest_path.name}")
+        print(f"  Downloaded: {dest_path.name}")
         return True
         
     except KeyboardInterrupt:
-        print("\n  ⚠️  Download interrupted. Run again to resume.")
+        print("\n  Download interrupted. Run again to resume.")
         return False
     except urllib.error.HTTPError as e:
-        print(f"\n  ❌ Download failed: HTTP {e.code} - {e.reason}")
+        print(f"\n  Download failed: HTTP {e.code} - {e.reason}")
         # Clean up temp file on 404 (file doesn't exist, retry won't help)
         if e.code == 404 and temp_path.exists():
             temp_path.unlink()
         return False
     except urllib.error.URLError as e:
-        print(f"\n  ❌ Download failed: {e.reason}")
+        print(f"\n  Download failed: {e.reason}")
         return False
     except Exception as e:
-        print(f"\n  ❌ Download failed: {e}")
+        print(f"\n  Download failed: {e}")
         return False
 
 
 def download_model(filename: str, paths: dict, dry_run: bool = False) -> bool:
     """Download a single model by filename."""
     if filename not in MODEL_REGISTRY:
-        print(f"❌ Unknown model: {filename}")
+        print(f"Unknown model: {filename}")
         print("   Run 'python download_models.py --list' to see available models.")
         return False
     
@@ -327,7 +327,7 @@ def list_models():
         models = by_folder[folder]
         print(f"[{folder}]")
         for filename, url, desc in models:
-            status = "✓" if url else "⚠️ (no URL)"
+            status = "" if url else "(no URL)"
             print(f"  {status} {filename}")
             print(f"      {desc}")
         print()
@@ -427,7 +427,7 @@ Examples:
     
     for filename in models_to_download:
         if filename not in MODEL_REGISTRY:
-            print(f"\n❌ Unknown model: {filename}")
+            print(f"\nUnknown model: {filename}")
             continue
         
         url, subfolder, desc = MODEL_REGISTRY[filename]
@@ -440,7 +440,7 @@ Examples:
         
         dest_path = dest_dir / filename
         if dest_path.exists():
-            print(f"\n✓ Already exists: {filename}")
+            print(f"\nAlready exists: {filename}")
             continue
         
         if url:
@@ -483,7 +483,7 @@ Examples:
             else:
                 dest_dir = paths["install_path"] / "models" / subfolder
             
-            print(f"  • {filename}")
+            print(f"  {filename}")
             print(f"    {desc}")
             print(f"    Save to: {dest_dir}/")
             print()

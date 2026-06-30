@@ -113,16 +113,13 @@ def find_latest_bridge_dir(bridges_root: Path, a_name: str, b_name: str) -> Opti
 def get_project_fps(config: Dict[str, Any], project_root: Path) -> float:
     DEFAULT_FPS = 16
     try:
-        vg = config.get("project", {}).get("inbetween_generation", {})
-        wf_rel_path = vg.get("video_workflow_json")
-        if not wf_rel_path:
-            return DEFAULT_FPS
+        src = project_root / "src"
+        if str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        from helpers import resolve_project_video_workflow
 
-        wf_path = project_root / wf_rel_path
-        if not wf_path.exists():
-            wf_path = project_root / "workflows" / wf_rel_path
-        
-        if not wf_path.exists():
+        wf_path = Path(resolve_project_video_workflow(config))
+        if not wf_path.is_file():
             return DEFAULT_FPS
 
         with open(wf_path, 'r', encoding='utf-8') as f:
@@ -158,6 +155,179 @@ def _copy_and_rename(src_paths: List[Path], dest_dir: Path, start_index: int) ->
             shutil.copy2(src_path, dest_path)
         frame_counter += 1
     return frame_counter
+
+
+KF_LABEL_PAD = 6
+
+
+def _label_for_video(seq_id: str, vid_id: str) -> str:
+    return f"{seq_id}:{vid_id}"
+
+
+def _label_for_keyframe(seq_id: str, vid_id: str, kf_id: str) -> str:
+    return f"{seq_id}:{vid_id}:{kf_id}"
+
+
+def _label_for_bridge(seq_id: str, kf_id: str) -> str:
+    return f"{seq_id}:{kf_id}"
+
+
+def _endpoint_label_id(kf_id: Optional[str]) -> str:
+    return kf_id if kf_id else "open"
+
+
+def _labels_for_chunk(
+    frame_count: int,
+    seq_id: str,
+    vid_id: str,
+    keyframe_anchors: List[tuple[int, str]],
+) -> List[str]:
+    labels = [_label_for_video(seq_id, vid_id)] * frame_count
+    for kf_idx, kf_id in keyframe_anchors:
+        if not kf_id:
+            continue
+        start = max(0, kf_idx - KF_LABEL_PAD)
+        end = min(frame_count - 1, kf_idx + KF_LABEL_PAD)
+        kf_label = _label_for_keyframe(seq_id, vid_id, kf_id)
+        for idx in range(start, end + 1):
+            labels[idx] = kf_label
+    return labels
+
+
+def _keyframe_anchors_for_chunk(
+    chunk_len: int,
+    vid_obj: dict,
+    *,
+    include_start: bool,
+    include_end: bool,
+) -> List[tuple[int, str]]:
+    anchors: List[tuple[int, str]] = []
+    if chunk_len <= 0:
+        return anchors
+    if include_start:
+        anchors.append((0, _endpoint_label_id(vid_obj.get("start_keyframe_id"))))
+    if include_end:
+        anchors.append((chunk_len - 1, _endpoint_label_id(vid_obj.get("end_keyframe_id"))))
+    return anchors
+
+
+def _debug_label_drawtext_filter(label_text: str, out_h: int = 720) -> str:
+    fontsize = max(14, int(out_h * 0.03))
+    font_style = "font='Arial Bold'"
+    box_padding = 5
+    escaped = _escape_drawtext(label_text)
+    return (
+        f"drawtext=text='{escaped}':x=20:y=h-th-20"
+        f":fontsize={fontsize}:fontcolor=white:{font_style}"
+        f":box=1:boxcolor=black@0.5:boxborderw={box_padding}"
+    )
+
+
+def _burn_label_on_frame_group(
+    src_paths: List[Path],
+    dest_dir: Path,
+    start_index: int,
+    label_text: str,
+) -> int:
+    if not src_paths:
+        return start_index
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_in = Path(tmp) / "in"
+        tmp_out = Path(tmp) / "out"
+        tmp_in.mkdir()
+        tmp_out.mkdir()
+
+        for idx, src in enumerate(src_paths):
+            shutil.copy2(src, tmp_in / f"frame_{idx:06d}.png")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-framerate", "1000",
+            "-i", str(tmp_in / "frame_%06d.png"),
+            "-frames:v", str(len(src_paths)),
+            "-vf", _debug_label_drawtext_filter(label_text),
+            str(tmp_out / "frame_%06d.png"),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"[WARN] Debug label ffmpeg failed, copying without label: {result.stderr}")
+            return _copy_and_rename(src_paths, dest_dir, start_index)
+
+        return _copy_and_rename(list_pngs(tmp_out), dest_dir, start_index)
+
+
+def _copy_frames_with_debug_labels(
+    src_paths: List[Path],
+    dest_dir: Path,
+    start_index: int,
+    labels: List[str],
+) -> int:
+    if not src_paths:
+        return start_index
+    if len(labels) != len(src_paths):
+        raise ValueError("labels length must match src_paths length")
+
+    frame_counter = start_index
+    idx = 0
+    while idx < len(src_paths):
+        label = labels[idx]
+        end = idx + 1
+        while end < len(src_paths) and labels[end] == label:
+            end += 1
+        group_src = src_paths[idx:end]
+        if label:
+            frame_counter = _burn_label_on_frame_group(group_src, dest_dir, frame_counter, label)
+        else:
+            frame_counter = _copy_and_rename(group_src, dest_dir, frame_counter)
+        idx = end
+    return frame_counter
+
+
+def _copy_frames_to_dest(
+    src_paths: List[Path],
+    dest_dir: Path,
+    start_index: int,
+    debug_labels: bool = False,
+    labels: Optional[List[str]] = None,
+) -> int:
+    if debug_labels and labels is not None:
+        return _copy_frames_with_debug_labels(src_paths, dest_dir, start_index, labels)
+    return _copy_and_rename(src_paths, dest_dir, start_index)
+
+
+def _debug_label_animatic_filters(
+    num_frames: int,
+    seq_id: str,
+    vid_id: str,
+    start_kf_id: Optional[str],
+    end_kf_id: Optional[str],
+    out_h: int,
+) -> List[str]:
+    filters: List[str] = []
+    fontsize = max(14, int(out_h * 0.03))
+    font_style = "font='Arial Bold'"
+    box_padding = 5
+    base_style = (
+        f"x=20:y=h-th-20:fontsize={fontsize}:fontcolor=white:{font_style}"
+        f":box=1:boxcolor=black@0.5:boxborderw={box_padding}"
+    )
+
+    default_label = _escape_drawtext(_label_for_video(seq_id, vid_id))
+    filters.append(f"drawtext=text='{default_label}':{base_style}")
+
+    if num_frames > 0:
+        end_n = min(KF_LABEL_PAD, num_frames - 1)
+        start_label = _escape_drawtext(_label_for_keyframe(seq_id, vid_id, _endpoint_label_id(start_kf_id)))
+        filters.append(f"drawtext=text='{start_label}':{base_style}:enable='between(n,0,{end_n})'")
+
+    if num_frames > 0:
+        start_n = max(0, num_frames - KF_LABEL_PAD - 1)
+        end_n = num_frames - 1
+        end_label = _escape_drawtext(_label_for_keyframe(seq_id, vid_id, _endpoint_label_id(end_kf_id)))
+        filters.append(f"drawtext=text='{end_label}':{base_style}:enable='between(n,{start_n},{end_n})'")
+
+    return filters
 
 def _get_keyframe_image_path(seq_obj: dict, kf_id: str) -> Optional[Path]:
     """Get the selected image path for a keyframe, falling back to pose if needed."""
@@ -279,7 +449,12 @@ def generate_animatic_segment(
     setting_text: str = "",
     style_text: str = "",
     action_text: str = "",
-    inbetween_text: str = ""
+    inbetween_text: str = "",
+    debug_labels: bool = False,
+    debug_seq_id: str = "",
+    debug_vid_id: str = "",
+    debug_start_kf_id: Optional[str] = None,
+    debug_end_kf_id: Optional[str] = None,
 ) -> int:
     """
     Generate animatic frames for a single video segment using crossfade.
@@ -417,6 +592,18 @@ def generate_animatic_segment(
                 f"drawtext=text='{escaped2}':x=20:y={current_y}:fontsize={body_fontsize}:fontcolor=white:{font_style}:box=1:boxcolor=black@0.5:boxborderw={box_padding}"
             )
 
+    if debug_labels and debug_seq_id and debug_vid_id:
+        text_filters.extend(
+            _debug_label_animatic_filters(
+                num_frames,
+                debug_seq_id,
+                debug_vid_id,
+                debug_start_kf_id,
+                debug_end_kf_id,
+                out_h,
+            )
+        )
+
     if text_filters:
         filter_parts.append(f"[faded]{','.join(text_filters)}[out]")
         output_label = "[out]"
@@ -464,7 +651,8 @@ def assemble_sequence_animatic(
     fps: float,
     start_index: int = 0,
     scale_factor: float = 1.0,
-    start_time_sec: float = 0.0
+    start_time_sec: float = 0.0,
+    debug_labels: bool = False,
 ) -> tuple[int, float]:
     """
     Generate animatic frames for an entire sequence.
@@ -561,7 +749,12 @@ def assemble_sequence_animatic(
             setting_text=setting_text,
             style_text=style_text,
             action_text=action_text,
-            inbetween_text=inbetween_prompt
+            inbetween_text=inbetween_prompt,
+            debug_labels=debug_labels,
+            debug_seq_id=seq_id,
+            debug_vid_id=vid_id,
+            debug_start_kf_id=start_kf_id,
+            debug_end_kf_id=end_kf_id,
         )
         
         frame_counter += frames_generated
@@ -781,7 +974,7 @@ def _run_ffmpeg_stitch(
         print(f"Error: {e}")
         return None0
 
-def assemble_sequence_frames(seq_obj: dict, project_cfg: dict, dest_dir: Path, fps_mult: float, start_index: int = 0, layer_suffix: str = "", temp_extract_base: Path = None) -> int:
+def assemble_sequence_frames(seq_obj: dict, project_cfg: dict, dest_dir: Path, fps_mult: float, start_index: int = 0, layer_suffix: str = "", temp_extract_base: Path = None, debug_labels: bool = False) -> int:
     seq_id = seq_obj.get("id", "unknown")
     default_dur = float(project_cfg.get("inbetween_generation", {}).get("duration_default_sec", 3.0))
     base_fps = 16.0  # Could extract from workflow, but hardcode for debug
@@ -830,6 +1023,7 @@ def assemble_sequence_frames(seq_obj: dict, project_cfg: dict, dest_dir: Path, f
     bridges_root = seq_root / "bridges"
     
     bridge_frame_dirs = []
+    bridge_kf_ids = []
     cut_instructions = [] 
     
     all_keyframes = seq_obj.get("keyframes") or seq_obj.get("i2v_base_images", {})
@@ -852,6 +1046,7 @@ def assemble_sequence_frames(seq_obj: dict, project_cfg: dict, dest_dir: Path, f
         offset_request = 0
         b_vid_obj = vids[pair_idx + 1][2]
         b_start_kf_id = b_vid_obj.get("start_keyframe_id") or b_vid_obj.get("start_id")
+        bridge_kf_ids.append(b_start_kf_id)
         
         if b_start_kf_id and b_start_kf_id in all_keyframes:
             kf = all_keyframes[b_start_kf_id]
@@ -907,7 +1102,19 @@ def assemble_sequence_frames(seq_obj: dict, project_cfg: dict, dest_dir: Path, f
         frames_to_copy = first_frames[open_start_trim:]
     
     before = frame_counter
-    frame_counter = _copy_and_rename(frames_to_copy, dest_dir, frame_counter)
+    first_vid_id = vids[0][0]
+    first_labels = None
+    if debug_labels:
+        first_anchors = _keyframe_anchors_for_chunk(
+            len(frames_to_copy),
+            first_vid_obj,
+            include_start=True,
+            include_end=(total_tail_trim == 0),
+        )
+        first_labels = _labels_for_chunk(len(frames_to_copy), seq_id, first_vid_id, first_anchors)
+    frame_counter = _copy_frames_to_dest(
+        frames_to_copy, dest_dir, frame_counter, debug_labels=debug_labels, labels=first_labels
+    )
     frames_copied_debug.append((vids[0][0], frame_counter - before, total_tail_trim, open_start_trim))
     # Process Interstices
     # Process Interstices
@@ -918,8 +1125,16 @@ def assemble_sequence_frames(seq_obj: dict, project_cfg: dict, dest_dir: Path, f
         # Copy Bridge
         bridge_frames_copied = 0
         if bridge_dir:
+            bridge_frames = list_pngs(bridge_dir)
+            bridge_labels = None
+            if debug_labels:
+                bridge_kf_id = bridge_kf_ids[i] if i < len(bridge_kf_ids) else None
+                bridge_label = _label_for_bridge(seq_id, bridge_kf_id) if bridge_kf_id else seq_id
+                bridge_labels = [bridge_label] * len(bridge_frames)
             before = frame_counter
-            frame_counter = _copy_and_rename(list_pngs(bridge_dir), dest_dir, frame_counter)
+            frame_counter = _copy_frames_to_dest(
+                bridge_frames, dest_dir, frame_counter, debug_labels=debug_labels, labels=bridge_labels
+            )
             bridge_frames_copied = frame_counter - before
 
         # Copy Next Video Body
@@ -928,27 +1143,45 @@ def assemble_sequence_frames(seq_obj: dict, project_cfg: dict, dest_dir: Path, f
             continue
             
         cut_head_here = cut_instructions[i][1]
+        next_vid_obj = vids[i + 1][2]
+        next_vid_id = vids[i + 1][0]
         
         is_last = (i == len(bridge_frame_dirs) - 1)
         if is_last:
             # Trim last frame if open end
-            last_vid_obj = vids[i + 1][2]
-            open_end_trim = 1 if last_vid_obj.get("end_keyframe_id") is None else 0
+            open_end_trim = 1 if next_vid_obj.get("end_keyframe_id") is None else 0
             if open_end_trim > 0:
                 frames_to_copy = vid_frames[cut_head_here:-open_end_trim]
             else:
                 frames_to_copy = vid_frames[cut_head_here:]
+            include_end = True
         else:
             cut_tail_next = cut_instructions[i + 1][0]
-            frames_to_copy = vid_frames[cut_head_here:-cut_tail_next] if cut_tail_next > 0 else vid_frames[cut_head_here:]
+            if cut_tail_next > 0:
+                frames_to_copy = vid_frames[cut_head_here:-cut_tail_next]
+                include_end = False
+            else:
+                frames_to_copy = vid_frames[cut_head_here:]
+                include_end = True
+        next_labels = None
+        if debug_labels:
+            next_anchors = _keyframe_anchors_for_chunk(
+                len(frames_to_copy),
+                next_vid_obj,
+                include_start=(cut_head_here == 0),
+                include_end=include_end,
+            )
+            next_labels = _labels_for_chunk(len(frames_to_copy), seq_id, next_vid_id, next_anchors)
         before = frame_counter
-        frame_counter = _copy_and_rename(frames_to_copy, dest_dir, frame_counter)
+        frame_counter = _copy_frames_to_dest(
+            frames_to_copy, dest_dir, frame_counter, debug_labels=debug_labels, labels=next_labels
+        )
         frames_copied_debug.append((vids[i + 1][0], frame_counter - before, cut_instructions[i][0] if i + 1 < len(cut_instructions) else 0, cut_head_here))
 
     return frame_counter - start_index
 
 # def run_stitch(config_path: str, output_format: str, fps_mult: float = 1.0, resize: bool = False, layer_suffix: str = "", audio_path: str = ""):
-def run_stitch(config_path: str, output_format: str, fps_mult: float = 1.0, resize: bool = False, layer_suffix: str = "", audio_path: str = "", animatic: bool = False):
+def run_stitch(config_path: str, output_format: str, fps_mult: float = 1.0, resize: bool = False, layer_suffix: str = "", audio_path: str = "", animatic: bool = False, debug_labels: bool = False):
     print(f"Starting stitch process for: {config_path}")
     config_file_path = Path(config_path)
     project_root = config_file_path.parent
@@ -1022,7 +1255,8 @@ def run_stitch(config_path: str, output_format: str, fps_mult: float = 1.0, resi
                             fps=final_fps,
                             start_index=total_frames,
                             scale_factor=animatic_scale,
-                            start_time_sec=cumulative_time
+                            start_time_sec=cumulative_time,
+                            debug_labels=debug_labels,
                         )
                     else:
                         temp_extract = temp_frames_path / "_lossless_extract"
@@ -1033,7 +1267,8 @@ def run_stitch(config_path: str, output_format: str, fps_mult: float = 1.0, resi
                             fps_mult=fps_mult, 
                             start_index=total_frames, 
                             layer_suffix=layer_suffix,
-                            temp_extract_base=temp_extract
+                            temp_extract_base=temp_extract,
+                            debug_labels=debug_labels,
                         )
                     total_frames += frames_added
                 except TypeError as e:
@@ -1077,7 +1312,8 @@ def run_stitch(config_path: str, output_format: str, fps_mult: float = 1.0, resi
                 fps_tag = f"_{int(final_fps)}fps"
                 
                 animatic_tag = "_animatic" if animatic else ""
-                output_filename = f"{label}{animatic_tag}{resize_tag}{fps_tag}_{timestamp}.{output_format}"
+                debug_tag = "_debug" if debug_labels else ""
+                output_filename = f"{label}{animatic_tag}{debug_tag}{resize_tag}{fps_tag}_{timestamp}.{output_format}"
                 # output_filename = f"{label}{resize_tag}{fps_tag}_{timestamp}.{output_format}"
                 final_path = output_dir / output_filename
                 
@@ -1107,9 +1343,10 @@ if __name__ == "__main__":
     parser.add_argument("--layer", default="", help="Suffix for frames folder (e.g. 2xh, 2xf)")
     parser.add_argument("--audio", default="", help="Path to audio file to overlay (MP4 only)")
     parser.add_argument("--animatic", action="store_true", help="Generate timing preview from keyframes (slide animation)")
+    parser.add_argument("--debug_labels", action="store_true", help="Overlay seq:vid debug labels in lower-left corner")
     
     args = parser.parse_args()
     
     config_abs = str(Path(args.config).resolve())
 
-    run_stitch(config_abs, args.format, args.fps_mult, args.resize, args.layer, args.audio, args.animatic)
+    run_stitch(config_abs, args.format, args.fps_mult, args.resize, args.layer, args.audio, args.animatic, args.debug_labels)

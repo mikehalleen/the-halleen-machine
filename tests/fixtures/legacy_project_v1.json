@@ -1,0 +1,34 @@
+{
+  "project": {
+    "name": "legacy_project",
+    "inbetween_generation": {
+      "duration_default_sec": 4
+    }
+  },
+  "sequences": [
+    {
+      "id": "seq_legacy",
+      "setting_prompt": "a forest clearing",
+      "video_plan": {
+        "open_start": true,
+        "open_end": true
+      },
+      "i2v_base_images": {
+        "kf_a": {
+          "layout_prompt": "wide shot"
+        },
+        "kf_b": {
+          "layout_prompt": "close up"
+        }
+      },
+      "i2v_videos": {
+        "vid_existing": {
+          "start_id": "kf_a",
+          "end_id": "kf_b",
+          "duration_override_sec": 6,
+          "selected_video_path": "outputs/existing.mp4"
+        }
+      }
+    }
+  ]
+}

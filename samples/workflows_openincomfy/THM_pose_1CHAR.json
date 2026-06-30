@@ -1,8 +1,8 @@
 {
   "id": "fc1b8bfd-df03-4554-95be-49d515391494",
   "revision": 0,
-  "last_node_id": 171,
-  "last_link_id": 407,
+  "last_node_id": 172,
+  "last_link_id": 408,
   "nodes": [
     {
       "id": 88,
@@ -51,7 +51,7 @@
         60
       ],
       "flags": {},
-      "order": 5,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -84,46 +84,6 @@
       "bgcolor": "#3f5159"
     },
     {
-      "id": 3,
-      "type": "CLIPTextEncode",
-      "pos": [
-        -22.197834014892578,
-        4151.88330078125
-      ],
-      "size": [
-        210.29940795898438,
-        292.2994079589844
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 135
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            96
-          ]
-        }
-      ],
-      "title": "LeftNegPrompt",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.27",
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        ""
-      ]
-    },
-    {
       "id": 170,
       "type": "ImageScale",
       "pos": [
@@ -135,13 +95,13 @@
         130
       ],
       "flags": {},
-      "order": 3,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 393
+          "link": 408
         }
       ],
       "outputs": [
@@ -384,158 +344,6 @@
       "widgets_values": []
     },
     {
-      "id": 162,
-      "type": "LoadImage",
-      "pos": [
-        -202.41867065429688,
-        664.4694213867188
-      ],
-      "size": [
-        274.080078125,
-        314.00006103515625
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            393
-          ]
-        },
-        {
-          "name": "MASK",
-          "type": "MASK",
-          "links": []
-        }
-      ],
-      "title": "MainImageAndMask",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.50",
-        "Node name for S&R": "LoadImage"
-      },
-      "widgets_values": [
-        "One_man_standing_medium_close_up_shot,_((one_man)),_behind_him_a_fabric_curtain,_looks_at_viewer,_ey.png",
-        "image"
-      ]
-    },
-    {
-      "id": 42,
-      "type": "Power Lora Loader (rgthree)",
-      "pos": [
-        426.5092468261719,
-        3630.5693359375
-      ],
-      "size": [
-        525.1156616210938,
-        244.04876708984375
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "dir": 3,
-          "name": "model",
-          "type": "MODEL",
-          "link": 131
-        },
-        {
-          "dir": 3,
-          "name": "clip",
-          "type": "CLIP",
-          "link": 132
-        }
-      ],
-      "outputs": [
-        {
-          "dir": 4,
-          "name": "MODEL",
-          "shape": 3,
-          "type": "MODEL",
-          "links": [
-            147
-          ]
-        },
-        {
-          "dir": 4,
-          "name": "CLIP",
-          "shape": 3,
-          "type": "CLIP",
-          "links": [
-            135,
-            145
-          ]
-        }
-      ],
-      "title": "LeftLora",
-      "properties": {
-        "cnr_id": "rgthree-comfy",
-        "ver": "1.0.0",
-        "Show Strengths": "Single Strength"
-      },
-      "widgets_values": [
-        {},
-        {
-          "type": "PowerLoraLoaderHeaderWidget"
-        },
-        {},
-        ""
-      ]
-    },
-    {
-      "id": 15,
-      "type": "CheckpointLoaderSimple",
-      "pos": [
-        -84.47350311279297,
-        2914.858154296875
-      ],
-      "size": [
-        366.86883544921875,
-        98
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            131
-          ]
-        },
-        {
-          "name": "CLIP",
-          "type": "CLIP",
-          "links": [
-            132
-          ]
-        },
-        {
-          "name": "VAE",
-          "type": "VAE",
-          "links": [
-            37
-          ]
-        }
-      ],
-      "title": "LeftCheckpoint",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.27",
-        "Node name for S&R": "CheckpointLoaderSimple"
-      },
-      "widgets_values": [
-        "sdXL_v10VAEFix.safetensors"
-      ]
-    },
-    {
       "id": 29,
       "type": "CR Multi-ControlNet Stack",
       "pos": [
@@ -674,51 +482,6 @@
       ]
     },
     {
-      "id": 46,
-      "type": "CLIPTextEncode",
-      "pos": [
-        79.5194091796875,
-        2223.86083984375
-      ],
-      "size": [
-        871.5177001953125,
-        639.8662109375
-      ],
-      "flags": {
-        "collapsed": false
-      },
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 145
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "slot_index": 0,
-          "links": [
-            146
-          ]
-        }
-      ],
-      "title": "LeftPrompt",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.18",
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "a woman"
-      ],
-      "color": "#232",
-      "bgcolor": "#353"
-    },
-    {
       "id": 22,
       "type": "AV_ControlNetPreprocessor",
       "pos": [
@@ -842,7 +605,7 @@
       "flags": {
         "collapsed": false
       },
-      "order": 2,
+      "order": 0,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -969,6 +732,243 @@
       },
       "widgets_values": [
         "ComfyUI"
+      ]
+    },
+    {
+      "id": 46,
+      "type": "CLIPTextEncode",
+      "pos": [
+        79.5194091796875,
+        2223.86083984375
+      ],
+      "size": [
+        871.5177001953125,
+        639.8662109375
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 145
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "slot_index": 0,
+          "links": [
+            146
+          ]
+        }
+      ],
+      "title": "MainPrompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.18",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "a woman"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        -22.197834014892578,
+        4151.88330078125
+      ],
+      "size": [
+        210.29940795898438,
+        292.2994079589844
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 135
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            96
+          ]
+        }
+      ],
+      "title": "MainNegPrompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.27",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 15,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        -84.47350311279297,
+        2914.858154296875
+      ],
+      "size": [
+        366.86883544921875,
+        98
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            131
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            132
+          ]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            37
+          ]
+        }
+      ],
+      "title": "MainCheckpoint",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.27",
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "sdXL_v10VAEFix.safetensors"
+      ]
+    },
+    {
+      "id": 42,
+      "type": "Power Lora Loader (rgthree)",
+      "pos": [
+        426.5092468261719,
+        3630.5693359375
+      ],
+      "size": [
+        525.1156616210938,
+        244.04876708984375
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "dir": 3,
+          "name": "model",
+          "type": "MODEL",
+          "link": 131
+        },
+        {
+          "dir": 3,
+          "name": "clip",
+          "type": "CLIP",
+          "link": 132
+        }
+      ],
+      "outputs": [
+        {
+          "dir": 4,
+          "name": "MODEL",
+          "shape": 3,
+          "type": "MODEL",
+          "links": [
+            147
+          ]
+        },
+        {
+          "dir": 4,
+          "name": "CLIP",
+          "shape": 3,
+          "type": "CLIP",
+          "links": [
+            135,
+            145
+          ]
+        }
+      ],
+      "title": "MainLora",
+      "properties": {
+        "cnr_id": "rgthree-comfy",
+        "ver": "1.0.0",
+        "Show Strengths": "Single Strength"
+      },
+      "widgets_values": [
+        {},
+        {
+          "type": "PowerLoraLoaderHeaderWidget"
+        },
+        {},
+        ""
+      ]
+    },
+    {
+      "id": 172,
+      "type": "LoadImage",
+      "pos": [
+        -202.41867065429688,
+        664.4694213867188
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            408
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "MainImageAndMask",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.10.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "",
+        "image"
       ]
     }
   ],
@@ -1142,14 +1142,6 @@
       "IMAGE"
     ],
     [
-      393,
-      162,
-      0,
-      170,
-      0,
-      "IMAGE"
-    ],
-    [
       394,
       170,
       0,
@@ -1196,12 +1188,20 @@
       171,
       0,
       "IMAGE"
+    ],
+    [
+      408,
+      172,
+      0,
+      170,
+      0,
+      "IMAGE"
     ]
   ],
   "groups": [
     {
       "id": 1,
-      "title": "Left",
+      "title": "Main",
       "bounding": [
         -49.538169860839844,
         1377.271728515625,
@@ -1229,10 +1229,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 1.442099361065093,
+      "scale": 0.5559917313492639,
       "offset": [
-        -566.691234296333,
-        -1238.4990133968345
+        728.3047298192957,
+        -221.42728832419334
       ]
     },
     "frontendVersion": "1.36.14",

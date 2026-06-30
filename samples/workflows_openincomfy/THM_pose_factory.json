@@ -1,8 +1,8 @@
 {
   "id": "ed659cb4-6416-4032-92ee-855f23495981",
   "revision": 0,
-  "last_node_id": 28,
-  "last_link_id": 42,
+  "last_node_id": 29,
+  "last_link_id": 44,
   "nodes": [
     {
       "id": 20,
@@ -16,7 +16,7 @@
         246.00003051757812
       ],
       "flags": {},
-      "order": 10,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
@@ -46,7 +46,7 @@
         150
       ],
       "flags": {},
-      "order": 14,
+      "order": 15,
       "mode": 0,
       "inputs": [
         {
@@ -97,7 +97,7 @@
       "flags": {
         "collapsed": false
       },
-      "order": 15,
+      "order": 16,
       "mode": 0,
       "inputs": [
         {
@@ -128,7 +128,7 @@
         58
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -168,7 +168,7 @@
         150
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -242,52 +242,6 @@
       ]
     },
     {
-      "id": 8,
-      "type": "VAEDecode",
-      "pos": [
-        282.0963439941406,
-        -29.772808074951172
-      ],
-      "size": [
-        210,
-        46
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 7
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 8
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            19,
-            28,
-            31,
-            33
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.27",
-        "Node name for S&R": "VAEDecode"
-      },
-      "widgets_values": []
-    },
-    {
       "id": 7,
       "type": "CLIPTextEncode",
       "pos": [
@@ -299,7 +253,7 @@
         180.6060791015625
       ],
       "flags": {},
-      "order": 2,
+      "order": 3,
       "mode": 0,
       "inputs": [
         {
@@ -340,13 +294,13 @@
         718.5
       ],
       "flags": {},
-      "order": 4,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 40
+          "link": 43
         },
         {
           "name": "positive",
@@ -390,58 +344,6 @@
       ]
     },
     {
-      "id": 4,
-      "type": "CheckpointLoaderSimple",
-      "pos": [
-        -592.9944458007812,
-        180.63082885742188
-      ],
-      "size": [
-        315,
-        98
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "slot_index": 0,
-          "links": [
-            40
-          ]
-        },
-        {
-          "name": "CLIP",
-          "type": "CLIP",
-          "slot_index": 1,
-          "links": [
-            41,
-            42
-          ]
-        },
-        {
-          "name": "VAE",
-          "type": "VAE",
-          "slot_index": 2,
-          "links": [
-            8
-          ]
-        }
-      ],
-      "title": "PoseCheckPoint",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.27",
-        "Node name for S&R": "CheckpointLoaderSimple"
-      },
-      "widgets_values": [
-        "sdXL_v10VAEFix.safetensors"
-      ]
-    },
-    {
       "id": 13,
       "type": "CLIPTextEncode",
       "pos": [
@@ -453,7 +355,7 @@
         457.3999938964844
       ],
       "flags": {},
-      "order": 3,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
@@ -493,7 +395,7 @@
         150
       ],
       "flags": {},
-      "order": 8,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
@@ -542,7 +444,7 @@
         246.00003051757812
       ],
       "flags": {},
-      "order": 12,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
@@ -572,7 +474,7 @@
         270.00006103515625
       ],
       "flags": {},
-      "order": 13,
+      "order": 14,
       "mode": 0,
       "inputs": [
         {
@@ -604,7 +506,7 @@
         246.00003051757812
       ],
       "flags": {},
-      "order": 16,
+      "order": 17,
       "mode": 0,
       "inputs": [
         {
@@ -634,7 +536,7 @@
         270
       ],
       "flags": {},
-      "order": 17,
+      "order": 18,
       "mode": 0,
       "inputs": [
         {
@@ -666,7 +568,7 @@
         270
       ],
       "flags": {},
-      "order": 11,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
@@ -700,7 +602,7 @@
       "flags": {
         "collapsed": false
       },
-      "order": 6,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -716,6 +618,143 @@
         "Node name for S&R": "PreviewImage"
       },
       "widgets_values": []
+    },
+    {
+      "id": 8,
+      "type": "VAEDecode",
+      "pos": [
+        325.35932482608945,
+        -184.47073953464704
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            19,
+            28,
+            31,
+            33
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.27",
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 29,
+      "type": "ModelPassThrough",
+      "pos": [
+        -112.5840169272262,
+        -58.2734249707857
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "shape": 7,
+          "type": "MODEL",
+          "link": 44
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            43
+          ]
+        }
+      ],
+      "title": "THM-Lora",
+      "properties": {
+        "cnr_id": "comfyui-kjnodes",
+        "ver": "1.2.7",
+        "Node name for S&R": "ModelPassThrough"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        -592.9944458007812,
+        180.63082885742188
+      ],
+      "size": [
+        315,
+        98
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "slot_index": 0,
+          "links": [
+            44
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "slot_index": 1,
+          "links": [
+            41,
+            42
+          ]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "slot_index": 2,
+          "links": [
+            8
+          ]
+        }
+      ],
+      "title": "PoseCheckPoint",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.27",
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "sdXL_v10VAEFix.safetensors"
+      ]
     }
   ],
   "links": [
@@ -856,14 +895,6 @@
       "IMAGE"
     ],
     [
-      40,
-      4,
-      0,
-      3,
-      0,
-      "MODEL"
-    ],
-    [
       41,
       4,
       1,
@@ -878,20 +909,36 @@
       13,
       0,
       "CLIP"
+    ],
+    [
+      43,
+      29,
+      0,
+      3,
+      0,
+      "MODEL"
+    ],
+    [
+      44,
+      4,
+      0,
+      29,
+      0,
+      "MODEL"
     ]
   ],
   "groups": [],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.32349184307607415,
+      "scale": 0.7627768444385641,
       "offset": [
-        1744.2840860723745,
-        1572.3073471395498
+        861.1646852618555,
+        342.7602989263287
       ]
     },
-    "frontendVersion": "1.41.21",
-    "VHS_latentpreview": false,
+    "frontendVersion": "1.36.14",
+    "VHS_latentpreview": true,
     "VHS_latentpreviewrate": 0,
     "VHS_MetadataImage": true,
     "VHS_KeepIntermediate": true

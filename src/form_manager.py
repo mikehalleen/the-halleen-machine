@@ -93,8 +93,26 @@ class ProjectFormRegistry:
             self._set_value_by_path(data, path, final_val)
         
         return data
-    
 
+    def update_json_field(self, current_json: str | dict, json_path: str, value: Any):
+        """Update a single registered field in the project dict (for per-component Gradio events)."""
+        import copy
+
+        data = copy.deepcopy(current_json) if current_json else {}
+        entry = next((e for e in self._registry if e["path"] == json_path and e["is_input"]), None)
+        if not entry:
+            return data
+
+        if entry["to_json"]:
+            try:
+                final_val = entry["to_json"](value)
+            except Exception:
+                final_val = value
+        else:
+            final_val = value
+
+        self._set_value_by_path(data, json_path, final_val)
+        return data
 
     def _get_value_by_path(self, data: dict, path: str, default: Any):
         keys = path.split('.')

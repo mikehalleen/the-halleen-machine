@@ -36,7 +36,7 @@ SCRIPT_DIRECTORY = os.path.join(os.path.dirname(__file__), "../scripts")
 
 
 
-from test_gen_helpers import _create_temp_json_for_sequence_batch, run_pose_preview_task
+from single_gen_helpers import _create_temp_json_for_sequence_batch, run_pose_preview_task
 
 def _format_status_file(file_path: Path, title: str):
     """Helper to read and format a single JSON status file."""
@@ -406,18 +406,18 @@ def stitch_timeline_gif(current_file_path: str):
     yield from _run_stitch_script_and_stream([sys.executable, "-u", script, "--config", current_file_path, "--format", "gif"], "Download GIF")
 
 def _run_stitch_script_and_stream(command_parts: List[str], download_label: str = "Download File"):
-    yield "Starting stitch process...", gr.File(visible=False), gr.skip()
+    yield gr.update(value="Starting stitch process...", visible=True), gr.File(visible=False), gr.skip()
     process = subprocess.Popen(command_parts, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1)
     full_log = ""
     try:
-        for line in process.stdout: full_log += line; yield full_log, gr.File(visible=False), gr.skip()
+        for line in process.stdout: full_log += line; yield gr.update(value=full_log, visible=True), gr.File(visible=False), gr.skip()
     except: pass
-    if process.wait() != 0: yield full_log + "\nERROR", gr.File(visible=False), gr.skip(); return
+    if process.wait() != 0: yield gr.update(value=full_log + "\nERROR", visible=True), gr.File(visible=False), gr.skip(); return
     try:
         out = Path(full_log.strip().split('\n')[-1])
-        if out.exists(): yield full_log + "\nSuccess!", gr.File(value=str(out), visible=True, label=download_label), gr.skip()
-        else: yield full_log + "\nError finding output.", gr.File(visible=False), gr.skip()
-    except: yield full_log + "\nError parsing output.", gr.File(visible=False), gr.skip()
+        if out.exists(): yield gr.update(value=full_log + "\nSuccess!", visible=True), gr.File(value=str(out), visible=True, label=download_label), gr.skip()
+        else: yield gr.update(value=full_log + "\nError finding output.", visible=True), gr.File(visible=False), gr.skip()
+    except: yield gr.update(value=full_log + "\nError parsing output.", visible=True), gr.File(visible=False), gr.skip()
 
 
 def purge_bridge_media(project_dict: dict):
@@ -796,11 +796,6 @@ def _build_pose_prompt_for_keyframe(project_data: dict, keyframe_data: dict) -> 
         char_prompt = char.get("prompt", "") or ""
         lora_tags = re.findall(r'__lora:[^_]+__', char_prompt)
         prompt_parts.extend(lora_tags)
-        
-        # Get trigger keywords
-        lora_keyword = char.get("lora_keyword", "").strip()
-        if lora_keyword:
-            prompt_parts.append(lora_keyword)
     
     # Use Expressive mode when character is selected
     mode = "Expressive" if has_character else "Simple"
@@ -854,29 +849,30 @@ def _create_temp_json_for_pose(pose_prompt: str, full_project_data: dict, pose_m
     if pose_mode == "Project Style":
         temp_data["project"]["style_prompt"] = full_project_data.get("project", {}).get("style_prompt", "")
         temp_data["project"]["model"] = full_project_data.get("project", {}).get("model", "")
-        src_kf = full_project_data.get("project", {}).get("keyframe_generation", {})
-        kf_gen["cfg"] = src_kf.get("cfg", 4.0)
-        kf_gen["sampler_name"] = src_kf.get("sampler_name", "dpmpp_2m_sde")
-        kf_gen["scheduler"] = src_kf.get("scheduler", "karras")
-        kf_gen["steps"] = 30
+        from helpers import project_controls_kf_sampler_settings
+
+        if project_controls_kf_sampler_settings(full_project_data):
+            src_kf = full_project_data.get("project", {}).get("keyframe_generation", {})
+            kf_gen["cfg"] = src_kf.get("cfg", 4.0)
+            kf_gen["sampler_name"] = src_kf.get("sampler_name", "dpmpp_2m_sde")
+            kf_gen["scheduler"] = src_kf.get("scheduler", "karras")
+            kf_gen["steps"] = src_kf.get("steps", 30)
         char_prompt_modifier = ""
         base_negative = full_project_data.get("project", {}).get("negatives", {}).get("global", "")
     elif pose_mode == "Expressive":
         temp_data["project"]["style_prompt"] = POSE_STYLE_EXPRESSIVE
         temp_data["project"]["model"] = full_project_data.get("project", {}).get("pose_model_enhanced", POSE_MODEL_EXPRESSIVE)
-        kf_gen["cfg"] = 4.0
-        kf_gen["steps"] = 30
-        kf_gen["sampler_name"] = "dpmpp_2m_sde"
-        kf_gen["scheduler"] = "karras"
+        from helpers import apply_pose_gen_sampler_defaults, force_pose_gen_sampler_driven
+
+        apply_pose_gen_sampler_defaults(kf_gen)
         char_prompt_modifier = POSE_GEN_CHARACTER_OVERRIDE_EXPRESSIVE
         base_negative = POSE_NEGATIVE_EXPRESSIVE
     else:  # Simple
         temp_data["project"]["style_prompt"] = POSE_STYLE_SIMPLE
         temp_data["project"]["model"] = full_project_data.get("project", {}).get("pose_model_fast", POSE_MODEL_SIMPLE)
-        kf_gen["cfg"] = 4.0
-        kf_gen["steps"] = 30
-        kf_gen["sampler_name"] = "dpmpp_2m_sde"
-        kf_gen["scheduler"] = "karras"
+        from helpers import apply_pose_gen_sampler_defaults, force_pose_gen_sampler_driven
+
+        apply_pose_gen_sampler_defaults(kf_gen)
         char_prompt_modifier = POSE_GEN_CHARACTER_OVERRIDE_SIMPLE
         base_negative = POSE_NEGATIVE_SIMPLE
     
@@ -885,7 +881,6 @@ def _create_temp_json_for_pose(pose_prompt: str, full_project_data: dict, pose_m
     pose_character = {
         "id": "temp_pose_char_id", 
         "name": "Pose Character", 
-        "lora_keyword": "", 
         "prompt": char_prompt_modifier, 
         "negative_prompt": ""
     }
@@ -917,7 +912,12 @@ def _create_temp_json_for_pose(pose_prompt: str, full_project_data: dict, pose_m
     }
     
     temp_data["sequences"] = {unique_id: pose_seq}
-    
+
+    if pose_mode in ("Expressive", "Simple"):
+        from helpers import force_pose_gen_sampler_driven
+
+        force_pose_gen_sampler_driven(temp_data)
+
     return temp_data, unique_id
 
 
@@ -1358,16 +1358,23 @@ def handle_comfyui_restart(settings_json):
     
     yield "\n".join(msg)
 
+
+_TEST_LABEL_NAMES = {
+    "id_char_": "Character Test",
+    "id_setting_": "Setting Test",
+    "id_styleasset_": "Style Asset Test",
+    "id_pose_preview": "Pose Preview",
+}
+
+
 def check_comfyui_status(project_dict, api_base=None):
-    # If api_base provided, use it (from app startup settings)
     if api_base:
         url = api_base
     else:
-        # Fallback: check project dict (legacy), but this shouldn't be used anymore
         data = project_dict if isinstance(project_dict, dict) else {}
         url = data.get("project", {}).get("comfy", {}).get("api_base")
         if not url:
-            url = "http://127.0.0.1:8188"  # Hard default instead of calling ensure_settings()
+            url = "http://127.0.0.1:8188"
 
     if not isinstance(url, str) or not url.strip():
         url = "http://127.0.0.1:8188"
@@ -1376,20 +1383,47 @@ def check_comfyui_status(project_dict, api_base=None):
     if not url.startswith("http"):
         url = f"http://{url}"
 
+    current_project_name = (project_dict or {}).get("project", {}).get("name") if isinstance(project_dict, dict) else None
+
     test_url = f"{url.rstrip('/')}/queue"
-
-
     try:
         r = requests.get(test_url, timeout=1)
         if r.status_code == 200:
-            # Uses '●' which will be green, while the link is orange
-            return f"● [ComfyUI Online]({url.rstrip('/')}/)"
+            running_suffix = ""
+            link_label = "ComfyUI Online"
+            try:
+                payload = r.json()
+                queue_running = payload.get("queue_running") or []
+
+                if queue_running:
+                    entry = queue_running[0]
+                    extra_data = entry[3] if len(entry) > 3 else {}
+                    job_project = (extra_data or {}).get("machine_ui_project")
+                    job_label = (extra_data or {}).get("machine_ui_label")
+
+                    if not job_project or not job_label:
+                        item_html = '<span style="color:#888">&#9675; external</span>'
+                    elif job_project != current_project_name:
+                        item_html = f'<span style="color:#aaa">{job_project} | {job_label}</span>'
+                    elif job_label.startswith("vid"):
+                        item_html = f'<span style="color:var(--color-vid)">&#9655; {job_label}</span>'
+                    else:
+                        test_name = next(
+                            (v for k, v in _TEST_LABEL_NAMES.items() if job_label == k or job_label.startswith(k)),
+                            None,
+                        )
+                        if test_name:
+                            item_html = f'<span style="color:var(--color-test)">&#9675; {test_name}</span>'
+                        else:
+                            item_html = f'<span style="color:var(--color-kf)">&#9633; {job_label}</span>'
+                    # running_suffix = f' <span style="color:#fff"><strong>IN PROGRESS:</strong></span> {item_html}'
+                    running_suffix = f' <span style="color:#fff"><strong> | </strong></span> {item_html}'
+            except Exception:
+                pass
+            return f"● [{link_label}]({url.rstrip('/')}/){running_suffix}"
     except Exception:
         pass
-    
-    # Uses '○' for a hollow, neutral "offline" look
     return "○ ComfyUI Offline"
-
 
 
 def run_bridge_script_and_stream(fp):
@@ -1498,8 +1532,7 @@ def build_export_panel(scope="project"):
         # gr.Markdown(f"Export ({scope}):")
         c["source_layer"] = gr.Dropdown(label="Version", allow_custom_value=False, filterable=False,  info="Which version to export if present", choices=["Original", "Upscale (2xh)", "Interpolate (2xf)", "Both (2xh_2xf)"], value="Original")
         c["animatic"] = gr.Checkbox(label="Animatic", info="Generate timing preview from keyframes only (no GPU rendering)", value=False)
-        c["export_btn"] = gr.Button("Export", variant="primary")
-        c["download"] = gr.File(label="Download", visible=False)
+        c["debug_labels"] = gr.Checkbox(label="Debug labels", info="Overlay seq:vid (seq:vid:id or seq:vid:open at endpoints, seq:id on bridges) in the lower-left corner", value=False)
         c["format"] = gr.Radio(["MP4", "GIF"], label="Format", value="MP4")
         c["resize"] = gr.Checkbox(label="Resize to Project", info="Enforce final size to be project size (not needed with Quarter Size video used)", value=False, visible=False)
         c["fps"] = gr.Radio(["Default", "2x Default"], info="Use 2x to correct speed when exporting 2xf version", label="FPS", value="Default")
@@ -1507,6 +1540,8 @@ def build_export_panel(scope="project"):
         c["audio_upload"] = gr.UploadButton("Upload Audio")
         c["log"] = gr.Textbox(label="Log", lines=4, visible=False)
         c["history_dd"] = gr.Dropdown(label="History", info="Re-download previous exports", choices=[], visible=False)
+        c["export_btn"] = gr.Button("Export", variant="primary")
+        c["download"] = gr.File(label="Download", visible=False)
     return c
 
 def _create_temp_json_for_single_kf(full, nid):
@@ -1568,8 +1603,20 @@ def handle_single_vid_batch(fp, pj, nid):
     with open(tf, 'w') as f: json.dump(tmp, f)
     return _launch_detached_batch_script([sys.executable, "-u", os.path.join(SCRIPT_DIRECTORY, "run_video.py"), "--config", str(tf), "--status-file", str(sf)], sf)
 
-def handle_export_task(fp, pj, scope, seq_id, fmt, res, fps, layer, audio, animatic=False):
-    if not fp: yield "Error: No file", None, None; return
+def _resolve_sequence_id_from_node(pj, nid):
+    if not pj or not nid:
+        return None
+    full = pj if isinstance(pj, dict) else {}
+    seqs = full.get("sequences", {})
+    if nid in seqs:
+        return nid
+    node, kind, seq, sid = _resolve_context_safe(full, nid)
+    return sid
+
+def handle_export_task(fp, pj, scope, seq_id, fmt, res, fps, layer, audio, animatic=False, debug_labels=False):
+    if not fp:
+        yield gr.update(value="Error: No file", visible=True), gr.File(visible=False), gr.skip()
+        return
     
     # If scope is sequence, we must generate a temp config containing JUST that sequence
     # run_stitch.py usually stitches everything it finds in the project.
@@ -1577,7 +1624,12 @@ def handle_export_task(fp, pj, scope, seq_id, fmt, res, fps, layer, audio, anima
     if scope == "sequence" and seq_id:
         full = pj if isinstance(pj, dict) else {}
         tmp, err = _create_temp_json_for_sequence_batch(full, seq_id)
-        if not tmp: yield "Error creating temp config", None, None; return
+        if not tmp:
+            msg = f"Error creating temp config"
+            if err:
+                msg = f"{msg}\n\n{err}"
+            yield gr.update(value=msg, visible=True), gr.File(visible=False), gr.skip()
+            return
         tdir = _get_temp_dir(full) or Path(__file__).parent
         tf = tdir / f"__export_{seq_id}.json"
         with open(tf, 'w') as f: json.dump(tmp, f)
@@ -1594,15 +1646,20 @@ def handle_export_task(fp, pj, scope, seq_id, fmt, res, fps, layer, audio, anima
     
     if audio: cmd.extend(["--audio", audio])
     if animatic: cmd.append("--animatic")
+    if debug_labels: cmd.append("--debug_labels")
     
     yield from _run_stitch_script_and_stream(cmd, "Download Export")
     yield gr.skip(), gr.skip(), gr.update(choices=list_existing_exports(pj))
 
-def handle_sequence_export_task(fp, pj, nid, fmt, res, fps, layer="Original", audio=None, animatic=False):
-    yield from handle_export_task(fp, pj, "sequence", nid, fmt, res, fps, layer, audio, animatic)
+def handle_sequence_export_task(fp, pj, nid, fmt, res, fps, layer="Original", audio=None, animatic=False, debug_labels=False):
+    seq_id = _resolve_sequence_id_from_node(pj, nid)
+    if not seq_id:
+        yield gr.update(value="Error: Select a sequence to export.", visible=True), gr.File(visible=False), gr.skip()
+        return
+    yield from handle_export_task(fp, pj, "sequence", seq_id, fmt, res, fps, layer, audio, animatic, debug_labels)
 
-def handle_project_export_task(fp, pj, fmt, res, fps, layer="Original", audio=None, animatic=False):
-    yield from handle_export_task(fp, pj, "project", None, fmt, res, fps, layer, audio, animatic)
+def handle_project_export_task(fp, pj, fmt, res, fps, layer="Original", audio=None, animatic=False, debug_labels=False):
+    yield from handle_export_task(fp, pj, "project", None, fmt, res, fps, layer, audio, animatic, debug_labels)
 
 def build_run_tab(fp, pj, sett, form=None, features={}):
     with gr.Row():
@@ -1683,7 +1740,6 @@ def build_run_tab(fp, pj, sett, form=None, features={}):
     cup.click(lambda p: cancel_upscale_batch(p), inputs=[pj], outputs=[stat["status_window"]])
     # ccas.click(lambda p: cancel_cascade_batch(p), inputs=[pj], outputs=[stat["status_window"]])
 
-    kfb.click(cb_save_project, inputs=[fp, pj, sett], outputs=[]).then(run_images_script, inputs=[fp, pj], outputs=[stat["status_window"]])
     qcb.click(cb_save_project, inputs=[fp, pj, sett], outputs=[]).then(handle_qc_batch, inputs=[fp, pj], outputs=[stat["status_window"]])
     pose_batch_btn.click(cb_save_project, inputs=[fp, pj, sett], outputs=[]).then(
         handle_pose_batch, inputs=[fp, pj, gr.State("project"), gr.State(None)], outputs=[stat["status_window"]]
@@ -1703,7 +1759,24 @@ def build_run_tab(fp, pj, sett, form=None, features={}):
     # vidp["vid_yes"].click(purge_inbetween_media, inputs=[pj], outputs=[pj, stat["status_window"]]).then(lambda: (gr.update(visible=False), gr.update(open=False)), outputs=[vidp["vid_confirm_group"], vidp["vid_purge_btn"].parent.parent])
     kfp["kf_yes"].click(purge_keyframe_media, inputs=[pj], outputs=[pj, stat["status_window"]]).then(lambda: (gr.update(visible=False), gr.update(open=False)), outputs=[kfp["kf_confirm_group"], kfp["kf_acc"]])
 
-    vidb.click(cb_save_project, inputs=[fp, pj, sett], outputs=[]).then(run_videos_script, inputs=[fp, pj], outputs=[stat["status_window"]])
+    if form is not None:
+        _run_form_inputs = [fp, pj, sett] + form.get_inputs()
+
+        def _save_and_run_images(fp, pj, sett, *form_values):
+            data = form.update_json(pj, *form_values)
+            cb_save_project(fp, data, sett)
+            return run_images_script(fp, data)
+
+        def _save_and_run_videos(fp, pj, sett, *form_values):
+            data = form.update_json(pj, *form_values)
+            cb_save_project(fp, data, sett)
+            return run_videos_script(fp, data)
+
+        kfb.click(_save_and_run_images, inputs=_run_form_inputs, outputs=[stat["status_window"]])
+        vidb.click(_save_and_run_videos, inputs=_run_form_inputs, outputs=[stat["status_window"]])
+    else:
+        kfb.click(cb_save_project, inputs=[fp, pj, sett], outputs=[]).then(run_images_script, inputs=[fp, pj], outputs=[stat["status_window"]])
+        vidb.click(cb_save_project, inputs=[fp, pj, sett], outputs=[]).then(run_videos_script, inputs=[fp, pj], outputs=[stat["status_window"]])
     vidp["vid_purge_btn"].click(lambda: gr.update(visible=True), outputs=[vidp["vid_confirm_group"]])
     vidp["vid_no"].click(lambda: gr.update(visible=False), outputs=[vidp["vid_confirm_group"]])
     vidp["vid_yes"].click(purge_inbetween_media, inputs=[pj], outputs=[pj, stat["status_window"]]).then(lambda: (gr.update(visible=False), gr.update(open=False)), outputs=[vidp["vid_confirm_group"], vidp["vid_acc"]])
@@ -1736,7 +1809,12 @@ def build_run_tab(fp, pj, sett, form=None, features={}):
     pem["history_dd"].change(lambda p: gr.update(value=p, visible=True), inputs=[pem["history_dd"]], outputs=[pem["download"]])
     
     # pem["export_btn"].click(handle_project_export_task, inputs=[fp, pj, pem["format"], pem["resize"], pem["fps"], pem["source_layer"], pem["audio_dd"]], outputs=[pem["log"], pem["download"], pem["history_dd"]])
-    pem["export_btn"].click(handle_project_export_task, inputs=[fp, pj, pem["format"], pem["resize"], pem["fps"], pem["source_layer"], pem["audio_dd"], pem["animatic"]], outputs=[pem["log"], pem["download"], pem["history_dd"]])
+    pem["export_btn"].click(
+        handle_project_export_task,
+        inputs=[fp, pj, pem["format"], pem["resize"], pem["fps"], pem["source_layer"], pem["audio_dd"], pem["animatic"], pem["debug_labels"]],
+        outputs=[pem["log"], pem["download"], pem["history_dd"]],
+        show_progress="full",
+    )
     etn.click(export_timeline_script, inputs=[fp], outputs=[stat["status_window"], dl])
     beats.click(generate_beats_readout, inputs=[pj], outputs=[bout])
 

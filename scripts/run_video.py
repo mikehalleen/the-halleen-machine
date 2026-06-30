@@ -16,7 +16,8 @@ import csv
 from pathlib import Path
 
 # --- CONSTANTS & REGEX ---
-_LORA_RE = re.compile(r"__lora:([^:>]+):(.+?)__")
+from lora_tags import LoraSpec, find_lora_tags, format_lora_tag, scale_lora_spec, strip_lora_tags
+import workflow_controls as wc
 _TEMPLATE_RE = re.compile(r'\[([a-zA-Z0-9_.]+)\]')
 _WC_RE = re.compile(r"\{([^{}]+)\}")
 
@@ -30,7 +31,7 @@ DEFAULT_VIDEO_TEMPLATE = """
 [project.style_prompt]
 """
 
-PRIMER_STEPS = 2
+PRIMER_STEPS = 2  # THM-SlowMoPrimer / legacy primer budget; not UI-configurable (change here only)
 EXPRESS_STEPS = 6
 FULL_STEPS = 12
 DEFAULT_UPSCALE = False
@@ -68,60 +69,12 @@ def load_lora_registry():
 LORA_REGISTRY = load_lora_registry()
 
 
-def is_ltx2_workflow(wf_path):
-    """Detect LTX-2 workflow based on filename"""
-    filename = os.path.basename(wf_path).lower()
-    return "ltx" in filename
-
-def update_ltx2_dims(workflow, width, height):
-    """Update LTX-2 WIDTH/HEIGHT nodes"""
-    for _, node in find_nodes_by_title(workflow, "WIDTH"):
-        set_if_exists(node, "value", int(width))
-    for _, node in find_nodes_by_title(workflow, "HEIGHT"):
-        set_if_exists(node, "value", int(height))
-
-def update_ltx2_fps(workflow, fps):
-    """Update LTX-2 FPS node"""
-    for _, node in find_nodes_by_title(workflow, "FPS"):
-        set_if_exists(node, "value", float(fps))
-
-def update_ltx2_frames(workflow, frames):
-    """Update LTX-2 frame count"""
-    for _, node in find_nodes_by_title(workflow, "LENGTH (frames)"):
-        set_if_exists(node, "value", int(frames))
-
-def update_ltx2_images(workflow, start_path, end_path):
-    """Update LTX-2 first/last frame images"""
-    if start_path:
-        for _, node in find_nodes_by_title(workflow, "FIRST FRAME"):
-            set_if_exists(node, "image", start_path)  # Use full path
-    if end_path:
-        for _, node in find_nodes_by_title(workflow, "LAST FRAME"):
-            set_if_exists(node, "image", end_path)  # Use full path
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def calculate_lane_sum(text_sources: list):
     total = 0.0
     for text in text_sources:
         if not text: continue
-        matches = _LORA_RE.findall(text)
-        for _, str_val in matches:
-            try: total += float(str_val)
-            except: pass
+        for spec in find_lora_tags(text):
+            total += spec.strength
     return total
 
 def _split_comma(text):
@@ -351,8 +304,20 @@ def new_node_id(graph):
     numeric = [int(k) for k in graph.keys() if isinstance(k, str) and k.isdigit()]
     return str(max(numeric) + 1) if numeric else str(int(time.time() * 1000) % 2_000_000_000)
 
-def post_prompt(api_base, graph):
-    r = requests.post(api_base.rstrip("/") + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4())}, timeout=60)
+def post_prompt(api_base, graph, project_name=None, label=None):
+    wc.strip_prompt_metadata(graph)
+    extra_data = {}
+    if project_name:
+        extra_data["machine_ui_project"] = project_name
+    if label:
+        extra_data["machine_ui_label"] = label
+    r = requests.post(api_base.rstrip("/") + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4()), "extra_data": extra_data}, timeout=60)
+    if not r.ok:
+        print(f"[COMFY] POST /prompt failed: {r.status_code}")
+        try:
+            print(r.text)
+        except Exception:
+            pass
     r.raise_for_status()
     return r.json().get("prompt_id")
 
@@ -362,8 +327,23 @@ def wait_history_done(api_base, prompt_id, timeout_s=3600, poll_s=1.0):
     while True:
         r = requests.get(url, timeout=30)
         if r.status_code == 200:
-            if prompt_id in r.json(): return True
-        if time.time() - t0 > timeout_s: return False
+            payload = r.json()
+            if prompt_id in payload:
+                entry = payload[prompt_id]
+                status = entry.get("status") or {}
+                status_str = str(status.get("status_str") or "").lower()
+                if status_str == "error":
+                    messages = status.get("messages") or []
+                    detail = ""
+                    for msg in messages:
+                        if isinstance(msg, (list, tuple)) and len(msg) >= 2:
+                            detail = str(msg[1])[:500]
+                            break
+                    print(f"[ERR] ComfyUI prompt {prompt_id} failed: {detail or status_str}")
+                    return False
+                return True
+        if time.time() - t0 > timeout_s:
+            return False
         time.sleep(poll_s)
 
 def style_line(project):
@@ -433,7 +413,12 @@ def ensure_scale_node(graph, title, w, h):
 def wire_half_to_wan(graph, clip_type, l1, l2, half_w, half_h):
     disconnect_wan_images(graph)
     wan_nid, _ = first_node_by_title(graph, "WanFirstLastFrameToVideo")
-    if not wan_nid: raise RuntimeError("WanFirstLastFrameToVideo node not found.")
+    if not wan_nid:
+        tagged = wc.find_control_nodes(graph, wc.VIDEO_GENERATOR)
+        if tagged:
+            wan_nid = tagged[0].node_id
+    if not wan_nid:
+        raise RuntimeError("Video generator node not found (THM-VideoGenerator or WanFirstLastFrameToVideo).")
     start_scale_nid = ensure_scale_node(graph, "StartImage", half_w, half_h)
     end_scale_nid   = ensure_scale_node(graph, "EndImage", half_w, half_h)
     if clip_type in ("SE","SO"):
@@ -443,26 +428,6 @@ def wire_half_to_wan(graph, clip_type, l1, l2, half_w, half_h):
         connect_output_to_input(graph, l2, end_scale_nid, "image", out_index=0)
         connect_output_to_input(graph, end_scale_nid, wan_nid, "end_image", out_index=0)
 
-# def enforce_project_dimensions_nodes(workflow, full_w, full_h):
-#     for t in ("set_width", "Set Width", "SetWidth"):
-#         for _, node in find_nodes_by_title(workflow, t):
-#             for k in ("value","val","number","int","width","W"): set_if_exists(node, k, int(full_w))
-#     for t in ("set_height", "Set Height", "SetHeight"):
-#         for _, node in find_nodes_by_title(workflow, t):
-#             for k in ("value","val","number","int","height","H"): set_if_exists(node, k, int(full_h))
-
-
-def enforce_project_dimensions_nodes(workflow, full_w, full_h):
-    is_ltx2 = workflow.get('_is_ltx2', False)
-    
-    if is_ltx2:
-        update_ltx2_dims(workflow, full_w, full_h)
-    else:
-        for t in ["Project Width", "Project Height"]:
-            for _, node in find_nodes_by_title(workflow, t):
-                if "inputs" not in node: node["inputs"] = {}
-                if t == "Project Width": node["inputs"]["value"] = int(full_w)
-                else: node["inputs"]["value"] = int(full_h)
 
 def get_fps_from_create_video(node):
     if not isinstance(node, dict) or "inputs" not in node: return None
@@ -471,72 +436,93 @@ def get_fps_from_create_video(node):
         if isinstance(v, (int,float)) and v > 0: return float(v)
     return None
 
-# def set_wan_frames(workflow, frames):
-#     nid, wan = first_node_by_title(workflow, "WanFirstLastFrameToVideo")
-#     if not wan: return
-#     for k in ("frames","length","num_frames","frame_count"):
-#         if "inputs" in wan and k in wan["inputs"]: wan["inputs"][k] = int(frames); return
-#     set_if_exists(wan, "frames", int(frames))
+
+def _resolve_project_fps(vg: dict, wf_path: str | None) -> float:
+    if vg.get("fps") is not None:
+        return float(vg["fps"])
+    if not wf_path:
+        return 16.0
+    try:
+        graph = jload(wf_path)
+        for control_node in wc.find_control_nodes(graph, wc.FRAME_RATE):
+            for key in ("value", "float", "fps"):
+                val = control_node.node.get("inputs", {}).get(key)
+                if isinstance(val, (int, float)) and val > 0:
+                    return float(val)
+        _, cv = first_node_by_title(graph, "Create Video")
+        baked = get_fps_from_create_video(cv)
+        if baked:
+            return baked
+    except Exception:
+        pass
+    return 16.0
 
 
-def set_video_frames(workflow, frames):
-    """Set video frame count for any workflow type"""
-    is_ltx2 = workflow.get('_is_ltx2', False)
-    
-    if is_ltx2:
-        update_ltx2_frames(workflow, frames)
+def _apply_express_sampler_steps(
+    graph: dict,
+    express_video: bool,
+    *,
+    total_steps: int = 14,
+) -> int:
+    """Split legacy SlowMoPrimer / IterKSampler / WanFixedSeed ranges from project total_steps."""
+    primer_end = PRIMER_STEPS
+    if express_video:
+        t_steps = max(primer_end + 1, int(total_steps) // 2)
+        iter_end = t_steps
     else:
-        nid, wan = first_node_by_title(workflow, "WanFirstLastFrameToVideo")
-        if wan and "inputs" in wan and "length" in wan["inputs"]:
-            wan["inputs"]["length"] = int(frames)
+        t_steps = max(primer_end + 2, int(total_steps))
+        post_primer = t_steps - primer_end
+        iter_end = primer_end + post_primer // 2
+    for _, node in find_nodes_by_title(graph, "SlowMoPrimer"):
+        set_if_exists(node, "steps", t_steps)
+        set_if_exists(node, "start_at_step", 0)
+        set_if_exists(node, "end_at_step", primer_end)
+    for _, node in find_nodes_by_title(graph, "IterKSampler"):
+        set_if_exists(node, "steps", t_steps)
+        set_if_exists(node, "start_at_step", primer_end)
+        set_if_exists(node, "end_at_step", iter_end)
+    for _, node in find_nodes_by_title(graph, "WanFixedSeed"):
+        set_if_exists(node, "steps", t_steps)
+        set_if_exists(node, "start_at_step", iter_end)
+        set_if_exists(node, "end_at_step", t_steps)
+    return t_steps
 
 
-def set_wan_size(workflow, w, h):
-    nid, wan = first_node_by_title(workflow, "WanFirstLastFrameToVideo")
-    if not wan: return
-    for k in ("width","W","out_width","video_width"): set_if_exists(wan, k, int(w))
-    for k in ("height","H","out_height","video_height"): set_if_exists(wan, k, int(h))
+def _log_video_caps(
+    caps: wc.VideoCapabilities,
+    fps: float,
+    frames: int,
+    clip_type: str | None = None,
+) -> None:
+    print(f"[VIDEO] lora_mode={caps.lora_mode}")
+    if clip_type:
+        use_start = clip_type in ("SE", "SO")
+        use_end = clip_type in ("SE", "OE")
+        print(
+            f"[VIDEO] frame_mode={clip_type} "
+            f"start={'active' if use_start else 'off'} "
+            f"end={'active' if use_end else 'off'}"
+        )
+    print(
+        f"[VIDEO] frame_support start={'yes' if caps.supports_start_frame else 'no'} "
+        f"end={'yes' if caps.supports_end_frame else 'no'}"
+    )
+    for label, found in (
+        ("THM-VideoGenerator", caps.has_video_generator),
+        ("THM-FrameCount", caps.has_frame_count),
+        ("THM-FrameRate", caps.has_frame_rate),
+        ("THM-SaveVideo", caps.has_save_video),
+        ("THM-StartFrame-tag", caps.has_start_frame),
+        ("THM-EndFrame-tag", caps.has_end_frame),
+        ("THM-KSampler", caps.has_thm_ksampler_passes),
+        ("THM-SlowMoPrimer", caps.has_thm_slowmo_primer),
+        ("THM-Steps", caps.has_thm_steps),
+        ("express_samplers", caps.has_express_samplers),
+        ("legacy_wan_generator", caps.has_legacy_wan_generator),
+    ):
+        print(f"[VIDEO] {label}: {'found' if found else 'missed'}")
+    print(f"[VIDEO] fps={fps} frames={frames}")
 
-# def update_video_seeds(workflow, seed):
-#     for _, node in find_nodes_by_class(workflow, "KSamplerAdvanced"): set_if_exists(node, "noise_seed", int(seed))
-#     for _, node in find_nodes_by_class(workflow, "KSampler"): set_if_exists(node, "seed", int(seed))
-
-def update_video_seeds(workflow, seed):
-    is_ltx2 = workflow.get('_is_ltx2', False)
-    
-    if is_ltx2:
-        # LTX-2: Update MainSeed, leave FixedSeed alone
-        for _, node in find_nodes_by_title(workflow, "MainSeed"):
-            set_if_exists(node, "noise_seed", int(seed))
-    else:
-        # WAN: Update KSamplerAdvanced and KSampler
-        for _, node in find_nodes_by_class(workflow, "KSamplerAdvanced"): 
-            set_if_exists(node, "noise_seed", int(seed))
-        for _, node in find_nodes_by_class(workflow, "KSampler"): 
-            set_if_exists(node, "seed", int(seed))
-
-
-# def update_video_saver(workflow, out_folder, base_name):
-#     ensure_dir(out_folder)
-#     for _, node in find_nodes_by_class(workflow, "SaveVideo"):
-#         set_if_exists(node, "filename_prefix", os.path.join(out_folder, base_name))
-
-
-def update_video_saver(workflow, out_folder, base_name):
-    """Update SaveVideo/VHS_VideoCombine nodes with output path"""
-    path = os.path.join(out_folder, base_name)
-    is_ltx2 = workflow.get('_is_ltx2', False)
-    
-    if is_ltx2:
-        # LTX-2 uses VHS_VideoCombine
-        for _, node in find_nodes_by_class(workflow, "VHS_VideoCombine"):
-            set_if_exists(node, "filename_prefix", path)
-    else:
-        # WAN uses SaveVideo
-        for _, node in find_nodes_by_class(workflow, "SaveVideo"):
-            if "inputs" in node and "filename_prefix" in node["inputs"]:
-                node["inputs"]["filename_prefix"] = path
-            
 def list_videos_with_prefix(folder, base_prefix):
     files = list_videos(folder)
     return sorted([f for f in files if os.path.basename(f).lower().startswith(base_prefix.lower())])
@@ -704,158 +690,21 @@ def project_neg(cfg_project):
 
 
 
+def _normalize_lora_specs(lora_list) -> list[LoraSpec]:
+    from workflow_controls import _coerce_lora_spec
+
+    specs: list[LoraSpec] = []
+    for entry in lora_list or []:
+        spec = _coerce_lora_spec(entry)
+        if spec:
+            specs.append(spec)
+    return specs
+
+
 def inject_prompt_loras(graph: dict, lora_list):
-    lora_list = list(lora_list)  # Convert iterator to list so we can iterate multiple times
-    if not lora_list: return
-    try:
-        # Find UNet loaders by title
-        high_unet_nid, _ = first_node_by_title(graph, "HighNoiseUnet")
-        low_unet_nid, _ = first_node_by_title(graph, "LowNoiseUnet")
-        
-        if not high_unet_nid:
-            print("[WARN] HighNoiseUnet not found, skipping LoRA injection")
-            return
-        
-        # Find all nodes whose model input points to a given node
-        # def find_downstream(source_nid):
-        #     results = []
-        #     for nid, node in graph.items():
-        #         if not isinstance(node, dict): continue
-        #         model_input = node.get("inputs", {}).get("model")
-        #         if isinstance(model_input, list) and str(model_input[0]) == str(source_nid):
-        #             results.append((nid, node))
-        #     return results
+    """Legacy dual-pass LoRA injection (i2v_base); delegates to workflow_controls."""
+    return wc.inject_video_dual_loras(graph, lora_list, resolve_pair=resolve_lora_pair)
 
-
-        # Find all nodes whose model input points to a given node
-        def find_downstream(source_nid):
-            results = []
-            print(f"[DEBUG] find_downstream looking for source_nid={source_nid} (type={type(source_nid).__name__})")
-            for nid, node in graph.items():
-                if not isinstance(node, dict): continue
-                model_input = node.get("inputs", {}).get("model")
-                if isinstance(model_input, list):
-                    print(f"[DEBUG]   Node {nid} has model[0]={model_input[0]} (type={type(model_input[0]).__name__})")
-                    if str(model_input[0]) == str(source_nid):
-                        title = node.get("_meta", {}).get("title", "?")
-                        print(f"[DEBUG]   ^^^ MATCH: {title}")
-                        results.append((nid, node))
-            print(f"[DEBUG] find_downstream found {len(results)} nodes")
-            return results
-        
-        # Build a LoRA chain from source, return final reference
-        def build_chain(source_ref, noise_type):
-            curr = source_ref
-            for (name, strength_str) in lora_list:
-                try: s = float(strength_str)
-                except: continue
-                high_file, low_file = resolve_lora_pair(name)
-                lora_file = high_file if noise_type == "high" else low_file
-                if lora_file:
-                    nid = new_node_id(graph)
-                    graph[nid] = {
-                        "inputs": {"lora_name": lora_file, "strength_model": s, "model": curr},
-                        "class_type": "LoraLoaderModelOnly",
-                        "_meta": {"title": f"Injected_{noise_type.title()}_{lora_file}"}
-                    }
-                    curr = [nid, 0]
-            return curr
-        
-        # Inject into all high-noise paths
-        for nid, node in find_downstream(high_unet_nid):
-            chain_end = build_chain([high_unet_nid, 0], "high")
-            node["inputs"]["model"] = chain_end
-            target_name = node.get("_meta", {}).get("title", nid)
-            print(f"[INJECT] High LoRA chain -> {target_name}")
-        
-        # Inject into all low-noise paths
-        if low_unet_nid:
-            for nid, node in find_downstream(low_unet_nid):
-                chain_end = build_chain([low_unet_nid, 0], "low")
-                node["inputs"]["model"] = chain_end
-                target_name = node.get("_meta", {}).get("title", nid)
-                print(f"[INJECT] Low LoRA chain -> {target_name}")
-        
-        # Log what was injected
-        for (name, _) in lora_list:
-            high_file, low_file = resolve_lora_pair(name)
-            print(f"[INJECT] {name} -> High:{high_file or 'Skip'} Low:{low_file or 'Skip'}")
-        
-    except Exception as e: print(f"[WARN] Failed to inject LoRAs: {e}")
-
-
-
-# def inject_prompt_loras(graph: dict, lora_list: list):
-#     if not lora_list: return
-#     try:
-#         high_node, low_node = None, None
-#         for nid, node in find_nodes_by_class(graph, "LoraLoaderModelOnly"):
-#             if "high_noise.safetensors" in str(node.get("inputs", {}).get("lora_name", "")): high_node = node
-#             if "low_noise.safetensors" in str(node.get("inputs", {}).get("lora_name", "")): low_node = node
-#         if not high_node: return
-
-#         curr_high = high_node["inputs"]["model"]
-#         curr_low = low_node["inputs"]["model"] if low_node else None
-
-#         for (name, strength_str) in lora_list:
-#             try: s = float(strength_str)
-#             except: continue
-#             high_file, low_file = resolve_lora_pair(name)
-
-#             if high_file:
-#                 nid_h = new_node_id(graph)
-#                 graph[nid_h] = {"inputs": {"lora_name": high_file, "strength_model": s, "model": curr_high}, "class_type": "LoraLoaderModelOnly", "_meta": {"title": f"Injected_High_{high_file}"}}
-#                 curr_high = [nid_h, 0]
-
-#             if low_file and curr_low:
-#                 nid_l = new_node_id(graph)
-#                 graph[nid_l] = {"inputs": {"lora_name": low_file, "strength_model": s, "model": curr_low}, "class_type": "LoraLoaderModelOnly", "_meta": {"title": f"Injected_Low_{low_file}"}}
-#                 curr_low = [nid_l, 0]
-#             print(f"[INJECT] {name} -> High:{high_file or 'Skip'} Low:{low_file or 'Skip'}")
-
-#         high_node["inputs"]["model"] = curr_high
-#         if low_node and curr_low: low_node["inputs"]["model"] = curr_low
-#     except Exception as e: print(f"[WARN] Failed to inject LoRAs: {e}")
-
-# def inject_slowmo_fix(graph: dict, target_steps: int, primer_steps: int, primer_cfg: float, main_cfg: float):
-#     try:
-#         iter_nid, iter_node = first_node_by_title(graph, "IterKSampler")
-#         fixed_nid, fixed_node = first_node_by_title(graph, "WanFixedSeed")
-#         steps_nid, _ = first_node_by_title(graph, "Steps (Final)")
-#         if not (iter_node and fixed_node and steps_nid): return
-
-#         orig_latent = iter_node["inputs"]["latent_image"]
-#         lora_model_nid = iter_node["inputs"]["model"][0]
-#         base_model_nid = graph[lora_model_nid]["inputs"]["model"][0]
-#         shift_val = graph[lora_model_nid]["inputs"].get("shift", 5.0)
-
-#         base_samp_nid = new_node_id(graph)
-#         graph[base_samp_nid] = {"inputs": {"shift": shift_val, "model": graph[base_model_nid]["inputs"]["model"]}, "class_type": "ModelSamplingSD3", "_meta": {"title": "Injected_Base_Samp"}}
-
-#         fix_nid = new_node_id(graph)
-#         graph[fix_nid] = {
-#             "inputs": {
-#                 "add_noise": "enable", "noise_seed": iter_node["inputs"].get("noise_seed", 0),
-#                 "steps": [steps_nid, 0], "cfg": primer_cfg, "sampler_name": iter_node["inputs"].get("sampler_name", "euler"),
-#                 "scheduler": iter_node["inputs"].get("scheduler", "simple"), "start_at_step": 0, "end_at_step": primer_steps,
-#                 "return_with_leftover_noise": "enable", "model": [base_samp_nid, 0],
-#                 "positive": iter_node["inputs"]["positive"], "negative": iter_node["inputs"]["negative"], "latent_image": orig_latent
-#             },
-#             "class_type": "KSamplerAdvanced", "_meta": {"title": "Injected_SlowMo_Fix"}
-#         }
-
-#         mid = ((target_steps - primer_steps) // 2) + primer_steps
-#         iter_node["inputs"]["latent_image"] = [fix_nid, 0]
-#         iter_node["inputs"]["start_at_step"] = primer_steps
-#         iter_node["inputs"]["end_at_step"] = mid
-#         iter_node["inputs"]["cfg"] = main_cfg
-#         iter_node["inputs"]["add_noise"] = "disable"
-        
-#         fixed_node["inputs"]["start_at_step"] = mid
-#         fixed_node["inputs"]["end_at_step"] = target_steps
-#         fixed_node["inputs"]["cfg"] = main_cfg
-#         print(f"[INJECT] SlowMo Fix applied. Primer:{primer_steps} Mid:{mid} Total:{target_steps}")
-#     except Exception as e: print(f"[WARN] SlowMo Fix failed: {e}")
 
 def inject_metadata_mp4(video_path, snapshot):
     try:
@@ -883,7 +732,12 @@ def run(config_path, export_only=False, status_file_override=None):
     half_w, half_h = full_w // 2, full_h // 2
 
     vg = get(project, "inbetween_generation", default={})
-    wf_path = vg.get("video_workflow_json")
+    _src = Path(__file__).resolve().parent.parent / "src"
+    if str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
+    from helpers import resolve_project_video_workflow
+
+    wf_path = resolve_project_video_workflow({"project": project})
     iters_def = int(vg.get("video_iterations_default", 8))
     seed_start = int(vg.get("seed_start", 500000))
     seed_step = int(vg.get("advance_seed_by", 13))
@@ -900,11 +754,9 @@ def run(config_path, export_only=False, status_file_override=None):
 
 
 
-    try:
-        g = jload(wf_path)
-        _, cv = first_node_by_title(g, "Create Video")
-        project_fps = float(get_fps_from_create_video(cv) or 24.0)
-    except: project_fps = 24.0
+    seed_target_title = vg.get("seed_target_title", "IterKSampler")
+    seed_exclude_title = vg.get("seed_exclude_title", "WanFixedSeed")
+    project_fps = _resolve_project_fps(vg, wf_path)
 
     export_collect = []
     asset_id_counter = 1
@@ -1019,10 +871,6 @@ def run(config_path, export_only=False, status_file_override=None):
                         seed = effective_seed_start + it * seed_step   ## set here to fix
                         sp = get(ibase, start_id, "selected_image_path") if ctype in ("SE","SO") else None
                         ep = get(ibase, end_id, "selected_image_path") if ctype in ("OE","SE") else None
-                        
-                        if (ctype in ("SE","SO") and not sp) or (ctype in ("OE","SE") and not ep):
-                            print(f"[WARN] Missing keyframe image for {vid_id}. Skipping.")
-                            continue
 
                         # Frame path - use temp folder, will rename after we know actual mp4 filename
                         temp_frames_dir = os.path.join(vid_folder, "_temp_frames")
@@ -1030,100 +878,107 @@ def run(config_path, export_only=False, status_file_override=None):
 
                         try: graph = jload(wf_path)
                         except Exception as e: print(f"[ERR] Workflow load failed: {e}"); break
-                        
-                        # Detect workflow type (local variable, not stored on dict)
-                        is_ltx2 = is_ltx2_workflow(wf_path)
-                        
-                        if is_ltx2:
-                            print("[WORKFLOW TYPE] LTX-2 FLF")
-                        else:
-                            print("[WORKFLOW TYPE] WAN 2.2")
 
-                        
-                        if not is_ltx2:
-                            if upscale_video: inject_film_vfi_upscaler(graph)
-                            inject_frame_save_node(graph, f_pre)
-                            
-                            # High-noise steps stay constant; express only trims low-noise
-                            # Full:    Primer 0→2, Iter 2→8, Fixed 8→14 (14 total)
-                            # Express: Primer 0→2, Iter 2→8, Fixed 8→10 (10 total)
-                            PRIMER_END = 2
-                            ITER_END = 7 if express_video else 8
-                            t_steps = 7 if express_video else 14
-                            
-                            # Update all three samplers with correct step ranges
-                            for _, node in find_nodes_by_title(graph, "SlowMoPrimer"):
-                                set_if_exists(node, "steps", t_steps)
-                                set_if_exists(node, "start_at_step", 0)
-                                set_if_exists(node, "end_at_step", PRIMER_END)
-                            for _, node in find_nodes_by_title(graph, "IterKSampler"):
-                                set_if_exists(node, "steps", t_steps)
-                                set_if_exists(node, "start_at_step", PRIMER_END)
-                                set_if_exists(node, "end_at_step", ITER_END)
-                            for _, node in find_nodes_by_title(graph, "WanFixedSeed"):
-                                set_if_exists(node, "steps", t_steps)
-                                set_if_exists(node, "start_at_step", ITER_END)
-                                set_if_exists(node, "end_at_step", t_steps)
+                        vid_caps = wc.discover_video_capabilities(graph)
+                        need_start = vid_caps.supports_start_frame and ctype in ("SE", "SO")
+                        need_end = vid_caps.supports_end_frame and ctype in ("SE", "OE")
+                        if (need_start and not sp) or (need_end and not ep):
+                            print(f"[WARN] Missing keyframe image for {vid_id}. Skipping.")
+                            continue
 
-                        else:
-                            # LTX-2: Steps controlled by scheduler, not manually
-                            t_steps = 0  # Placeholder for logging
+                        total_steps = int(vg.get("video_steps_default", 14))
+                        primer_steps = PRIMER_STEPS
+                        has_tagged_samplers = (
+                            vid_caps.has_thm_ksampler_passes or vid_caps.has_thm_slowmo_primer
+                        )
+                        has_sampler_injection = (
+                            has_tagged_samplers
+                            or vid_caps.has_express_samplers
+                            or vid_caps.has_thm_steps
+                        )
+                        t_steps = 0
+                        if has_sampler_injection:
+                            print(f"[VIDEO] total_steps={total_steps} (project video_steps_default)")
+                            if upscale_video:
+                                inject_film_vfi_upscaler(graph)
+                            if has_tagged_samplers or vid_caps.has_express_samplers:
+                                inject_frame_save_node(graph, f_pre)
+                            if has_tagged_samplers:
+                                t_steps = wc.apply_video_sampler_passes(
+                                    graph,
+                                    total_steps=total_steps,
+                                    express=express_video,
+                                    primer_steps=primer_steps,
+                                )
+                            elif vid_caps.has_express_samplers:
+                                t_steps = _apply_express_sampler_steps(
+                                    graph,
+                                    express_video,
+                                    total_steps=total_steps,
+                                )
+                            elif vid_caps.has_thm_steps:
+                                wc.set_steps(graph, total_steps)
+                                t_steps = total_steps
 
-                        enforce_project_dimensions_nodes(graph, full_w, full_h)
-                        
-                        # Prompt & LoRA
                         ptxt = compose_video_prompt(project, seq, vid_conf, it)
-                        ploras = _LORA_RE.findall(ptxt)
-                        pclean = _LORA_RE.sub("", ptxt).strip()
-                        
-                        if ploras:
-                            mults = seq_multipliers.get(seq_id, {'bg':1.0,'fg':1.0})
-                            fg_blob = (seq.get("action_prompt","") + " " + vid_conf.get("inbetween_prompt",""))
-                            fl = []
-                            for n, s_str in ploras:
-                                try:
-                                    s = float(s_str)
-                                    tag = f"__lora:{n}:{s_str}__"
-                                    m = mults['fg'] if tag in fg_blob else mults['bg']
-                                    fl.append((n, str(s*m)))
-                                except: fl.append((n, s_str))
-                            inject_prompt_loras(graph, reversed(fl))
+                        plora_specs = find_lora_tags(ptxt)
+                        pclean = strip_lora_tags(ptxt)
 
-                        for n in find_nodes_by_title(graph, "PosPrompt"): set_if_exists(n[1], "text", pclean)
-                        for n in find_nodes_by_title(graph, "NegPrompt"): set_if_exists(n[1], "text", neg_text)
+                        if wc.workflow_uses_ltx_text_encoder(graph):
+                            pclean = wc.sanitize_prompt_for_ltx(pclean)
+                            neg_text = wc.sanitize_prompt_for_ltx(neg_text)
 
-                        
-                        if is_ltx2:
-                            # LTX-2: Direct image path update
-                            update_ltx2_images(graph, sp, ep)
-                        else:
-                            # WAN: Complex loader wiring
+                        normalized_loras = None
+                        if plora_specs:
+                            mults = seq_multipliers.get(seq_id, {"bg": 1.0, "fg": 1.0})
+                            fg_blob = (seq.get("action_prompt", "") + " " + vid_conf.get("inbetween_prompt", ""))
+                            fl: list[LoraSpec] = []
+                            for spec in plora_specs:
+                                m = mults["fg"] if format_lora_tag(spec) in fg_blob else mults["bg"]
+                                fl.append(scale_lora_spec(spec, m))
+                            normalized_loras = list(reversed(fl))
+
+                        wi, hi = (half_w, half_h) if quarter_size_video else (full_w, full_h)
+                        frames = int(round(dur * float(project_fps))) + 1
+
+                        if not (vid_caps.has_start_frame or vid_caps.has_end_frame) and vid_caps.has_legacy_wan_generator:
                             l1, l2 = ensure_two_loaders(graph)
-                            if sp: set_loader_path(graph[l1], sp)
-                            if ep: set_loader_path(graph[l2], ep)
-                            
-                            wi, hi = (half_w, half_h) if quarter_size_video else (full_w, full_h)
+                            if sp:
+                                set_loader_path(graph[l1], sp)
+                            if ep:
+                                set_loader_path(graph[l2], ep)
                             try:
                                 wire_half_to_wan(graph, ctype, l1, l2, wi, hi)
-                                set_wan_size(graph, wi, hi)
-                            except Exception as e: print(f"[ERR] Wiring failed: {e}"); continue
+                            except Exception as e:
+                                print(f"[ERR] Wiring failed: {e}")
+                                continue
 
-                        _, cv = first_node_by_title(graph, "Create Video")
-                        fps = get_fps_from_create_video(cv) or project_fps
-                        
-                        # Update FPS in workflow if LTX-2
-                        # is_ltx2 = graph.get('_is_ltx2', False)
-                        if is_ltx2:
-                            update_ltx2_fps(graph, fps)
-                        
-                        frames = int(round(dur * float(fps))) + 1
-                        set_video_frames(graph, frames)
-                        
-                        update_video_saver(graph, vid_folder, base_name)
-                        update_video_seeds(graph, seed)
+                        if normalized_loras:
+                            if vid_caps.lora_mode == "dual":
+                                inject_prompt_loras(graph, normalized_loras)
+                            elif vid_caps.lora_mode == "single":
+                                wc.inject_loras(graph, normalized_loras)
+
+                        inj_ctx = wc.VideoInjectionContext(
+                            positive_prompt=pclean,
+                            negative_prompt=neg_text,
+                            seed=seed,
+                            fps=project_fps,
+                            frame_count=frames,
+                            width=wi,
+                            height=hi,
+                            save_video_prefix=os.path.join(vid_folder, base_name),
+                            frame_clip_type=ctype,
+                            start_frame_path=sp,
+                            end_frame_path=ep,
+                            seed_target_title=seed_target_title,
+                            seed_exclude_title=seed_exclude_title,
+                        )
+                        wc.apply_video_injection(graph, inj_ctx)
+                        _log_video_caps(vid_caps, project_fps, frames, clip_type=ctype)
 
                         print(f"\n[VID] {seq_id}/{vid_id} iter {it+1}")
-                        print(f"[VID] type={ctype} dur={dur:.2f}s fps={fps} frames={frames} steps={t_steps} seed={seed}")
+                        print(f"[VID] type={ctype} dur={dur:.2f}s fps={project_fps} frames={frames} steps={t_steps} seed={seed}")
                         print(f"[VID] workflow={wf_path}")
                         print(f"[VID] out_folder={vid_folder}")
                         print(f"[VID] out_prefix={os.path.join(vid_folder, base_name)}")
@@ -1135,9 +990,6 @@ def run(config_path, export_only=False, status_file_override=None):
                         
 
                         try:
-                            # Remove metadata before posting to ComfyUI
-                            graph.pop('_is_ltx2', None)
-                            
                             # Debug: Save workflow before posting
                             debug_path = os.path.join(vid_folder, f"debug_workflow_iter{it+1:05d}.json")
                             os.makedirs(os.path.dirname(debug_path), exist_ok=True)
@@ -1145,7 +997,8 @@ def run(config_path, export_only=False, status_file_override=None):
                                 json.dump(graph, f, indent=2)
                             print(f"[DEBUG] Saved workflow to: {debug_path}")
                             
-                            pid = post_prompt(api_base, graph)
+                            pid = post_prompt(api_base, graph, project_name=project_name, label=vid_id)
+                            print("[PID]", pid)
                             print(f"[DEBUG] Posted prompt {pid}, waiting with timeout={timeout_s}s")
                             wait_result = wait_history_done(api_base, pid, timeout_s)
                             print(f"[DEBUG] wait_history_done returned: {wait_result}")
@@ -1185,8 +1038,8 @@ def run(config_path, export_only=False, status_file_override=None):
                                     print(f"RESULT: {final_path}")
                                     
                                     # Create lossless video from temp frames with matching name
-                                    print(f"[LOSSLESS] is_ltx2={is_ltx2}, temp_frames_dir exists={os.path.isdir(temp_frames_dir)}, path={temp_frames_dir}")
-                                    if not is_ltx2 and os.path.isdir(temp_frames_dir):
+                                    print(f"[LOSSLESS] temp_frames_dir exists={os.path.isdir(temp_frames_dir)}, path={temp_frames_dir}")
+                                    if os.path.isdir(temp_frames_dir):
                                         lossless_path = final_path.replace(".mp4", "_lossless.mkv")
                                         print(f"[LOSSLESS] Stitching to: {lossless_path}")
                                         if stitch_frames_to_lossless(temp_frames_dir, lossless_path, fps=float(project_fps)):
@@ -1195,7 +1048,7 @@ def run(config_path, export_only=False, status_file_override=None):
                                         else:
                                             print(f"[LOSSLESS] Stitch failed!")
                                     else:
-                                        print(f"[LOSSLESS] Skipped - is_ltx2={is_ltx2} or no temp_frames_dir")
+                                        print(f"[LOSSLESS] Skipped - no temp_frames_dir")
                                     
                                 if DROP_JOIN_FRAME and pos < len(iter_video_entries(seq)) - 1:
                                     # Logic to drop last frame if not last video

@@ -1,0 +1,65 @@
+# Forked agent client for THM generation — no imports from src/ or project-builder.
+
+from client.discover import (
+    comfy_status,
+    list_checkpoints,
+    list_keyframe_images,
+    list_loras,
+    list_projects,
+    list_workflows,
+)
+from client.prep import prep_asset_run, prep_keyframe_run, prep_video_run
+from client.runner import GenerationResult, run_asset, run_keyframe, run_video
+from client.selection import set_selected_keyframe_image, set_selected_video
+from client.workspace import (
+    add_preview_image,
+    attach_workspace_paths,
+    build_preview_gallery,
+    clear_preview_dir,
+    copy_to_workspace,
+    gallery_window_name,
+    load_gallery_session,
+    mirror_generation_output,
+    open_gallery_in_browser,
+    open_with_default_app,
+    preview_dir_for_project,
+    resolve_image_path,
+    reveal_in_explorer,
+    save_gallery_session,
+    update_gallery_session,
+    write_gallery_launcher,
+)
+
+__all__ = [
+    "GenerationResult",
+    "add_preview_image",
+    "attach_workspace_paths",
+    "build_preview_gallery",
+    "clear_preview_dir",
+    "comfy_status",
+    "copy_to_workspace",
+    "gallery_window_name",
+    "load_gallery_session",
+    "list_checkpoints",
+    "list_keyframe_images",
+    "list_loras",
+    "list_projects",
+    "list_workflows",
+    "mirror_generation_output",
+    "open_gallery_in_browser",
+    "open_with_default_app",
+    "preview_dir_for_project",
+    "prep_asset_run",
+    "prep_keyframe_run",
+    "prep_video_run",
+    "resolve_image_path",
+    "reveal_in_explorer",
+    "save_gallery_session",
+    "update_gallery_session",
+    "write_gallery_launcher",
+    "run_asset",
+    "run_keyframe",
+    "run_video",
+    "set_selected_keyframe_image",
+    "set_selected_video",
+]

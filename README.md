@@ -1,16 +1,12 @@
 # The Halleen Machine
 
-**Version 1.0.2**  
+**Version 1.1**  
 Workflow management system for AI video generation using ComfyUI.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
 Organize AI video projects into structured timelines. Create reusable asset libraries for poses, characters, locations, and styles. Batch operations for generation, upscaling, and exports.
-
-
-New in this version:
-- Added WORKFLOWS.md and additional fixes to improve workflow switching 
 
 ---
 
@@ -47,6 +43,24 @@ python setup.py
 # Launch
 python run.py --listen 0.0.0.0 --port 7860
 ```
+
+### Agent skill (optional)
+
+The repo ships a generic, client-neutral **Agent Skill** — `thm-agent-client` — that
+teaches an AI agent the full THM workflow (build/edit project JSON, run ComfyUI
+generation, vision QC, prompt revision). It lives at
+`thm-agent/skill/thm-agent-client/`.
+
+It is **agnostic about which agent client you use** and does not touch your editor's
+config. To wire it into your client (Claude Code, Cursor, or anything else), copy the
+folder into wherever your client discovers skills — or run:
+
+```bash
+python install_skill.py --dest <your client's skills dir>
+```
+
+See `thm-agent/skill/thm-agent-client/INSTALL.md` for the human and agent-driven install
+paths. `python setup.py` also offers this as an optional step.
 
 ---
 

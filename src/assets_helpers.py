@@ -18,10 +18,25 @@ from helpers import (
     cb_list_pose_files, WORKFLOWS_DIR, 
     _sanitize_filename, _auto_version_path, save_to_project_folder,
     get_png_metadata, get_project_poses_dir, get_pose_gallery_list,
-    refresh_pose_components
+    gallery_gr_update,
+    get_project_characters_dir, get_project_locations_dir, get_project_styles_dir,
+    refresh_pose_components,
+    apply_pose_gen_sampler_defaults,
+    force_pose_gen_sampler_driven,
 )
 
-from test_gen_helpers import run_image_generation_task, run_pose_preview_task, handle_character_test, handle_setting_test, handle_style_asset_test
+from single_gen_helpers import (
+    run_image_generation_task,
+    run_pose_preview_task,
+    handle_character_test,
+    handle_setting_test,
+    handle_style_asset_test,
+    get_style_test_images,
+    recall_project_globals,
+    recall_asset_generation_from_reference,
+    format_asset_look_status_markdown,
+    format_asset_look_status_parts,
+)
 
 def _refresh_pose_list(project_dict, pending_id, last_known_dir=None):
     """Refreshes the gallery."""
@@ -64,17 +79,29 @@ def _on_pose_selected(project_dict, evt: gr.SelectData):
     return gr.update(visible=True), selected_path
 
 
+def lora_choice_update(lora_list):
+    """Refresh inject-dropdown choices from disk; always leave selection empty (neutral)."""
+    data = lora_list if isinstance(lora_list, list) else []
+    return gr.update(choices=data, value=None)
+
+
+def broadcast_lora_choices(lora_list, consumers):
+    """Apply ``lora_choice_update`` to every inject LoRA dropdown."""
+    u = lora_choice_update(lora_list)
+    return [u for _ in consumers]
+
+
 def _inject_lora_simple(current_text, lora_path):
-    """Injects a LoRA tag into the start of a text field."""
+    """On user pick: prepend ``__lora:…__`` to the prompt and clear the dropdown."""
     if not lora_path:
-        return gr.update(), gr.update()
+        return gr.update(), gr.update(value=None)
     try:
         filename = os.path.basename(lora_path)
         lora_tag = f"__lora:{filename}:1.0__ "
         new_text = lora_tag + (current_text or "")
         return gr.update(value=new_text), gr.update(value=None)
     except Exception:
-        return gr.update(), gr.update()    
+        return gr.update(), gr.update(value=None)
     
 
 
@@ -120,25 +147,7 @@ def _resolve_asset_aux(base_path: str, subfolder: str) -> str | None:
 
 def _get_pose_gallery_update(base_dir: str):
     """Scans the pose directory and returns a gr.update object for a Gallery."""
-    p = Path((base_dir or "").strip())
-    value = [] # Default to an empty list
-    if not p.is_dir():
-        return gr.update(value=value)
-    
-    try:
-        img_exts = {".png", ".jpg", ".jpeg", ".webp"}
-        files = sorted(
-            [fp.resolve() for fp in p.iterdir() if fp.is_file() and fp.suffix.lower() in img_exts],
-            key=lambda x: x.stat().st_mtime,
-            reverse=True
-        )
-        # A gallery's `value` is a list of (filepath, label) tuples.
-        # Use the full filename (fp.name) as the label.
-        value = [(str(fp), fp.name) for fp in files]
-    except Exception:
-        pass
-    
-    return gr.update(value=value)
+    return gallery_gr_update(base_dir, label_filename=True)
 
 # ---- CHARACTER HELPERS ----
 def _get_characters(data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -184,7 +193,7 @@ def _strip_pose_suffixes(filename_stem: str) -> Tuple[str, bool, str]:
 
     return base_name, is_animal, char_count
 
-def _create_temp_json_for_pose_gen(pose_prompt: str, full_project_data: Dict, use_animal_pose: bool, char_count_choice: str, pose_mode: str):
+def _create_temp_json_for_pose_gen(pose_prompt: str, full_project_data: Dict, use_animal_pose: bool, char_count_choice: str, pose_mode: str, pose_negative: str = ""):
     # Select workflow based on mode
     if pose_mode == "Project Style":
         pose_workflow_path = str(WORKFLOWS_DIR / "pose_OPEN.json")
@@ -212,13 +221,14 @@ def _create_temp_json_for_pose_gen(pose_prompt: str, full_project_data: Dict, us
         temp_data["project"]["style_prompt"] = full_project_data.get("project", {}).get("style_prompt", "")
         temp_data["project"]["model"] = full_project_data.get("project", {}).get("model", "")
         
-        # Inject Project Generation Params
-        src_kf = full_project_data.get("project", {}).get("keyframe_generation", {})
-        kf_gen["cfg"] = src_kf.get("cfg", 4.0)
-        kf_gen["sampler_name"] = src_kf.get("sampler_name", "dpmpp_2m_sde")
-        kf_gen["scheduler"] = src_kf.get("scheduler", "karras")
-        # For Project Style, we usually don't force steps unless we want to ensure a baseline
-        kf_gen["steps"] = 30 
+        from helpers import project_controls_kf_sampler_settings
+
+        if project_controls_kf_sampler_settings(full_project_data):
+            src_kf = full_project_data.get("project", {}).get("keyframe_generation", {})
+            kf_gen["cfg"] = src_kf.get("cfg", 4.0)
+            kf_gen["sampler_name"] = src_kf.get("sampler_name", "dpmpp_2m_sde")
+            kf_gen["scheduler"] = src_kf.get("scheduler", "karras")
+            kf_gen["steps"] = src_kf.get("steps", 30)
 
         char_prompt_modifier = ""
         base_negative = full_project_data.get("project", {}).get("negatives", {}).get("global", "")
@@ -227,30 +237,15 @@ def _create_temp_json_for_pose_gen(pose_prompt: str, full_project_data: Dict, us
         # Use Enhanced Overrides - model from config via project JSON
         temp_data["project"]["style_prompt"] = POSE_STYLE_ENHANCED
         temp_data["project"]["model"] = full_project_data.get("project", {}).get("pose_model_enhanced", POSE_MODEL_ENHANCED)
-        
-        # Enhanced Generation Params
-        kf_gen["cfg"] = 4.0
-        kf_gen["steps"] = 30
-        kf_gen["sampler_name"] = "dpmpp_2m_sde"
-        kf_gen["scheduler"] = "karras"
-        
-        # char_prompt_modifier = POSE_GEN_CHARACTER_OVERRIDE_ENHANCED
+        apply_pose_gen_sampler_defaults(kf_gen)
         char_prompt_modifier = POSE_GEN_CHARACTER_OVERRIDE_ENHANCED
-
         base_negative = POSE_NEGATIVE_ENHANCED
 
     else: # "Fast" (Default)
         # Use Fast Overrides - model from config via project JSON
         temp_data["project"]["style_prompt"] = POSE_STYLE_FAST
         temp_data["project"]["model"] = full_project_data.get("project", {}).get("pose_model_fast", POSE_MODEL_FAST)
-        kf_gen["steps"] = 30
-        kf_gen["sampler_name"] = "dpmpp_2m_sde"
-        kf_gen["scheduler"] = "karras"
-        
-        # Fast Generation Params
-        kf_gen["cfg"] = 4.0
-        # Inherit Steps/Sampler/Scheduler from project defaults (via deepcopy)
-        
+        apply_pose_gen_sampler_defaults(kf_gen)
         char_prompt_modifier = POSE_GEN_CHARACTER_OVERRIDE_FAST
         base_negative = POSE_NEGATIVE_FAST
     
@@ -268,11 +263,12 @@ def _create_temp_json_for_pose_gen(pose_prompt: str, full_project_data: Dict, us
         setting_override = POSE_GEN_SETTING_OVERRIDE_TWO
         negative_two = POSE_GEN_NEGATIVE_TWO
         
-    final_negative = " ".join(filter(None, [base_negative, negative_one, negative_two])).strip()
+    user_negative = (pose_negative or "").strip()
+    final_negative = " ".join(filter(None, [user_negative, base_negative, negative_one, negative_two])).strip()
     # --- End Character Count Logic ---
 
     # pose_character = {"id": "temp_pose_char_id", "name": "Pose Character", "lora_name": "", "lora_strength": 1.0, "lora_keyword": "", "prompt_modifier": char_prompt_modifier}
-    pose_character = {"id": "temp_pose_char_id", "name": "Pose Character", "lora_keyword": "", "prompt": char_prompt_modifier, "negative_prompt": ""}
+    pose_character = {"id": "temp_pose_char_id", "name": "Pose Character", "prompt": char_prompt_modifier, "negative_prompt": ""}
 
     temp_data["project"]["characters"] = [pose_character]
     
@@ -287,7 +283,8 @@ def _create_temp_json_for_pose_gen(pose_prompt: str, full_project_data: Dict, us
         "layout": pose_prompt, 
         "template": "", 
         "use_animal_pose": use_animal_pose,
-        "negatives": {"global": final_negative} 
+        "negatives": {"global": final_negative},
+        "pose_user_negative": user_negative,
     }
     
     # Construct V2 Sequence
@@ -305,10 +302,13 @@ def _create_temp_json_for_pose_gen(pose_prompt: str, full_project_data: Dict, us
     # Sequences is now a Dict for V2
     temp_data["sequences"] = { unique_id: pose_seq }
 
+    if pose_mode in ("Expressive", "Fast"):
+        force_pose_gen_sampler_driven(temp_data)
+
     return temp_data, unique_id
 
 
-def handle_auto_generate_with_qc(pose_prompt: str, project_json: str, use_animal_pose: bool, char_count_choice: str, pose_mode: str, max_iterations: int = 10):
+def handle_auto_generate_with_qc(pose_prompt: str, project_json: str, use_animal_pose: bool, char_count_choice: str, pose_mode: str, pose_negative: str = "", max_iterations: int = 10):
     """
     Auto-generate poses until one scores 3/3 or max iterations reached.
     Yields same 10 outputs as handle_pose_generation.
@@ -329,7 +329,7 @@ def handle_auto_generate_with_qc(pose_prompt: str, project_json: str, use_animal
         yield (None, None, None, None, "\n".join(cumulative_log), None, None, None, None, None)
         
         # Generate pose
-        gen = handle_pose_generation(pose_prompt, project_json, use_animal_pose, char_count_choice, pose_mode)
+        gen = handle_pose_generation(pose_prompt, project_json, use_animal_pose, char_count_choice, pose_mode, pose_negative)
         temp_path = None
         for result in gen:
             # result is a 10-tuple
@@ -380,7 +380,7 @@ def handle_auto_generate_with_qc(pose_prompt: str, project_json: str, use_animal
     yield (final_outputs[0], final_outputs[1], final_outputs[2], final_outputs[3], "\n".join(cumulative_log), final_outputs[5], final_outputs[6], final_outputs[7], final_outputs[8], final_outputs[9])
 
 
-def handle_pose_generation(pose_prompt: str, project_json: str, use_animal_pose: bool, char_count_choice: str, pose_mode: str):
+def handle_pose_generation(pose_prompt: str, project_json: str, use_animal_pose: bool, char_count_choice: str, pose_mode: str, pose_negative: str = ""):
     """Generates a pose image by preparing data and calling the shared helper."""
     # Yields 10 values: main, pose, shape, outline, log, json, temp_path, state_pose, state_shape, state_outline
     if not pose_prompt:
@@ -389,7 +389,7 @@ def handle_pose_generation(pose_prompt: str, project_json: str, use_animal_pose:
 
     full_data = project_json
     
-    temp_data, unique_id = _create_temp_json_for_pose_gen(pose_prompt, full_data, use_animal_pose, char_count_choice, pose_mode)
+    temp_data, unique_id = _create_temp_json_for_pose_gen(pose_prompt, full_data, use_animal_pose, char_count_choice, pose_mode, pose_negative)
     
     if not temp_data:
         yield (None, None, None, None, f"Error: Pose Workflow Path not found.", None, None, None, None, None)
@@ -534,14 +534,17 @@ def _on_pose_gallery_select(poses_dir: str, evt: gr.SelectData):
 def recall_pose_params(image_path: str):
     """Recalls generation parameters from a saved pose image."""
     if not image_path or not os.path.exists(image_path):
-        return gr.update(), gr.update(), gr.update(), gr.update(), "Image not found."
-        
+        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "Image not found."
+
     meta = get_png_metadata(image_path)
     if not meta:
-         return gr.update(), gr.update(), gr.update(), gr.update(), "No metadata found."
+         return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "No metadata found."
 
     # 1. Pose Prompt (Layout)
     pose_prompt = meta.get("item_data", {}).get("layout", "")
+
+    # 1b. User Negative Prompt (raw, as typed at generation time)
+    user_negative = meta.get("item_data", {}).get("pose_user_negative", "")
 
     # 2. Animal
     use_animal = meta.get("item_data", {}).get("use_animal_pose", False)
@@ -564,6 +567,7 @@ def recall_pose_params(image_path: str):
 
     return (
         pose_prompt,
+        user_negative,
         use_animal,
         mode,
         char_count,
@@ -735,9 +739,598 @@ def save_or_update_pose(original_full_path: str, pose_name: str, poses_dir: str,
     except Exception as e:
         return f"Error saving file: {e}", gr.update()
 
+_ASSET_REFERENCE_DIRS = {
+    "characters": get_project_characters_dir,
+    "settings": get_project_locations_dir,
+    "styles": get_project_styles_dir,
+}
+
+
+def _asset_id_for_path(asset_id: str) -> str:
+    """Filesystem-safe asset id (display names are not used on disk)."""
+    aid = (asset_id or "").strip()
+    if not aid:
+        return "asset"
+    aid = re.sub(r'[<>:"/\\|?*]', "", aid)
+    return aid or "asset"
+
+
+def _reference_image_display(path: str | None):
+    if path and os.path.isfile(path):
+        return gr.update(value=path)
+    return gr.update(value=None)
+
+
+def _coerce_project_dict(project_dict: Any) -> dict:
+    if isinstance(project_dict, dict):
+        return project_dict
+    if isinstance(project_dict, str) and project_dict.strip():
+        try:
+            loaded = json.loads(project_dict)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            pass
+    return {}
+
+
+def _normalize_gallery_select_index(index: Any) -> int | None:
+    """Gradio Gallery may use int or tuple index depending on version/layout."""
+    if index is None:
+        return None
+    if isinstance(index, int):
+        return index
+    if isinstance(index, (list, tuple)) and index:
+        return int(index[0])
+    try:
+        return int(index)
+    except (TypeError, ValueError):
+        return None
+
+
+def _paths_from_gallery_value(gallery_value: Any) -> list[str]:
+    """Extract filesystem paths from gr.Gallery value in display order."""
+    if not gallery_value:
+        return []
+    paths: list[str] = []
+    for item in gallery_value:
+        if isinstance(item, (list, tuple)) and item:
+            paths.append(str(item[0]))
+        elif isinstance(item, str):
+            paths.append(item)
+        elif isinstance(item, dict):
+            img = item.get("image") if isinstance(item.get("image"), dict) else item
+            if isinstance(img, dict):
+                p = img.get("path") or img.get("name")
+                if p:
+                    paths.append(str(p))
+    return paths
+
+
+def _path_from_gallery_select_event(
+    asset_dir: Path | None,
+    gallery_value: Any,
+    evt: gr.SelectData | None,
+) -> str | None:
+    """Resolve a stable on-disk path for a gallery click."""
+    idx = _normalize_gallery_select_index(getattr(evt, "index", None) if evt else None)
+    # Prefer the gallery item's filesystem path by click index.
+    # This avoids always promoting the "first resolvable" file regardless of which thumbnail was clicked.
+    paths = _paths_from_gallery_value(gallery_value)
+    if idx is not None and 0 <= idx < len(paths):
+        candidate = paths[idx]
+        if candidate and os.path.isfile(candidate):
+            resolved = _resolve_path_under_asset_dir(asset_dir, candidate)
+            if resolved:
+                return resolved
+
+    if evt is not None and isinstance(getattr(evt, "value", None), dict):
+        img = evt.value.get("image")
+        if isinstance(img, dict):
+            p = img.get("path") or img.get("name")
+            if p:
+                resolved = _resolve_path_under_asset_dir(asset_dir, str(p))
+                if resolved:
+                    return resolved
+
+    if asset_dir and asset_dir.is_dir() and idx is not None:
+        disk_items = get_pose_gallery_list(str(asset_dir))
+        if 0 <= idx < len(disk_items):
+            return str(disk_items[idx][0])
+
+    return None
+
+
+def _resolve_path_under_asset_dir(asset_dir: Path | None, any_path: str) -> str | None:
+    """Prefer the real project path when Gradio serves a cache copy."""
+    p = Path(str(any_path).strip())
+    if not p.is_file():
+        return None
+    try:
+        resolved = str(p.resolve())
+    except Exception:
+        resolved = str(p)
+
+    if not asset_dir:
+        return resolved
+
+    try:
+        if Path(resolved).parent.resolve() == asset_dir.resolve():
+            return resolved
+    except Exception:
+        pass
+
+    by_name = asset_dir / p.name
+    if by_name.is_file():
+        try:
+            return str(by_name.resolve())
+        except Exception:
+            return str(by_name)
+
+    return resolved
+
+
+def _gradio_image_to_path(image_value: Any) -> str | None:
+    """Normalize Gradio Image values (filepath, dict, or numpy) to a readable path."""
+    if image_value is None:
+        return None
+
+    if isinstance(image_value, str):
+        p = image_value.strip()
+        return p if p and os.path.isfile(p) else None
+
+    if isinstance(image_value, (list, tuple)) and image_value:
+        return _gradio_image_to_path(image_value[0])
+
+    if isinstance(image_value, dict):
+        for key in ("path", "name"):
+            candidate = image_value.get(key)
+            if candidate:
+                p = str(candidate)
+                if os.path.isfile(p):
+                    return p
+        return None
+
+    try:
+        import numpy as np
+        from PIL import Image
+        import tempfile
+
+        if hasattr(image_value, "shape"):
+            arr = np.asarray(image_value)
+            if arr.size == 0:
+                return None
+            if arr.dtype != np.uint8:
+                if float(arr.max()) <= 1.0:
+                    arr = (arr * 255).clip(0, 255)
+                arr = arr.astype(np.uint8)
+            if arr.ndim == 3 and arr.shape[2] == 4:
+                arr = arr[:, :, :3]
+            img = Image.fromarray(arr)
+            fd, tmp = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            img.save(tmp, format="PNG")
+            return tmp
+        if hasattr(image_value, "save"):
+            fd, tmp = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            image_value.save(tmp, format="PNG")
+            return tmp
+    except Exception:
+        return None
+
+    return None
+
+
+def _find_asset_item(data: dict, collection_key: str, asset_id: str) -> dict | None:
+    items = data.get("project", {}).get(collection_key, [])
+    if not isinstance(items, list):
+        return None
+    return next((i for i in items if isinstance(i, dict) and i.get("id") == asset_id), None)
+
+
+def _asset_item_dir(project_dict: Any, collection_key: str, asset_id: str) -> Path | None:
+    dest_dir_fn = _ASSET_REFERENCE_DIRS.get(collection_key)
+    if not dest_dir_fn:
+        return None
+    dest_dir = dest_dir_fn(project_dict if isinstance(project_dict, dict) else {})
+    if not dest_dir:
+        return None
+    return Path(dest_dir) / _asset_id_for_path(asset_id)
+
+
+def _asset_gallery_image_count(asset_dir: Path | None) -> int:
+    if not asset_dir:
+        return 0
+    return len(get_pose_gallery_list(str(asset_dir)))
+
+
+def _promote_asset_reference_image(
+    project_dict: Any,
+    collection_key: str,
+    asset_id: str,
+    image_path: str,
+):
+    """Set reference_image to an existing gallery file (no copy)."""
+    data = copy.deepcopy(_coerce_project_dict(project_dict))
+    path = str(image_path or "").strip()
+    if not path or not os.path.isfile(path):
+        return data, "Image file not found.", _reference_image_display(None), gr.update()
+
+    item = _find_asset_item(data, collection_key, asset_id)
+    if not item:
+        return data, "Error: selected asset not found.", gr.update(), gr.update()
+
+    item["reference_image"] = path
+    display_name = item.get("name") or asset_id
+    asset_dir = _asset_item_dir(data, collection_key, asset_id)
+    gal = gallery_gr_update(str(asset_dir) if asset_dir else "", path)
+    return (
+        data,
+        f"Selected reference for {display_name}: {Path(path).name}",
+        _reference_image_display(path),
+        gal,
+    )
+
+
+def _save_to_asset_gallery(
+    project_dict: Any,
+    collection_key: str,
+    asset_id: str,
+    temp_image_path: Any,
+    base_name: str = "gallery",
+):
+    """Copy test/upload image into per-asset folder; auto-select if first library image."""
+    data = copy.deepcopy(_coerce_project_dict(project_dict))
+    src_path = _gradio_image_to_path(temp_image_path)
+    if not src_path:
+        return data, "No image to save. Run Generate first.", gr.update(), gr.update()
+
+    item = _find_asset_item(data, collection_key, asset_id)
+    if not item:
+        return data, "Error: selected asset not found.", gr.update(), gr.update()
+
+    asset_dir = _asset_item_dir(data, collection_key, asset_id)
+    if not asset_dir:
+        return data, "Error: project output path is not configured.", gr.update(), gr.update()
+
+    first_library_image = _asset_gallery_image_count(asset_dir) == 0
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    msg, saved_path = save_to_project_folder(src_path, str(asset_dir), base_name)
+    if not saved_path:
+        return data, msg or "Failed to save image.", gr.update(), gr.update()
+
+    display_name = item.get("name") or asset_id
+    if first_library_image:
+        item["reference_image"] = saved_path
+        ref = saved_path
+        status = (
+            f"Saved to library for {display_name}: {Path(saved_path).name} "
+            f"(set as selected reference)"
+        )
+        ref_img_up = _reference_image_display(saved_path)
+    else:
+        ref = item.get("reference_image")
+        status = f"Saved to library for {display_name}: {Path(saved_path).name}"
+        ref_img_up = gr.update()
+
+    gal = gallery_gr_update(str(asset_dir), ref)
+    return data, status, gal, ref_img_up
+
+
+def _upload_asset_gallery_image(
+    project_dict: Any,
+    collection_key: str,
+    asset_id: str,
+    uploaded_file: Any,
+):
+    """Copy upload into asset gallery folder (no post-processing)."""
+    if not uploaded_file:
+        return (
+            copy.deepcopy(_coerce_project_dict(project_dict)),
+            "Error: No file uploaded.",
+            gr.update(),
+            gr.update(),
+        )
+
+    src = getattr(uploaded_file, "name", None) or str(uploaded_file)
+    if not src or not os.path.isfile(src):
+        return (
+            copy.deepcopy(_coerce_project_dict(project_dict)),
+            "Error: Uploaded file not found.",
+            gr.update(),
+            gr.update(),
+        )
+
+    stem = _sanitize_filename(Path(src).stem, fallback="upload")
+    return _save_to_asset_gallery(project_dict, collection_key, asset_id, src, base_name=stem)
+
+
+def _delete_asset_gallery_image(
+    project_dict: Any,
+    collection_key: str,
+    asset_id: str,
+    path_to_delete: str | None,
+):
+    data = copy.deepcopy(project_dict) if isinstance(project_dict, dict) else {}
+    path = str(path_to_delete or "").strip()
+    if not path:
+        return (
+            data,
+            "No image selected to delete.",
+            gr.update(),
+            gr.update(),
+            None,
+            gr.update(visible=False),
+        )
+
+    item = _find_asset_item(data, collection_key, asset_id)
+    if not item:
+        return (
+            data,
+            "Error: selected asset not found.",
+            gr.update(),
+            gr.update(),
+            None,
+            gr.update(visible=False),
+        )
+
+    try:
+        p = Path(path)
+        if p.is_file():
+            os.remove(p)
+        ref = str(item.get("reference_image") or "")
+        if ref and Path(ref).resolve() == p.resolve():
+            item.pop("reference_image", None)
+        asset_dir = _asset_item_dir(data, collection_key, asset_id)
+        new_ref = item.get("reference_image")
+        gal = gallery_gr_update(str(asset_dir) if asset_dir else "", new_ref)
+        return (
+            data,
+            f"Deleted {p.name}",
+            gal,
+            _reference_image_display(new_ref),
+            None,
+            gr.update(visible=False),
+        )
+    except Exception as exc:
+        return (
+            data,
+            f"Error deleting file: {exc}",
+            gr.update(),
+            gr.update(),
+            None,
+            gr.update(visible=False),
+        )
+
+
+def _on_asset_gallery_select(
+    project_dict: Any,
+    collection_key: str,
+    asset_id: str,
+    gallery_value: Any,
+    evt: gr.SelectData,
+):
+    """Promote gallery item to reference_image using displayed gallery order + disk path."""
+    base = _coerce_project_dict(project_dict)
+    if evt is None or _normalize_gallery_select_index(getattr(evt, "index", None)) is None or not asset_id:
+        return (
+            copy.deepcopy(base),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            None,
+            gr.update(visible=False),
+        )
+
+    asset_dir = _asset_item_dir(base, collection_key, asset_id)
+    path = _path_from_gallery_select_event(asset_dir, gallery_value, evt)
+    if not path:
+        return (
+            copy.deepcopy(base),
+            "Error: could not resolve selected image path.",
+            gr.update(),
+            gr.update(),
+            None,
+            gr.update(visible=False),
+        )
+
+    data, status, img_up, gal_up = _promote_asset_reference_image(
+        base, collection_key, asset_id, path
+    )
+    return data, status, img_up, gal_up, path, gr.update(visible=True)
+
+
+def _on_reference_asset_inspector_load(
+    project_dict: Any,
+    collection_key: str,
+    asset_id: str,
+):
+    """Load inspector fields, selected reference image, and gallery for one asset."""
+    data = project_dict if isinstance(project_dict, dict) else {}
+    item = _find_asset_item(data, collection_key, asset_id) if asset_id else None
+    empty_gal = gallery_gr_update("")
+
+    if not item:
+        return (
+            gr.update(visible=False),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(value=""),
+            _reference_image_display(None),
+            empty_gal,
+            gr.update(visible=False),
+            None,
+            gr.update(value=""),
+        )
+
+    prompt_val = item.get("prompt", "") or item.get("prompt_modifier", "")
+    ref = item.get("reference_image")
+    asset_dir = _asset_item_dir(data, collection_key, asset_id)
+    dir_str = str(asset_dir) if asset_dir and asset_dir.is_dir() else ""
+    gal = gallery_gr_update(dir_str, ref) if dir_str else empty_gal
+
+    return (
+        gr.update(visible=True),
+        gr.update(value=item.get("name", "")),
+        gr.update(value=prompt_val),
+        gr.update(value=item.get("negative_prompt", "")),
+        gr.update(value=item.get("generator_prompt", "")),
+        gr.update(value=item.get("generator_negative_prompt", "")),
+        _reference_image_display(ref),
+        gal,
+        gr.update(visible=bool(dir_str)),
+        None,
+        gr.update(value=""),
+    )
+
+
+def _make_asset_inspector_load_handler(collection_key: str):
+    """Gradio-visible handler: only (project_dict, asset_id) — collection_key is closed over."""
+
+    def handle_load(project_dict: Any, asset_id: str):
+        return _on_reference_asset_inspector_load(project_dict, collection_key, asset_id)
+
+    return handle_load
+
+
+def _make_asset_gallery_select_handler(collection_key: str):
+    """Gradio-visible handler: (project_dict, asset_id, gallery_value, evt)."""
+
+    def handle_gallery_select(
+        project_dict: Any,
+        asset_id: str,
+        gallery_value: Any,
+        evt: gr.SelectData,
+    ):
+        return _on_asset_gallery_select(
+            project_dict, collection_key, asset_id, gallery_value, evt
+        )
+
+    return handle_gallery_select
+
+
+def _make_save_to_asset_gallery_handler(collection_key: str):
+    def handle_save(project_dict: Any, asset_id: str, test_image: Any):
+        return _save_to_asset_gallery(project_dict, collection_key, asset_id, test_image)
+
+    return handle_save
+
+
+def _make_upload_asset_gallery_handler(collection_key: str):
+    def handle_upload(uploaded_file: Any, project_dict: Any, asset_id: str):
+        return _upload_asset_gallery_image(project_dict, collection_key, asset_id, uploaded_file)
+
+    return handle_upload
+
+
+def _make_delete_asset_gallery_handler(collection_key: str):
+    def handle_delete(project_dict: Any, asset_id: str, path_to_delete: str | None):
+        return _delete_asset_gallery_image(
+            project_dict, collection_key, asset_id, path_to_delete
+        )
+
+    return handle_delete
+
+
+def _wire_asset_tab_enter(
+    tab,
+    *,
+    refresh_fn,
+    preview_code,
+    selector,
+    pending_state,
+    selected_id_state,
+    collection_key: str,
+    inspector_outputs: list,
+):
+    """Refresh asset list on tab enter; auto-select first when empty; load inspector."""
+    load_fn = _make_asset_inspector_load_handler(collection_key)
+    tab.select(
+        fn=refresh_fn,
+        inputs=[preview_code, selector, pending_state],
+        outputs=[selector, pending_state],
+        queue=False,
+    ).then(
+        lambda sel: sel,
+        inputs=[selector],
+        outputs=[selected_id_state],
+        queue=False,
+    ).then(
+        fn=load_fn,
+        inputs=[preview_code, selected_id_state],
+        outputs=inspector_outputs,
+        queue=False,
+    )
+
+
+def _wire_asset_reference_library(
+    *,
+    preview_code,
+    collection_key: str,
+    selected_id_state,
+    reference_gallery,
+    gallery_path_state,
+    gallery_delete_btn,
+    gallery_status,
+    reference_image,
+    upload_btn,
+    save_to_library_btn,
+    test_image,
+):
+    """Wire gallery upload/select/delete/save for one asset type."""
+
+    reference_gallery.select(
+        fn=_make_asset_gallery_select_handler(collection_key),
+        inputs=[preview_code, selected_id_state, reference_gallery],
+        outputs=[
+            preview_code,
+            gallery_status,
+            reference_image,
+            reference_gallery,
+            gallery_path_state,
+            gallery_delete_btn,
+        ],
+        show_progress="hidden",
+        queue=False,
+    )
+
+    save_to_library_btn.click(
+        fn=_make_save_to_asset_gallery_handler(collection_key),
+        inputs=[preview_code, selected_id_state, test_image],
+        outputs=[preview_code, gallery_status, reference_gallery, reference_image],
+        show_progress="hidden",
+        queue=True,
+    )
+
+    upload_btn.upload(
+        fn=_make_upload_asset_gallery_handler(collection_key),
+        inputs=[upload_btn, preview_code, selected_id_state],
+        outputs=[preview_code, gallery_status, reference_gallery, reference_image],
+        show_progress="hidden",
+        queue=True,
+    )
+
+    gallery_delete_btn.click(
+        fn=_make_delete_asset_gallery_handler(collection_key),
+        inputs=[preview_code, selected_id_state, gallery_path_state],
+        outputs=[
+            preview_code,
+            gallery_status,
+            reference_gallery,
+            reference_image,
+            gallery_path_state,
+            gallery_delete_btn,
+        ],
+        show_progress="hidden",
+        queue=True,
+    )
+
+
 # ---- EVENT HANDLERS (for Characters)----
 def _on_asset_selected(pre_txt: str, selected_id: str):
-    # data = _loads(pre_txt)
     data = pre_txt if isinstance(pre_txt, dict) else {}
     chars = _get_characters(data)
     char_data = next((c for c in chars if c.get("id") == selected_id), None)
@@ -745,10 +1338,135 @@ def _on_asset_selected(pre_txt: str, selected_id: str):
         prompt_val = char_data.get("prompt", "")
         if not prompt_val:
             prompt_val = char_data.get("prompt_modifier", "")
-        return (gr.update(visible=True), char_data.get("name", ""), char_data.get("lora_keyword", ""), prompt_val, char_data.get("negative_prompt", ""))
-    else:
-        return (gr.update(visible=False), "", "", "", "")
-# outputs=[inspector_group, char_name, char_prompt_mod, char_neg_prompt], 
+        return (
+            gr.update(visible=True),
+            char_data.get("name", ""),
+            prompt_val,
+            char_data.get("negative_prompt", ""),
+            _reference_image_display(char_data.get("reference_image")),
+        )
+    return (
+        gr.update(visible=False),
+        "",
+        "",
+        "",
+        gr.update(value=None),
+    )
+
+
+def _resolve_asset_list_selection(
+    current_val: str | None,
+    pending_id: str | None,
+    valid_ids: list[str],
+) -> str | None:
+    if pending_id and pending_id in valid_ids:
+        return pending_id
+    if current_val in valid_ids:
+        return current_val
+    if valid_ids:
+        return valid_ids[0]
+    return None
+
+
+def _iter_project_sequences(data: dict) -> list[dict]:
+    seqs = data.get("sequences") or {}
+    if isinstance(seqs, dict):
+        return [s for s in seqs.values() if isinstance(s, dict)]
+    if isinstance(seqs, list):
+        return [s for s in seqs if isinstance(s, dict)]
+    return []
+
+
+def _iter_sequence_keyframes(seq: dict):
+    for bucket_key in ("keyframes", "i2v_base_images"):
+        bucket = seq.get(bucket_key)
+        if isinstance(bucket, dict):
+            for kf in bucket.values():
+                if isinstance(kf, dict):
+                    yield kf
+
+
+def _scrub_reference_binding_for_deleted_asset(
+    binding: Any,
+    collection_key: str,
+    asset_id: str,
+    seq: dict | None,
+) -> dict:
+    if not isinstance(binding, dict):
+        return {"semantic": "unset"}
+    sem = str(binding.get("semantic") or "").strip().lower()
+    if collection_key == "settings":
+        if str(binding.get("setting_id") or "").strip() == asset_id:
+            return {"semantic": "unset"}
+        if sem == "location" and str(binding.get("source") or "").strip().lower() == "sequence":
+            sid = str((seq or {}).get("setting_id") or (seq or {}).get("setting_asset") or "").strip()
+            if sid == asset_id:
+                return {"semantic": "unset"}
+    elif collection_key == "styles":
+        if str(binding.get("style_id") or "").strip() == asset_id:
+            return {"semantic": "unset"}
+        if sem == "style" and str(binding.get("source") or "").strip().lower() == "sequence":
+            sid = str((seq or {}).get("style_id") or "").strip()
+            if sid == asset_id:
+                return {"semantic": "unset"}
+    elif collection_key == "characters":
+        if str(binding.get("character_id") or "").strip() == asset_id:
+            return {"semantic": "unset"}
+    return dict(binding)
+
+
+def _purge_asset_references(
+    data: dict,
+    collection_key: str,
+    asset_id: str,
+    *,
+    deleted_name: str | None = None,
+) -> None:
+    """Remove sequence/keyframe references to a deleted project asset."""
+    asset_id = str(asset_id or "").strip()
+    if not asset_id or not isinstance(data, dict):
+        return
+
+    for seq in _iter_project_sequences(data):
+        cleared_seq_setting = False
+        cleared_seq_style = False
+        if collection_key == "settings":
+            if str(seq.get("setting_id") or "").strip() == asset_id:
+                seq["setting_id"] = ""
+                seq.pop("setting_reference_image", None)
+                cleared_seq_setting = True
+            if str(seq.get("setting_asset_last_id") or "").strip() == asset_id:
+                seq.pop("setting_asset_last_id", None)
+            if str(seq.get("setting_asset") or "").strip() == asset_id:
+                seq["setting_asset"] = ""
+        elif collection_key == "styles":
+            if str(seq.get("style_id") or "").strip() == asset_id:
+                seq["style_id"] = ""
+                seq.pop("style_reference_image", None)
+                cleared_seq_style = True
+            if str(seq.get("style_asset_last_id") or "").strip() == asset_id:
+                seq.pop("style_asset_last_id", None)
+
+        for kf in _iter_sequence_keyframes(seq):
+            if collection_key == "characters" and deleted_name:
+                chars = kf.get("characters")
+                if isinstance(chars, list):
+                    kf["characters"] = ["" if c == deleted_name else c for c in chars]
+            bindings = kf.get("reference_bindings")
+            if isinstance(bindings, dict):
+                for slot, binding in list(bindings.items()):
+                    b = binding if isinstance(binding, dict) else {}
+                    sem = str(b.get("semantic") or "").strip().lower()
+                    src = str(b.get("source") or "").strip().lower()
+                    if cleared_seq_setting and sem == "location" and src == "sequence":
+                        bindings[slot] = {"semantic": "unset"}
+                        continue
+                    if cleared_seq_style and sem == "style" and src == "sequence":
+                        bindings[slot] = {"semantic": "unset"}
+                        continue
+                    bindings[slot] = _scrub_reference_binding_for_deleted_asset(
+                        binding, collection_key, asset_id, seq
+                    )
 
 
 def _refresh_char_list(json_txt: str, current_val: str, pending_id: str | None):
@@ -757,17 +1475,7 @@ def _refresh_char_list(json_txt: str, current_val: str, pending_id: str | None):
         data = json_txt
         choices = _build_character_choices(data)
         valid_ids = [c[1] for c in choices]
-        
-        final_val = None
-        
-        # Priority 1: Pending ID (from Add operation)
-        if pending_id and pending_id in valid_ids:
-            final_val = pending_id
-        # Priority 2: Keep current value if valid
-        elif current_val in valid_ids:
-            final_val = current_val
-        
-        # Return update for component AND reset pending state to None
+        final_val = _resolve_asset_list_selection(current_val, pending_id, valid_ids)
         return gr.update(choices=choices, value=final_val), None
     except Exception:
         return gr.update(), None
@@ -780,7 +1488,6 @@ def _add_character(pre_txt: str):
     new_char = {
         "id": new_id,
         "name": "New Character",
-        "lora_keyword": "",
         "prompt": "",
         "negative_prompt": ""
     }
@@ -791,13 +1498,52 @@ def _add_character(pre_txt: str):
 def _delete_character(pre_txt: str, selected_id: str):
     data = pre_txt if isinstance(pre_txt, dict) else {}
     chars = _get_characters(data)
+    deleted = next((c for c in chars if c.get("id") == selected_id), None)
+    deleted_name = (deleted or {}).get("name")
     chars_after_delete = [c for c in chars if c.get("id") != selected_id]
     data["project"]["characters"] = chars_after_delete
-    # Output Dict and None to clear pending state
+    _purge_asset_references(data, "characters", selected_id, deleted_name=deleted_name)
     return data, None
 
-def _update_character_fields(pre_txt: str, selected_id: str, name, lora_keyword, prompt_val, neg_prompt):
-    if not selected_id: return pre_txt, gr.update()
+def _refresh_asset_look_gallery(project_dict):
+    paths = get_style_test_images(project_dict)
+    return paths, paths
+
+
+def _asset_look_ui_parts(project_dict, look_context, look_paths=None):
+    return format_asset_look_status_parts(look_context, project_dict, look_paths)
+
+
+def _on_asset_look_gallery_select(evt: gr.SelectData, project_dict, paths: list):
+    if evt is None or getattr(evt, "index", None) is None or not paths:
+        return (None, *_asset_look_ui_parts(project_dict, None, paths))
+    try:
+        path = paths[evt.index]
+    except (IndexError, TypeError):
+        return (None, *_asset_look_ui_parts(project_dict, None, paths))
+    look_flat, _msg = recall_project_globals(path)
+    return look_flat, *_asset_look_ui_parts(project_dict, look_flat, paths)
+
+
+def _recall_asset_gen_from_reference_image(image_path: str, project_dict, look_paths=None):
+    look_flat, gen_prompt, gen_neg, _summary, status = recall_asset_generation_from_reference(
+        image_path
+    )
+    indicator, details = _asset_look_ui_parts(project_dict, look_flat, look_paths)
+    return look_flat, gen_prompt, gen_neg, indicator, details, status
+
+
+def _update_character_fields(
+    pre_txt: str,
+    selected_id: str,
+    name,
+    prompt_val,
+    neg_prompt,
+    gen_prompt,
+    gen_neg,
+):
+    if not selected_id:
+        return pre_txt, gr.update()
     data = pre_txt if isinstance(pre_txt, dict) else {}
     chars = _get_characters(data)
     char_to_update = next((c for c in chars if c.get("id") == selected_id), None)
@@ -805,9 +1551,11 @@ def _update_character_fields(pre_txt: str, selected_id: str, name, lora_keyword,
         old_name = char_to_update.get("name")
         new_name = name.strip()
         char_to_update["name"] = new_name
-        char_to_update["lora_keyword"] = lora_keyword
         char_to_update["prompt"] = prompt_val
         char_to_update["negative_prompt"] = neg_prompt
+        char_to_update["generator_prompt"] = gen_prompt
+        char_to_update["generator_negative_prompt"] = gen_neg
+        char_to_update.pop("lora_keyword", None)
         
         # UPDATE: V2 Safe Traversal for updating references
         if old_name and old_name != new_name:
@@ -851,13 +1599,7 @@ def _refresh_simple_list(json_txt: str, key: str, current_val: str, pending_id: 
         data = json_txt
         choices = _build_simple_choices(data, key)
         valid_ids = [c[1] for c in choices]
-
-        final_val = None
-        if pending_id and pending_id in valid_ids:
-            final_val = pending_id
-        elif current_val in valid_ids:
-            final_val = current_val
-
+        final_val = _resolve_asset_list_selection(current_val, pending_id, valid_ids)
         return gr.update(choices=choices, value=final_val), None
     except Exception:
         return gr.update(), None
@@ -879,7 +1621,6 @@ def _add_simple_item(data, path, default_name):
     item = {
         "id": new_id,
         "name": default_name,
-        "lora_keyword": "",
         "prompt": "",
         "negative_prompt": ""
     }
@@ -895,6 +1636,8 @@ def _delete_simple_item(project_dict, key, item_id):
         return data, None
 
     data["project"][key] = [i for i in items if isinstance(i, dict) and i.get("id") != item_id]
+    if key in ("settings", "styles"):
+        _purge_asset_references(data, key, item_id)
     return data, None
 
 
@@ -918,9 +1661,9 @@ def _on_simple_item_selected(project_dict, key, item_id):
         return (
             gr.update(visible=True),
             gr.update(value=item.get("name", "")),
-            gr.update(value=item.get("lora_keyword", "")),
             gr.update(value=item.get("prompt", "")),
-            gr.update(value=item.get("negative_prompt", ""))
+            gr.update(value=item.get("negative_prompt", "")),
+            _reference_image_display(item.get("reference_image")),
         )
 
     return (
@@ -928,13 +1671,22 @@ def _on_simple_item_selected(project_dict, key, item_id):
         gr.update(value=""),
         gr.update(value=""),
         gr.update(value=""),
-        gr.update(value="")
+        gr.update(value=None),
     )
 
 
 
 
-def _update_simple_fields(project_dict, key, item_id, name_val, lora_keyword_val, prompt_val, negative_prompt_val):
+def _update_simple_fields(
+    project_dict,
+    key,
+    item_id,
+    name_val,
+    prompt_val,
+    negative_prompt_val,
+    generator_prompt_val,
+    generator_negative_val,
+):
     data = project_dict if isinstance(project_dict, dict) else {}
     items = data.get("project", {}).get(key, [])
     if not isinstance(items, list):
@@ -944,9 +1696,11 @@ def _update_simple_fields(project_dict, key, item_id, name_val, lora_keyword_val
     for item in items:
         if isinstance(item, dict) and item.get("id") == item_id:
             item["name"] = name_val
-            item["lora_keyword"] = lora_keyword_val
             item["prompt"] = prompt_val
             item["negative_prompt"] = negative_prompt_val
+            item["generator_prompt"] = generator_prompt_val
+            item["generator_negative_prompt"] = generator_negative_val
+            item.pop("lora_keyword", None)
             break
 
     # Rebuild choices
@@ -968,11 +1722,156 @@ def _update_simple_fields(project_dict, key, item_id, name_val, lora_keyword_val
 def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_file_path: gr.State, features: Dict = {}):
     gr.HTML("""
     <style>
-      #pose_gallery .grid-container {
+      #pose_gallery .grid-container,
+      #char_reference_gallery .grid-container,
+      #setting_reference_gallery .grid-container,
+      #style_reference_gallery .grid-container,
+      #char_look_gallery .grid-container,
+      #setting_look_gallery .grid-container,
+      #style_look_gallery .grid-container {
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      }
+      .asset-model-settings-stack > .form {
+        gap: 4px !important;
+        padding: 0 !important;
+      }
+      .asset-model-settings-stack .asset-look-indicator.block,
+      .asset-model-settings-stack .asset-look-indicator.block > .prose,
+      .asset-model-settings-stack .asset-look-details.block,
+      .asset-model-settings-stack .asset-look-details.block > .prose {
+        margin: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+      }
+      .asset-model-settings-stack > .form > .block.accordion {
+        margin-top: 0 !important;
+      }
+      .asset-columns-row > .column {
+        gap: 8px !important;
+        min-width: 0 !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        align-self: flex-start !important;
+        flex-grow: 1 !important;
+        height: auto !important;
+        min-height: 0 !important;
+      }
+      .asset-columns-row > .column > .form {
+        align-items: flex-start !important;
+        height: auto !important;
+        flex-grow: 0 !important;
+        background: transparent !important;
+        background-color: transparent !important;
+      }
+      .asset-columns-row > .column > .form > .block {
+        flex-grow: 0 !important;
+        flex-shrink: 0 !important;
+      }
+      .asset-inspector-shell,
+      .asset-inspector-shell > .form {
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        gap: 8px !important;
+      }
+      .asset-inspector-shell .styler {
+        background: transparent !important;
+      }
+      .asset-columns-row .group {
+        background: transparent !important;
+        background-color: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+      }
+      .asset-preview-row {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      @media (max-width: 900px) {
+        #pose_gallery .grid-container,
+        #char_reference_gallery .grid-container,
+        #setting_reference_gallery .grid-container,
+        #style_reference_gallery .grid-container {
+          grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+        }
+        .asset-columns-row {
+          flex-direction: column !important;
+          flex-wrap: nowrap !important;
+        }
+        .asset-columns-row > .column {
+          width: 100% !important;
+          flex: 1 1 auto !important;
+          max-width: 100% !important;
+        }
+        .asset-columns-row > .column > .form > .block {
+          flex-shrink: 1 !important;
+          max-width: 100% !important;
+        }
+        .asset-preview-row {
+          flex-wrap: wrap !important;
+          gap: 4px !important;
+          width: 100% !important;
+          max-width: 100% !important;
+          overflow: hidden !important;
+          box-sizing: border-box !important;
+        }
+        .asset-preview-row > .column {
+          flex: 1 1 calc((100% - 8px) / 3) !important;
+          min-width: 0 !important;
+          max-width: calc((100% - 8px) / 3) !important;
+          width: calc((100% - 8px) / 3) !important;
+          box-sizing: border-box !important;
+          overflow: hidden !important;
+        }
+        .asset-preview-row > .column > .form,
+        .asset-preview-row > .column > .form > .block {
+          width: 100% !important;
+          max-width: 100% !important;
+          min-width: 0 !important;
+          flex-shrink: 1 !important;
+          box-sizing: border-box !important;
+        }
+        .asset-preview-row .block.image {
+          width: 100% !important;
+          max-width: 100% !important;
+          height: auto !important;
+          max-height: 72px !important;
+          min-height: 0 !important;
+        }
+        .asset-preview-row .block.image .image-container,
+        .asset-preview-row .block.image .wrap {
+          width: 100% !important;
+          max-width: 100% !important;
+          height: 64px !important;
+          max-height: 64px !important;
+          min-height: 0 !important;
+        }
+        .asset-preview-row .block.image img {
+          width: 100% !important;
+          max-width: 100% !important;
+          max-height: 64px !important;
+          height: auto !important;
+          object-fit: contain !important;
+        }
+      }
+      @media (max-width: 420px) {
+        .asset-preview-row > .column {
+          flex: 1 1 calc((100% - 4px) / 2) !important;
+          max-width: calc((100% - 4px) / 2) !important;
+          width: calc((100% - 4px) / 2) !important;
+        }
       }
     </style>
     """)
+    asset_gen_look_context = gr.State(value=None)
+    asset_look_paths_state = gr.State(value=[])
+
     with gr.Tabs():
         # ============================================================
         # POSES TAB
@@ -987,119 +1886,81 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
             pose_gen_shape_path = gr.State(value=None)
             pose_gen_outline_path = gr.State(value=None)
 
-            with gr.Row():
-                # ========== LEFT COLUMN: Pose Gallery ==========
-                with gr.Column(scale=1):
-                    with gr.Accordion("Pose Library", open=True,elem_classes=["themed-accordion", "proj-theme"]):
-                        pose_gallery = gr.Gallery(
-                            label="Pose Library", 
-                            elem_id="pose_gallery", 
-                            height=200, 
-                            object_fit="contain", allow_preview=False
-                        )
-                        
-                        pose_upload_btn = gr.UploadButton(
-                            "Upload Pose", 
-                            file_types=["image"], 
-                            file_count="single",
-                            scale=1
-                        )
-                        with gr.Row():
-                            pose_recall_btn = gr.Button(
-                                "Load Properties from Image", 
-                                variant="secondary",
-                                scale=1
-                            )
-                            
-                            # pose_qc_batch_btn = gr.Button("QC Delete Batch", variant="stop",visible=features.get("show_QC", False))
-
-                            pose_delete_btn = gr.Button(
-                                "Delete Pose", 
-                                variant="stop", 
-                                visible=False
-                            )
-                        
-                        pose_upload_status = gr.Textbox(
-                            label="Status", 
-                            interactive=False,
-                            show_label=False,
-                            visible=False
-                        )
-
-                # ========== MIDDLE COLUMN: Generate New Pose ==========
+            with gr.Row(elem_classes=["asset-columns-row"], equal_height=False):
+                # ========== COLUMN 1: Properties & Generate ==========
                 with gr.Column(scale=1):
                     with gr.Accordion("New Pose Properties", open=True):
-                        # gr.Markdown("### Properties")
-                        
                         pose_gen_prompt = gr.Textbox(
-                            label="Pose Prompt", 
+                            label="Pose Prompt",
                             info="Describe the desired pose and composition",
-                            lines=2, 
-                            placeholder="e.g., a person standing with arms crossed"
+                            lines=2,
+                            placeholder="e.g., a person standing with arms crossed",
                         )
-                        
+
+                        pose_gen_negative = gr.Textbox(
+                            label="Negative Prompt",
+                            info="Optional. Added on top of the built-in pose negatives",
+                            lines=2,
+                            placeholder="e.g., blurry, extra limbs",
+                        )
+
                         pose_gen_animal = gr.Checkbox(
-                            label="Animal", 
+                            label="Animal",
                             info="Enable animal-specific controlnet processing",
-                            value=False
+                            value=False,
                         )
-                        
-                        # Generation Mode
+
                         pg_choices = ["Simple", "Expressive"]
                         if features.get("show_project_style_pose", True):
                             pg_choices.append("Project Style")
-                        
+
                         pose_gen_mode = gr.Radio(
-                            label="Generation Mode", 
-                            choices=pg_choices, 
+                            label="Generation Mode",
+                            choices=pg_choices,
                             value="Simple",
-                            info="Simple: clean monochrome base (recommended) • Expressive: detailed but may limit flexibility"
+                            info="Simple: clean monochrome base (recommended) • Expressive: detailed but may limit flexibility",
                         )
-                        
+
                         pose_gen_char_count = gr.Radio(
-                            label="Character Count", 
-                            choices=["1 Character", "2 Characters", "No Limit"], 
+                            label="Character Count",
+                            choices=["1 Character", "2 Characters", "No Limit"],
                             value="1 Character",
-                            info="1 Character: enforces single subject • 2 Characters: balanced layout for two subjects • No Limit: open composition"
+                            info="1 Character: enforces single subject • 2 Characters: balanced layout for two subjects • No Limit: open composition",
                         )
-                        
+
                         pose_gen_btn = gr.Button("Generate Pose", variant="secondary")
                     with gr.Accordion("Status", open=False) as pose_gen_status_acc:
                         pose_gen_status = gr.Textbox(
-                            label="Status", 
-                            interactive=False, 
-                            lines=4
+                            label="Status",
+                            interactive=False,
+                            lines=4,
                         )
 
-                # ========== RIGHT COLUMN: Results & Save ==========
+                # ========== COLUMN 2: Generated Result ==========
                 with gr.Column(scale=1):
-                    # Generated Result (top)
                     pose_gen_img = gr.Image(
-                        label="Generated Result", 
-                        interactive=False, 
-                        height=256
+                        label="Generated Result",
+                        interactive=False,
+                        height=256,
                     )
-                    
-                    # Auxiliary Layers (row below)
-                    with gr.Row():
+
+                    with gr.Row(elem_classes=["asset-preview-row"]):
                         pose_gen_preview_img = gr.Image(
-                            label="Pose", 
-                            interactive=False, 
-                            height=128
+                            label="Pose",
+                            interactive=False,
+                            height=128,
                         )
                         pose_gen_shape_preview_img = gr.Image(
-                            label="Shape", 
-                            interactive=False, 
-                            height=128
+                            label="Shape",
+                            interactive=False,
+                            height=128,
                         )
                         pose_gen_outline_preview_img = gr.Image(
-                            label="Outline", 
-                            interactive=False, 
-                            height=128
+                            label="Outline",
+                            interactive=False,
+                            height=128,
                         )
 
-
-                    # QC Controls
                     with gr.Accordion("QC", open=False, visible=features.get("show_QC", False)) as pose_qc_accordion:
                         pose_qc_btn = gr.Button("QC Pose", variant="secondary")
                         pose_qc_max_iter = gr.Number(label="Max Iterations", value=10, precision=0, minimum=1, maximum=50, interactive=True)
@@ -1107,28 +1968,61 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
                             pose_auto_qc_btn = gr.Button("Auto Generate with QC", variant="secondary")
                             pose_auto_qc_cancel_btn = gr.Button("Cancel", variant="stop")
 
-                    # Save/Update Controls
                     with gr.Group(visible=False) as pose_edit_group:
                         pose_edit_name = gr.Textbox(
-                            label="Pose Name", 
+                            label="Pose Name",
                             info="Name for saving to gallery",
-                            interactive=True
+                            interactive=True,
                         )
                         with gr.Row():
                             pose_update_btn = gr.Button(
-                                "Save / Update Pose", 
-                                variant="secondary"
+                                "Save / Update Pose",
+                                variant="secondary",
                             )
 
-                    
-
-                    
                     pose_gen_temp_json_preview = gr.Code(
-                        language="json", 
-                        interactive=False, 
-                        visible=False
-                    ) 
+                        language="json",
+                        interactive=False,
+                        visible=False,
+                    )
                     pose_gen_temp_path = gr.State(value=None)
+
+                # ========== COLUMN 3: Pose Library ==========
+                with gr.Column(scale=1):
+                    with gr.Accordion("Pose Library", open=True, elem_classes=["themed-accordion", "proj-theme"]):
+                        pose_gallery = gr.Gallery(
+                            label="Pose Library",
+                            elem_id="pose_gallery",
+                            height=200,
+                            object_fit="contain",
+                            allow_preview=False,
+                        )
+
+                        pose_upload_btn = gr.UploadButton(
+                            "Upload Pose",
+                            file_types=["image"],
+                            file_count="single",
+                            scale=1,
+                        )
+                        with gr.Row():
+                            pose_recall_btn = gr.Button(
+                                "Load Properties from Image",
+                                variant="secondary",
+                                scale=1,
+                            )
+
+                            pose_delete_btn = gr.Button(
+                                "Delete Pose",
+                                variant="stop",
+                                visible=False,
+                            )
+
+                        pose_upload_status = gr.Textbox(
+                            label="Status",
+                            interactive=False,
+                            show_label=False,
+                            visible=False,
+                        )
 
             # ========== EVENT HANDLERS ==========
             pose_upload_btn.upload(
@@ -1173,7 +2067,7 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
             pose_recall_btn.click(
                 fn=recall_pose_params,
                 inputs=[pose_edit_path_state],
-                outputs=[pose_gen_prompt, pose_gen_animal, pose_gen_mode, pose_gen_char_count, pose_gen_status]
+                outputs=[pose_gen_prompt, pose_gen_negative, pose_gen_animal, pose_gen_mode, pose_gen_char_count, pose_gen_status]
             )
             
             def _pose_qc_wrapper(img):
@@ -1195,7 +2089,7 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
                 outputs=[pose_gen_status_acc]
             ).then(
                 fn=handle_auto_generate_with_qc,
-                inputs=[pose_gen_prompt, preview_code, pose_gen_animal, pose_gen_char_count, pose_gen_mode, pose_qc_max_iter],
+                inputs=[pose_gen_prompt, preview_code, pose_gen_animal, pose_gen_char_count, pose_gen_mode, pose_gen_negative, pose_qc_max_iter],
                 outputs=[
                     pose_gen_img, pose_gen_preview_img, pose_gen_shape_preview_img, pose_gen_outline_preview_img,
                     pose_gen_status, pose_gen_temp_json_preview, pose_gen_temp_path,
@@ -1216,7 +2110,7 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
 
             pose_gen_btn.click(
                 fn=handle_pose_generation,
-                inputs=[pose_gen_prompt, preview_code, pose_gen_animal, pose_gen_char_count, pose_gen_mode],
+                inputs=[pose_gen_prompt, preview_code, pose_gen_animal, pose_gen_char_count, pose_gen_mode, pose_gen_negative],
                 outputs=[
                     pose_gen_img, pose_gen_preview_img, pose_gen_shape_preview_img, pose_gen_outline_preview_img,
                     pose_gen_status, pose_gen_temp_json_preview, pose_gen_temp_path,
@@ -1268,130 +2162,241 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
         # ============================================================
         with gr.TabItem("Characters") as characters_tab:
             with gr.Row():
-                # Left: Character List
-                with gr.Column(scale=1, min_width=340):
-                    add_char_btn = gr.Button("+ Add Character", variant="primary")
-                    char_selector = gr.Radio(
-                        label="Characters", 
-                        choices=[], 
-                        value=None, 
-                        elem_id="asset_list", 
-                        container=False, 
-                        interactive=True
-                    )
-                
-                # Right: Character Editor
-                with gr.Column(scale=2, min_width=640):
-                    with gr.Group(visible=False) as inspector_group:
-                        char_name = gr.Textbox(
-                            label="Character Name",
-                            info="Display name for this character"
-                        )
-                        
-                        char_lora_keyword = gr.Textbox(
-                            label="LoRA Keywords",
-                            info="Trigger words for character LoRAs (e.g., 'john_character, wearing_suit')",
-                            visible=False
-                        )
-                        
-                        char_prompt_mod = gr.Textbox(
-                            label="Character Prompt", 
-                            info="Physical description and attributes",
-                            lines=4, 
-                            scale=3
-                        )
-                        
-                        char_inject_lora = gr.Dropdown(
-                            label="Inject LoRA Tag", 
-                            info="Quick-add a LoRA tag to the prompt above",
-                            choices=[], 
-                            interactive=True, 
-                            scale=1
-                        )
-                        
-                        char_neg_prompt = gr.Textbox(
-                            label="Negative Prompt",
-                            info="Things to avoid when generating this character",
-                            lines=2
-                        )
+                add_char_btn = gr.Button("+ Add Character", variant="primary", scale=0)
+                char_selector = gr.Dropdown(
+                    label="Character",
+                    choices=[],
+                    value=None,
+                    interactive=True,
+                    allow_custom_value=False,
+                    filterable=False,
+                    scale=3,
+                )
 
-                        # gr.Markdown("### Test Generation")
-                        char_test_pose = gr.Dropdown(
-                            label="Test Pose", 
-                            info="Select a pose to preview this character",
-                            choices=[], 
-                            interactive=True, 
-                            filterable=False
-                        )
-                        test_char_btn = gr.Button("Generate Test", variant="primary")
-                        
-                        with gr.Group() as char_test_results_group:
-                            char_test_image = gr.Image(
-                                label="Test Result", 
-                                interactive=False, 
-                                height=256
+            with gr.Group(visible=False, elem_classes=["asset-inspector-shell"]) as inspector_group:
+                with gr.Row(elem_classes=["asset-columns-row"], equal_height=False):
+                    with gr.Column(scale=1):
+                        with gr.Accordion("Properties", open=True):
+                            char_name = gr.Textbox(
+                                label="Character Name",
+                                info="Display name for this character",
                             )
-                            with gr.Accordion("Generation Log", open=False):
-                                char_test_log = gr.Textbox(
-                                    lines=8, 
-                                    interactive=False, 
-                                    autoscroll=True
-                                )
+                            char_prompt_mod = gr.Textbox(
+                                label="Character Prompt",
+                                info="Included in keyframe generation",
+                                lines=4,
+                            )
+                            char_inject_lora = gr.Dropdown(
+                                label="Inject LoRA Tag",
+                                info="Add a LoRA tag to the keyframe prompt (dropdown clears after each pick)",
+                                choices=[],
+                                value=None,
+                                interactive=True,
+                            )
+                            char_neg_prompt = gr.Textbox(
+                                label="Negative Prompt",
+                                info="Included in keyframe generation",
+                                lines=2,
+                            )
+                            char_test_pose = gr.Dropdown(
+                                label="Test Pose",
+                                info="Select a pose to preview this character",
+                                choices=[],
+                                interactive=True,
+                                filterable=False,
+                                visible=False,
+                            )
 
-                        delete_char_btn = gr.Button("Delete Character", variant="stop")
+                    with gr.Column(scale=1):
+                        with gr.Accordion("Generation", open=True):
+                            char_test_image = gr.Image(
+                                label="Generated Result",
+                                type="filepath",
+                                interactive=False,
+                                height=256,
+                            )
+                            test_char_btn = gr.Button("Generate", variant="primary")
+                            char_reference_save_btn = gr.Button(
+                                "Save to this Character", variant="secondary", visible=True
+                            )
+                            with gr.Group() as char_gen_prompt_group:
+                                char_gen_prompt = gr.Textbox(
+                                    label="Generator Prompt",
+                                    info="Session asset generation only; falls back to Character Prompt if empty",
+                                    lines=4,
+                                )
+                                char_gen_inject_lora = gr.Dropdown(
+                                    label="Inject LoRA Tag",
+                                    info="Add a LoRA tag to the generator prompt (dropdown clears after each pick)",
+                                    choices=[],
+                                    value=None,
+                                    interactive=True,
+                                )
+                                char_gen_neg_prompt = gr.Textbox(
+                                    label="Negative Prompt",
+                                    info="Session asset generation only; falls back to keyframe Negative Prompt if empty",
+                                    lines=2,
+                                )
+                            with gr.Group(elem_classes=["asset-model-settings-stack"]) as char_model_settings_group:
+                                char_look_indicator = gr.Markdown(
+                                    elem_classes=["info-text", "asset-look-indicator"],
+                                )
+                                with gr.Accordion("Model Settings", open=False):
+                                    char_look_gallery = gr.Gallery(
+                                        show_label=False,
+                                        elem_id="char_look_gallery",
+                                        height=160,
+                                        object_fit="contain",
+                                        allow_preview=False,
+                                    )
+                                    char_look_details = gr.Markdown(elem_classes=["info-text", "asset-look-details"])
+                        with gr.Accordion("Status", open=False):
+                            char_test_log = gr.Textbox(
+                                label="Generation Log",
+                                lines=8,
+                                interactive=False,
+                                autoscroll=True,
+                            )
+
+                    with gr.Column(scale=1) as char_reflib_group:
+                        with gr.Accordion(
+                            "Reference Library",
+                            open=True,
+                            elem_classes=["themed-accordion", "proj-theme"],
+                        ):
+                            char_ref_gallery = gr.Gallery(
+                                label="Reference images",
+                                elem_id="char_reference_gallery",
+                                height=200,
+                                object_fit="contain",
+                                allow_preview=False,
+                            )
+                            char_gallery_path_state = gr.State(value=None)
+                            with gr.Row():
+                                char_ref_upload_btn = gr.UploadButton(
+                                    "Upload image",
+                                    file_types=["image"],
+                                    file_count="single",
+                                )
+                                char_gallery_delete_btn = gr.Button(
+                                    "Delete image",
+                                    variant="stop",
+                                    visible=False,
+                                )
+                            char_gallery_status = gr.Markdown("")
+                            char_recall_gen_btn = gr.Button(
+                                "Load generation settings from image",
+                                variant="secondary",
+                            )
+                            char_reference_image = gr.Image(
+                                label="Selected reference",
+                                type="filepath",
+                                interactive=False,
+                                height=200,
+                            )
+
+                with gr.Accordion("Manage", open=False, elem_classes=["themed-accordion", "stop-theme"]):
+                    delete_char_btn = gr.Button("Delete Character", variant="stop")
 
             # [State and event handlers remain the same - lines 1065-1145]
             selected_char_id = gr.State(value="")
             pending_char_selection = gr.State(value=None)
 
             preview_code.change(
-                _refresh_char_list, 
-                inputs=[preview_code, char_selector, pending_char_selection], 
-                outputs=[char_selector, pending_char_selection], 
+                _refresh_char_list,
+                inputs=[preview_code, selected_char_id, pending_char_selection],
+                outputs=[char_selector, pending_char_selection],
                 queue=False
             )
 
-            characters_tab.select(
-                fn=_refresh_char_list,
-                inputs=[preview_code, char_selector, pending_char_selection],
-                outputs=[char_selector, pending_char_selection],
-                queue=False
+            _char_inspector_outputs = [
+                inspector_group,
+                char_name,
+                char_prompt_mod,
+                char_neg_prompt,
+                char_gen_prompt,
+                char_gen_neg_prompt,
+                char_reference_image,
+                char_ref_gallery,
+                char_gallery_delete_btn,
+                char_gallery_path_state,
+                char_gallery_status,
+            ]
+            _wire_asset_tab_enter(
+                characters_tab,
+                refresh_fn=_refresh_char_list,
+                preview_code=preview_code,
+                selector=char_selector,
+                pending_state=pending_char_selection,
+                selected_id_state=selected_char_id,
+                collection_key="characters",
+                inspector_outputs=_char_inspector_outputs,
             )
 
             char_selector.change(
                 lambda sel: sel, inputs=[char_selector], outputs=[selected_char_id], queue=False
             ).then(
-                _on_asset_selected, 
-                inputs=[preview_code, selected_char_id], 
-                outputs=[inspector_group, char_name, char_lora_keyword, char_prompt_mod, char_neg_prompt], 
-                queue=False
-            ).then(
-                cb_list_pose_files,
-                inputs=[poses_dir_state, gr.State(None)],
-                outputs=[char_test_pose],
+                fn=_make_asset_inspector_load_handler("characters"),
+                inputs=[preview_code, selected_char_id],
+                outputs=_char_inspector_outputs,
                 queue=False,
-                show_progress="hidden"
             )
             
             add_char_btn.click(_add_character, inputs=[preview_code], outputs=[preview_code, pending_char_selection])
             delete_char_btn.click(_delete_character, inputs=[preview_code, selected_char_id], outputs=[preview_code, pending_char_selection])
 
-            char_inject_lora.change(
+            char_inject_lora.select(
                 fn=_inject_lora_simple,
                 inputs=[char_prompt_mod, char_inject_lora],
                 outputs=[char_prompt_mod, char_inject_lora],
                 queue=False,
-                show_progress="hidden"
+                show_progress="hidden",
             ).then(
                 fn=_update_character_fields,
-                inputs=[preview_code, selected_char_id, char_name, char_lora_keyword, char_prompt_mod, char_neg_prompt],
+                inputs=[
+                    preview_code,
+                    selected_char_id,
+                    char_name,
+                    char_prompt_mod,
+                    char_neg_prompt,
+                    char_gen_prompt,
+                    char_gen_neg_prompt,
+                ],
                 outputs=[preview_code, char_selector],
                 queue=False,
                 show_progress="hidden"
             )
 
-            inspector_fields = [char_name, char_lora_keyword, char_prompt_mod, char_neg_prompt]
-            text_or_number_fields = [char_name, char_lora_keyword, char_prompt_mod, char_neg_prompt]
+            char_gen_inject_lora.select(
+                fn=_inject_lora_simple,
+                inputs=[char_gen_prompt, char_gen_inject_lora],
+                outputs=[char_gen_prompt, char_gen_inject_lora],
+                queue=False,
+                show_progress="hidden",
+            ).then(
+                fn=_update_character_fields,
+                inputs=[
+                    preview_code,
+                    selected_char_id,
+                    char_name,
+                    char_prompt_mod,
+                    char_neg_prompt,
+                    char_gen_prompt,
+                    char_gen_neg_prompt,
+                ],
+                outputs=[preview_code, char_selector],
+                queue=False,
+                show_progress="hidden"
+            )
+
+            inspector_fields = [
+                char_name,
+                char_prompt_mod,
+                char_neg_prompt,
+                char_gen_prompt,
+                char_gen_neg_prompt,
+            ]
+            text_or_number_fields = inspector_fields
 
             for field in inspector_fields:
                 inputs = [preview_code, selected_char_id, *inspector_fields]
@@ -1405,8 +2410,55 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
 
             test_char_btn.click(
                 fn=handle_character_test,
-                inputs=[preview_code, selected_char_id, char_test_pose],
+                inputs=[preview_code, selected_char_id, asset_gen_look_context],
                 outputs=[char_test_image, char_test_log]
+            )
+
+            characters_tab.select(
+                fn=_refresh_asset_look_gallery,
+                inputs=[preview_code],
+                outputs=[char_look_gallery, asset_look_paths_state],
+                queue=False,
+            ).then(
+                fn=_asset_look_ui_parts,
+                inputs=[preview_code, asset_gen_look_context, asset_look_paths_state],
+                outputs=[char_look_indicator, char_look_details],
+                queue=False,
+            )
+
+            char_look_gallery.select(
+                fn=_on_asset_look_gallery_select,
+                inputs=[preview_code, asset_look_paths_state],
+                outputs=[asset_gen_look_context, char_look_indicator, char_look_details],
+                queue=False,
+            )
+
+            char_recall_gen_btn.click(
+                fn=_recall_asset_gen_from_reference_image,
+                inputs=[char_gallery_path_state, preview_code, asset_look_paths_state],
+                outputs=[
+                    asset_gen_look_context,
+                    char_gen_prompt,
+                    char_gen_neg_prompt,
+                    char_look_indicator,
+                    char_look_details,
+                    char_gallery_status,
+                ],
+                queue=False,
+            )
+
+            _wire_asset_reference_library(
+                preview_code=preview_code,
+                collection_key="characters",
+                selected_id_state=selected_char_id,
+                reference_gallery=char_ref_gallery,
+                gallery_path_state=char_gallery_path_state,
+                gallery_delete_btn=char_gallery_delete_btn,
+                gallery_status=char_gallery_status,
+                reference_image=char_reference_image,
+                upload_btn=char_ref_upload_btn,
+                save_to_library_btn=char_reference_save_btn,
+                test_image=char_test_image,
             )
 
         # ============================================================
@@ -1414,82 +2466,180 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
         # ============================================================
         with gr.TabItem("Locations") as settings_tab:
             with gr.Row():
-                # Left: Location List
-                with gr.Column(scale=1, min_width=340):
-                    add_setting_btn = gr.Button("+ Add Location", variant="primary")
-                    setting_selector = gr.Radio(
-                        label="Locations", 
-                        choices=[], 
-                        value=None, 
-                        container=False, 
-                        interactive=True
-                    )
-                
-                # Right: Location Editor
-                with gr.Column(scale=2, min_width=640):
-                    with gr.Group(visible=False) as setting_inspector:
-                        setting_name = gr.Textbox(
-                            label="Location Name",
-                            info="Display name for this location or setting"
-                        )
-                        
-                        setting_lora_keyword = gr.Textbox(
-                            label="LoRA Keywords",
-                            info="Trigger words for location/environment LoRAs",
-                            visible=False
-                        )
-                        
-                        setting_prompt = gr.Textbox(
-                            label="Location Prompt", 
-                            info="Describe the environment, architecture, atmosphere, and lighting",
-                            lines=6
-                        )
-                        
-                        setting_inject_lora = gr.Dropdown(
-                            label="Inject LoRA Tag",
-                            info="Quick-add a LoRA tag to the prompt above",
-                            choices=[], 
-                            interactive=True, 
-                            scale=1
-                        )
-                        
-                        setting_neg_prompt = gr.Textbox(
-                            label="Negative Prompt",
-                            info="Elements to avoid in this location",
-                            lines=2
-                        )
+                add_setting_btn = gr.Button("+ Add Location", variant="primary", scale=0)
+                setting_selector = gr.Dropdown(
+                    label="Location",
+                    choices=[],
+                    value=None,
+                    interactive=True,
+                    allow_custom_value=False,
+                    filterable=False,
+                    scale=3,
+                )
 
-                        # gr.Markdown("### Test Generation")
-                        test_setting_btn = gr.Button("Generate Test", variant="primary")
-                        
-                        with gr.Group() as setting_test_results_group:
-                            setting_test_image = gr.Image(
-                                label="Test Result", 
-                                interactive=False, 
-                                height=256
+            with gr.Group(visible=False, elem_classes=["asset-inspector-shell"]) as setting_inspector:
+                with gr.Row(elem_classes=["asset-columns-row"], equal_height=False):
+                    with gr.Column(scale=1):
+                        with gr.Accordion("Properties", open=True):
+                            setting_name = gr.Textbox(
+                                label="Location Name",
+                                info="Display name for this location or setting",
                             )
-                            with gr.Accordion("Generation Log", open=False):
-                                setting_test_log = gr.Textbox(
-                                    lines=8, 
-                                    interactive=False, 
-                                    autoscroll=True
-                                )
+                            setting_prompt = gr.Textbox(
+                                label="Location Prompt",
+                                info="Included in keyframe generation",
+                                lines=6,
+                            )
+                            setting_inject_lora = gr.Dropdown(
+                                label="Inject LoRA Tag",
+                                info="Add a LoRA tag to the keyframe prompt (dropdown clears after each pick)",
+                                choices=[],
+                                value=None,
+                                interactive=True,
+                            )
+                            setting_neg_prompt = gr.Textbox(
+                                label="Negative Prompt",
+                                info="Included in keyframe generation",
+                                lines=2,
+                            )
 
-                        delete_setting_btn = gr.Button("Delete Location", variant="stop")
+                    with gr.Column(scale=1):
+                        with gr.Accordion("Generation", open=True):
+                            setting_test_image = gr.Image(
+                                label="Generated Result",
+                                type="filepath",
+                                interactive=False,
+                                height=256,
+                            )
+                            test_setting_btn = gr.Button("Generate", variant="primary")
+                            setting_reference_save_btn = gr.Button(
+                                "Save to this Location", variant="secondary", visible=True
+                            )
+                            with gr.Group() as setting_gen_prompt_group:
+                                setting_gen_prompt = gr.Textbox(
+                                    label="Generator Prompt",
+                                    info="Session asset generation only; falls back to Location Prompt if empty",
+                                    lines=4,
+                                )
+                                setting_gen_inject_lora = gr.Dropdown(
+                                    label="Inject LoRA Tag",
+                                    info="Add a LoRA tag to the generator prompt (dropdown clears after each pick)",
+                                    choices=[],
+                                    value=None,
+                                    interactive=True,
+                                )
+                                setting_gen_neg_prompt = gr.Textbox(
+                                    label="Negative Prompt",
+                                    info="Session asset generation only; falls back to keyframe Negative Prompt if empty",
+                                    lines=2,
+                                )
+                            with gr.Group(elem_classes=["asset-model-settings-stack"]) as setting_model_settings_group:
+                                setting_look_indicator = gr.Markdown(
+                                    elem_classes=["info-text", "asset-look-indicator"],
+                                )
+                                with gr.Accordion("Model Settings", open=False):
+                                    setting_look_gallery = gr.Gallery(
+                                        show_label=False,
+                                        elem_id="setting_look_gallery",
+                                        height=160,
+                                        object_fit="contain",
+                                        allow_preview=False,
+                                    )
+                                    setting_look_details = gr.Markdown(elem_classes=["info-text", "asset-look-details"])
+                        with gr.Accordion("Status", open=False):
+                            setting_test_log = gr.Textbox(
+                                label="Generation Log",
+                                lines=8,
+                                interactive=False,
+                                autoscroll=True,
+                            )
+
+                    with gr.Column(scale=1) as setting_reflib_group:
+                        with gr.Accordion(
+                            "Reference Library",
+                            open=True,
+                            elem_classes=["themed-accordion", "proj-theme"],
+                        ):
+                            setting_ref_gallery = gr.Gallery(
+                                label="Reference images",
+                                elem_id="setting_reference_gallery",
+                                height=200,
+                                object_fit="contain",
+                                allow_preview=False,
+                            )
+                            setting_gallery_path_state = gr.State(value=None)
+                            with gr.Row():
+                                setting_ref_upload_btn = gr.UploadButton(
+                                    "Upload image",
+                                    file_types=["image"],
+                                    file_count="single",
+                                )
+                                setting_gallery_delete_btn = gr.Button(
+                                    "Delete image",
+                                    variant="stop",
+                                    visible=False,
+                                )
+                            setting_gallery_status = gr.Markdown("")
+                            setting_recall_gen_btn = gr.Button(
+                                "Load generation settings from image",
+                                variant="secondary",
+                            )
+                            setting_reference_image = gr.Image(
+                                label="Selected reference",
+                                type="filepath",
+                                interactive=False,
+                                height=200,
+                            )
+                with gr.Accordion("Manage", open=False, elem_classes=["themed-accordion", "stop-theme"]):   
+                    delete_setting_btn = gr.Button("Delete Location", variant="stop")
 
             # [State and event handlers remain the same - lines 1171-1234]
             selected_setting_id = gr.State(value="")
             pending_setting_id = gr.State(value=None)
             
-            setting_inject_lora.change(
+            setting_inject_lora.select(
                 fn=_inject_lora_simple,
                 inputs=[setting_prompt, setting_inject_lora],
                 outputs=[setting_prompt, setting_inject_lora],
                 queue=False,
-                show_progress="hidden"
+                show_progress="hidden",
             ).then(
-                fn=lambda j, i, n, lk, p, np: _update_simple_fields(j, "settings", i, n, lk, p, np),
-                inputs=[preview_code, selected_setting_id, setting_name, setting_lora_keyword, setting_prompt, setting_neg_prompt],
+                fn=lambda j, i, n, p, np, gp, gn: _update_simple_fields(
+                    j, "settings", i, n, p, np, gp, gn
+                ),
+                inputs=[
+                    preview_code,
+                    selected_setting_id,
+                    setting_name,
+                    setting_prompt,
+                    setting_neg_prompt,
+                    setting_gen_prompt,
+                    setting_gen_neg_prompt,
+                ],
+                outputs=[preview_code, setting_selector],
+                queue=False,
+                show_progress="hidden"
+            )
+
+            setting_gen_inject_lora.select(
+                fn=_inject_lora_simple,
+                inputs=[setting_gen_prompt, setting_gen_inject_lora],
+                outputs=[setting_gen_prompt, setting_gen_inject_lora],
+                queue=False,
+                show_progress="hidden",
+            ).then(
+                fn=lambda j, i, n, p, np, gp, gn: _update_simple_fields(
+                    j, "settings", i, n, p, np, gp, gn
+                ),
+                inputs=[
+                    preview_code,
+                    selected_setting_id,
+                    setting_name,
+                    setting_prompt,
+                    setting_neg_prompt,
+                    setting_gen_prompt,
+                    setting_gen_neg_prompt,
+                ],
                 outputs=[preview_code, setting_selector],
                 queue=False,
                 show_progress="hidden"
@@ -1497,21 +2647,39 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
 
             preview_code.change(
                 fn=lambda j, c, p: _refresh_simple_list(j, "settings", c, p),
-                inputs=[preview_code, setting_selector, pending_setting_id],
+                inputs=[preview_code, selected_setting_id, pending_setting_id],
                 outputs=[setting_selector, pending_setting_id], queue=False
             )
 
-            settings_tab.select(
-                fn=lambda j, c, p: _refresh_simple_list(j, "settings", c, p),
-                inputs=[preview_code, setting_selector, pending_setting_id],
-                outputs=[setting_selector, pending_setting_id],
-                queue=False
+            _setting_inspector_outputs = [
+                setting_inspector,
+                setting_name,
+                setting_prompt,
+                setting_neg_prompt,
+                setting_gen_prompt,
+                setting_gen_neg_prompt,
+                setting_reference_image,
+                setting_ref_gallery,
+                setting_gallery_delete_btn,
+                setting_gallery_path_state,
+                setting_gallery_status,
+            ]
+            _wire_asset_tab_enter(
+                settings_tab,
+                refresh_fn=lambda j, c, p: _refresh_simple_list(j, "settings", c, p),
+                preview_code=preview_code,
+                selector=setting_selector,
+                pending_state=pending_setting_id,
+                selected_id_state=selected_setting_id,
+                collection_key="settings",
+                inspector_outputs=_setting_inspector_outputs,
             )
 
             setting_selector.change(lambda s: s, inputs=[setting_selector], outputs=[selected_setting_id], queue=False).then(
-                fn=lambda j, i: _on_simple_item_selected(j, ("project", "settings"), i),
+                fn=_make_asset_inspector_load_handler("settings"),
                 inputs=[preview_code, selected_setting_id],
-                outputs=[setting_inspector, setting_name, setting_lora_keyword, setting_prompt, setting_neg_prompt], queue=False
+                outputs=_setting_inspector_outputs,
+                queue=False,
             )
 
             add_setting_btn.click(
@@ -1526,17 +2694,82 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
                 inputs=[preview_code, selected_setting_id], outputs=[preview_code, pending_setting_id]
             )
             
-            for f in [setting_name, setting_lora_keyword, setting_prompt, setting_neg_prompt]:
+            _setting_fields = [
+                setting_name,
+                setting_prompt,
+                setting_neg_prompt,
+                setting_gen_prompt,
+                setting_gen_neg_prompt,
+            ]
+            for f in _setting_fields:
                 f.blur(
-                    fn=lambda j, i, n, lk, p, np: _update_simple_fields(j, "settings", i, n, lk, p, np),
-                    inputs=[preview_code, selected_setting_id, setting_name, setting_lora_keyword, setting_prompt, setting_neg_prompt],
-                    outputs=[preview_code, setting_selector], queue=False
+                    fn=lambda j, i, n, p, np, gp, gn: _update_simple_fields(
+                        j, "settings", i, n, p, np, gp, gn
+                    ),
+                    inputs=[
+                        preview_code,
+                        selected_setting_id,
+                        setting_name,
+                        setting_prompt,
+                        setting_neg_prompt,
+                        setting_gen_prompt,
+                        setting_gen_neg_prompt,
+                    ],
+                    outputs=[preview_code, setting_selector],
+                    queue=False,
                 )
 
             test_setting_btn.click(
                 fn=handle_setting_test,
-                inputs=[preview_code, selected_setting_id],
+                inputs=[preview_code, selected_setting_id, asset_gen_look_context],
                 outputs=[setting_test_image, setting_test_log]
+            )
+
+            settings_tab.select(
+                fn=_refresh_asset_look_gallery,
+                inputs=[preview_code],
+                outputs=[setting_look_gallery, asset_look_paths_state],
+                queue=False,
+            ).then(
+                fn=_asset_look_ui_parts,
+                inputs=[preview_code, asset_gen_look_context, asset_look_paths_state],
+                outputs=[setting_look_indicator, setting_look_details],
+                queue=False,
+            )
+
+            setting_look_gallery.select(
+                fn=_on_asset_look_gallery_select,
+                inputs=[preview_code, asset_look_paths_state],
+                outputs=[asset_gen_look_context, setting_look_indicator, setting_look_details],
+                queue=False,
+            )
+
+            setting_recall_gen_btn.click(
+                fn=_recall_asset_gen_from_reference_image,
+                inputs=[setting_gallery_path_state, preview_code, asset_look_paths_state],
+                outputs=[
+                    asset_gen_look_context,
+                    setting_gen_prompt,
+                    setting_gen_neg_prompt,
+                    setting_look_indicator,
+                    setting_look_details,
+                    setting_gallery_status,
+                ],
+                queue=False,
+            )
+
+            _wire_asset_reference_library(
+                preview_code=preview_code,
+                collection_key="settings",
+                selected_id_state=selected_setting_id,
+                reference_gallery=setting_ref_gallery,
+                gallery_path_state=setting_gallery_path_state,
+                gallery_delete_btn=setting_gallery_delete_btn,
+                gallery_status=setting_gallery_status,
+                reference_image=setting_reference_image,
+                upload_btn=setting_ref_upload_btn,
+                save_to_library_btn=setting_reference_save_btn,
+                test_image=setting_test_image,
             )
 
         # ============================================================
@@ -1544,82 +2777,180 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
         # ============================================================
         with gr.TabItem("Styles") as styles_tab:
             with gr.Row():
-                # Left: Style List
-                with gr.Column(scale=1, min_width=340):
-                    add_style_btn = gr.Button("+ Add Style", variant="primary")
-                    style_selector = gr.Radio(
-                        label="Styles", 
-                        choices=[], 
-                        value=None, 
-                        container=False, 
-                        interactive=True
-                    )
-                
-                # Right: Style Editor
-                with gr.Column(scale=2, min_width=640):
-                    with gr.Group(visible=False) as style_inspector:
-                        style_name = gr.Textbox(
-                            label="Style Name",
-                            info="Display name for this visual style"
-                        )
-                        
-                        style_lora_keyword = gr.Textbox(
-                            label="LoRA Keywords",
-                            info="Trigger words for style/aesthetic LoRAs",
-                            visible=False
-                        )
-                        
-                        style_prompt = gr.Textbox(
-                            label="Camera Style Prompt", 
-                            info="Optional modifiers such as specific lenses or movement types",
-                            lines=6
-                        )
-                        
-                        style_inject_lora = gr.Dropdown(
-                            label="Inject LoRA Tag",
-                            info="Quick-add a LoRA tag to the prompt above",
-                            choices=[], 
-                            interactive=True, 
-                            scale=1
-                        )
-                        
-                        style_neg_prompt = gr.Textbox(
-                            label="Negative Prompt",
-                            info="Visual elements or styles to avoid",
-                            lines=2
-                        )
+                add_style_btn = gr.Button("+ Add Style", variant="primary", scale=0)
+                style_selector = gr.Dropdown(
+                    label="Style",
+                    choices=[],
+                    value=None,
+                    interactive=True,
+                    allow_custom_value=False,
+                    filterable=False,
+                    scale=3,
+                )
 
-                        # gr.Markdown("### Test Generation")
-                        test_style_btn = gr.Button("Generate Test", variant="primary")
-                        
-                        with gr.Group() as style_test_results_group:
-                            style_test_image = gr.Image(
-                                label="Test Result", 
-                                interactive=False, 
-                                height=256
+            with gr.Group(visible=False, elem_classes=["asset-inspector-shell"]) as style_inspector:
+                with gr.Row(elem_classes=["asset-columns-row"], equal_height=False):
+                    with gr.Column(scale=1):
+                        with gr.Accordion("Properties", open=True):
+                            style_name = gr.Textbox(
+                                label="Style Name",
+                                info="Display name for this visual style",
                             )
-                            with gr.Accordion("Generation Log", open=False):
-                                style_test_log = gr.Textbox(
-                                    lines=8, 
-                                    interactive=False, 
-                                    autoscroll=True
-                                )
+                            style_prompt = gr.Textbox(
+                                label="Camera Style Prompt",
+                                info="Included in keyframe generation",
+                                lines=6,
+                            )
+                            style_inject_lora = gr.Dropdown(
+                                label="Inject LoRA Tag",
+                                info="Add a LoRA tag to the keyframe prompt (dropdown clears after each pick)",
+                                choices=[],
+                                value=None,
+                                interactive=True,
+                            )
+                            style_neg_prompt = gr.Textbox(
+                                label="Negative Prompt",
+                                info="Included in keyframe generation",
+                                lines=2,
+                            )
 
-                        delete_style_btn = gr.Button("Delete Style", variant="stop")
+                    with gr.Column(scale=1):
+                        with gr.Accordion("Generation", open=True):
+                            style_test_image = gr.Image(
+                                label="Generated Result",
+                                type="filepath",
+                                interactive=False,
+                                height=256,
+                            )
+                            test_style_btn = gr.Button("Generate", variant="primary")
+                            style_reference_save_btn = gr.Button(
+                                "Save to this Style", variant="secondary", visible=True
+                            )
+                            with gr.Group() as style_gen_prompt_group:
+                                style_gen_prompt = gr.Textbox(
+                                    label="Generator Prompt",
+                                    info="Session asset generation only; falls back to Camera Style Prompt if empty",
+                                    lines=4,
+                                )
+                                style_gen_inject_lora = gr.Dropdown(
+                                    label="Inject LoRA Tag",
+                                    info="Add a LoRA tag to the generator prompt (dropdown clears after each pick)",
+                                    choices=[],
+                                    value=None,
+                                    interactive=True,
+                                )
+                                style_gen_neg_prompt = gr.Textbox(
+                                    label="Negative Prompt",
+                                    info="Session asset generation only; falls back to keyframe Negative Prompt if empty",
+                                    lines=2,
+                                )
+                            with gr.Group(elem_classes=["asset-model-settings-stack"]) as style_model_settings_group:
+                                style_look_indicator = gr.Markdown(
+                                    elem_classes=["info-text", "asset-look-indicator"],
+                                )
+                                with gr.Accordion("Model Settings", open=False):
+                                    style_look_gallery = gr.Gallery(
+                                        show_label=False,
+                                        elem_id="style_look_gallery",
+                                        height=160,
+                                        object_fit="contain",
+                                        allow_preview=False,
+                                    )
+                                    style_look_details = gr.Markdown(elem_classes=["info-text", "asset-look-details"])
+                        with gr.Accordion("Status", open=False):
+                            style_test_log = gr.Textbox(
+                                label="Generation Log",
+                                lines=8,
+                                interactive=False,
+                                autoscroll=True,
+                            )
+
+                    with gr.Column(scale=1) as style_reflib_group:
+                        with gr.Accordion(
+                            "Reference Library",
+                            open=True,
+                            elem_classes=["themed-accordion", "proj-theme"],
+                        ):
+                            style_ref_gallery = gr.Gallery(
+                                label="Reference images",
+                                elem_id="style_reference_gallery",
+                                height=200,
+                                object_fit="contain",
+                                allow_preview=False,
+                            )
+                            style_gallery_path_state = gr.State(value=None)
+                            with gr.Row():
+                                style_ref_upload_btn = gr.UploadButton(
+                                    "Upload image",
+                                    file_types=["image"],
+                                    file_count="single",
+                                )
+                                style_gallery_delete_btn = gr.Button(
+                                    "Delete image",
+                                    variant="stop",
+                                    visible=False,
+                                )
+                            style_gallery_status = gr.Markdown("")
+                            style_recall_gen_btn = gr.Button(
+                                "Load generation settings from image",
+                                variant="secondary",
+                            )
+                            style_reference_image = gr.Image(
+                                label="Selected reference",
+                                type="filepath",
+                                interactive=False,
+                                height=200,
+                            )
+                with gr.Accordion("Manage", open=False, elem_classes=["themed-accordion", "stop-theme"]):  
+                    delete_style_btn = gr.Button("Delete Style", variant="stop")
 
             # [State and event handlers remain the same - lines 1261-1332]
             selected_style_id = gr.State(value="")
             pending_style_id = gr.State(value=None)
 
-            style_inject_lora.change(
+            style_inject_lora.select(
                 fn=_inject_lora_simple,
                 inputs=[style_prompt, style_inject_lora],
                 outputs=[style_prompt, style_inject_lora],
                 queue=False,
-                show_progress="hidden"
+                show_progress="hidden",
             ).then(
-                fn=lambda j, i, n, lk, p, np: _update_simple_fields(j, "styles", i, n, lk, p, np),
-                inputs=[preview_code, selected_style_id, style_name, style_lora_keyword, style_prompt, style_neg_prompt],
+                fn=lambda j, i, n, p, np, gp, gn: _update_simple_fields(
+                    j, "styles", i, n, p, np, gp, gn
+                ),
+                inputs=[
+                    preview_code,
+                    selected_style_id,
+                    style_name,
+                    style_prompt,
+                    style_neg_prompt,
+                    style_gen_prompt,
+                    style_gen_neg_prompt,
+                ],
+                outputs=[preview_code, style_selector],
+                queue=False,
+                show_progress="hidden"
+            )
+
+            style_gen_inject_lora.select(
+                fn=_inject_lora_simple,
+                inputs=[style_gen_prompt, style_gen_inject_lora],
+                outputs=[style_gen_prompt, style_gen_inject_lora],
+                queue=False,
+                show_progress="hidden",
+            ).then(
+                fn=lambda j, i, n, p, np, gp, gn: _update_simple_fields(
+                    j, "styles", i, n, p, np, gp, gn
+                ),
+                inputs=[
+                    preview_code,
+                    selected_style_id,
+                    style_name,
+                    style_prompt,
+                    style_neg_prompt,
+                    style_gen_prompt,
+                    style_gen_neg_prompt,
+                ],
                 outputs=[preview_code, style_selector],
                 queue=False,
                 show_progress="hidden"
@@ -1627,21 +2958,39 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
 
             preview_code.change(
                 fn=lambda j, c, p: _refresh_simple_list(j, "styles", c, p),
-                inputs=[preview_code, style_selector, pending_style_id],
+                inputs=[preview_code, selected_style_id, pending_style_id],
                 outputs=[style_selector, pending_style_id], queue=False
             )
 
-            styles_tab.select(
-                fn=lambda j, c, p: _refresh_simple_list(j, "styles", c, p),
-                inputs=[preview_code, style_selector, pending_style_id],
-                outputs=[style_selector, pending_style_id],
-                queue=False
+            _style_inspector_outputs = [
+                style_inspector,
+                style_name,
+                style_prompt,
+                style_neg_prompt,
+                style_gen_prompt,
+                style_gen_neg_prompt,
+                style_reference_image,
+                style_ref_gallery,
+                style_gallery_delete_btn,
+                style_gallery_path_state,
+                style_gallery_status,
+            ]
+            _wire_asset_tab_enter(
+                styles_tab,
+                refresh_fn=lambda j, c, p: _refresh_simple_list(j, "styles", c, p),
+                preview_code=preview_code,
+                selector=style_selector,
+                pending_state=pending_style_id,
+                selected_id_state=selected_style_id,
+                collection_key="styles",
+                inspector_outputs=_style_inspector_outputs,
             )
 
             style_selector.change(lambda s: s, inputs=[style_selector], outputs=[selected_style_id], queue=False).then(
-                fn=lambda j, i: _on_simple_item_selected(j, ("project", "styles"), i),
+                fn=_make_asset_inspector_load_handler("styles"),
                 inputs=[preview_code, selected_style_id],
-                outputs=[style_inspector, style_name, style_lora_keyword, style_prompt, style_neg_prompt], queue=False
+                outputs=_style_inspector_outputs,
+                queue=False,
             )
 
             add_style_btn.click(
@@ -1656,18 +3005,103 @@ def build_assets_tab(preview_code: gr.Code, settings_json: gr.State, current_fil
                 inputs=[preview_code, selected_style_id], outputs=[preview_code, pending_style_id]
             )
             
-            for f in [style_name, style_lora_keyword, style_prompt, style_neg_prompt]:
+            _style_fields = [
+                style_name,
+                style_prompt,
+                style_neg_prompt,
+                style_gen_prompt,
+                style_gen_neg_prompt,
+            ]
+            for f in _style_fields:
                 f.blur(
-                    fn=lambda j, i, n, lk, p, np: _update_simple_fields(j, "styles", i, n, lk, p, np),
-                    inputs=[preview_code, selected_style_id, style_name, style_lora_keyword, style_prompt, style_neg_prompt],
-                    outputs=[preview_code, style_selector], queue=False
+                    fn=lambda j, i, n, p, np, gp, gn: _update_simple_fields(
+                        j, "styles", i, n, p, np, gp, gn
+                    ),
+                    inputs=[
+                        preview_code,
+                        selected_style_id,
+                        style_name,
+                        style_prompt,
+                        style_neg_prompt,
+                        style_gen_prompt,
+                        style_gen_neg_prompt,
+                    ],
+                    outputs=[preview_code, style_selector],
+                    queue=False,
                 )
 
             test_style_btn.click(
                 fn=handle_style_asset_test,
-                inputs=[preview_code, selected_style_id],
+                inputs=[preview_code, selected_style_id, asset_gen_look_context],
                 outputs=[style_test_image, style_test_log]
             )
 
-    # return pose_gallery, poses_dir_state, char_inject_lora, setting_inject_lora, style_inject_lora
-    return pose_gallery, poses_dir_state, char_inject_lora, setting_inject_lora, style_inject_lora
+            styles_tab.select(
+                fn=_refresh_asset_look_gallery,
+                inputs=[preview_code],
+                outputs=[style_look_gallery, asset_look_paths_state],
+                queue=False,
+            ).then(
+                fn=_asset_look_ui_parts,
+                inputs=[preview_code, asset_gen_look_context, asset_look_paths_state],
+                outputs=[style_look_indicator, style_look_details],
+                queue=False,
+            )
+
+            style_look_gallery.select(
+                fn=_on_asset_look_gallery_select,
+                inputs=[preview_code, asset_look_paths_state],
+                outputs=[asset_gen_look_context, style_look_indicator, style_look_details],
+                queue=False,
+            )
+
+            style_recall_gen_btn.click(
+                fn=_recall_asset_gen_from_reference_image,
+                inputs=[style_gallery_path_state, preview_code, asset_look_paths_state],
+                outputs=[
+                    asset_gen_look_context,
+                    style_gen_prompt,
+                    style_gen_neg_prompt,
+                    style_look_indicator,
+                    style_look_details,
+                    style_gallery_status,
+                ],
+                queue=False,
+            )
+
+            _wire_asset_reference_library(
+                preview_code=preview_code,
+                collection_key="styles",
+                selected_id_state=selected_style_id,
+                reference_gallery=style_ref_gallery,
+                gallery_path_state=style_gallery_path_state,
+                gallery_delete_btn=style_gallery_delete_btn,
+                gallery_status=style_gallery_status,
+                reference_image=style_reference_image,
+                upload_btn=style_ref_upload_btn,
+                save_to_library_btn=style_reference_save_btn,
+                test_image=style_test_image,
+            )
+
+    return (
+        pose_gallery,
+        poses_dir_state,
+        char_inject_lora,
+        char_gen_inject_lora,
+        setting_inject_lora,
+        setting_gen_inject_lora,
+        style_inject_lora,
+        style_gen_inject_lora,
+        char_reference_save_btn,
+        setting_reference_save_btn,
+        style_reference_save_btn,
+        char_gen_prompt_group,
+        char_model_settings_group,
+        char_reflib_group,
+        setting_gen_prompt_group,
+        setting_model_settings_group,
+        setting_reflib_group,
+        style_gen_prompt_group,
+        style_model_settings_group,
+        style_reflib_group,
+    )
