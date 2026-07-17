@@ -50,6 +50,9 @@ DUR_CHOICES = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 
 DEFAULT_PROJECT_WORKFLOW_FILENAME = "pose_OPEN.json"
 DEFAULT_VIDEO_WORKFLOW_FILENAME = "i2v_base.json"
+# Seed-injection node titles baked into the default (i2v_base) video workflow.
+DEFAULT_VIDEO_SEED_TARGET_TITLE = "SlowMoPrimer"
+DEFAULT_VIDEO_SEED_EXCLUDE_TITLE = "WanFixedSeed"
 IMAGE_MODEL_FAMILY_DEFAULT = "default"
 IMAGE_MODEL_FAMILY_CUSTOM = "custom"
 VIDEO_MODEL_FAMILY_DEFAULT = "default"
@@ -155,6 +158,23 @@ def effective_video_workflow_filename(project_json_or_dict) -> str:
 def resolve_project_video_workflow(project_json_or_dict) -> str:
     filename = effective_video_workflow_filename(project_json_or_dict)
     return str((WORKFLOWS_DIR / filename).resolve())
+
+
+def resolve_project_video_seed_titles(project_json_or_dict) -> tuple[str, str]:
+    """Effective (seed_target_title, seed_exclude_title) for the in-between run.
+
+    The Default family flag overrides the stored workflow, so it must also override
+    the stored seed-node titles: Default always runs i2v_base, whose seed nodes are
+    SlowMoPrimer / WanFixedSeed regardless of any last-used custom titles left in the
+    project. Custom family uses whatever titles the project stores for its workflow.
+    """
+    if is_default_video_family(project_json_or_dict):
+        return DEFAULT_VIDEO_SEED_TARGET_TITLE, DEFAULT_VIDEO_SEED_EXCLUDE_TITLE
+    ib = _project_dict(project_json_or_dict).get("inbetween_generation") or {}
+    return (
+        str(ib.get("seed_target_title") or "IterKSampler"),
+        str(ib.get("seed_exclude_title") or DEFAULT_VIDEO_SEED_EXCLUDE_TITLE),
+    )
 
 
 def should_migrate_video_on_family_change(old_family: str | None, new_family: str | None) -> bool:
@@ -481,7 +501,11 @@ def load_config() -> dict:
             }
             
             print("Loaded configuration from config.toml")
-            
+
+            if toml_data.get("comfyui", {}).get("api_key_comfy_org"):
+                print("WARNING: api_key_comfy_org in config.toml is not supported and is ignored.")
+                print("   Set the THM_COMFY_API_KEY environment variable instead (keys are never read from config.toml).")
+
             # Validate critical paths and warn if empty
             if not config["models_root"]:
                 print("WARNING: models_root not configured!")

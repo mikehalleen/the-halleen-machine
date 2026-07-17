@@ -64,13 +64,14 @@ Run from repo root. Prefer `--json` for agent parsing.
 | `generate keyframe --project PATH --seq SEQ --kf KF [--seed N] [--variants N] [--json]` | One keyframe still |
 | `generate video --project PATH --seq SEQ --vid VID [--seed N] [--json]` | One in-between clip |
 | `generate asset --project PATH --type character\|setting\|style --id UUID [--workflow WF] [--layout-override TEXT] [--json]` | Asset tab-style test gen |
-| `select keyframe --project PATH --seq SEQ --kf KF --image ABS_PATH [--json]` | Persist approved selection |
-| *(no `select video` verb exists)* | Marking a video as the approved selection is **not** a CLI command — set `sequences.{seq}.videos.{vid}.selected_video_path` directly via `data = builder.patch_field(data, "sequences.{seq}.videos.{vid}.selected_video_path", path)` (it returns a new dict — **reassign**, it does not mutate in place) or a raw dict write, then `save_project()`. Confirmed via `cli.py` argparse — only `select keyframe` is registered. |
+| `select keyframe --project PATH --seq SEQ --kf KF --image ABS_PATH [--json]` | Persist approved keyframe selection |
+| `select video --project PATH --seq SEQ --vid VID --path ABS_PATH [--json]` | Persist approved video selection (writes `sequences.{seq}.videos.{vid}.selected_video_path` with the same stale-write fingerprint guard as `select keyframe`). Write it **the moment a clip passes QC** — the JSON is the source of truth, not the dashboard tile. Equivalent internal path: `selection.set_selected_video(...)`. |
 | `gallery --project NAME [--open] [--src PATH --name FILE] [--note TEXT] [--pending TEXT] [--change TEXT] [--context TEXT] [--group KEY --group-note TEXT --group-pending TEXT]` | **Preferred** — HTML preview gallery; use after every generate (`--clear` is user-only) |
 | `open PATH` | Open with default app — **only when user explicitly asks** |
 | `reveal PATH [--select]` | Explorer highlight — **only when user explicitly asks** |
 | `validate PATH` | Project JSON validation |
 | `summarize PATH` | Storyboard text summary |
+| `export --project PATH [--format mp4] [--no-debug-labels] [--json]` | Stitch selected clips into one file — the run's **final cut** (debug labels on by default). See [Export / stitch](#export--stitch--the-runs-final-cut). |
 | `clone-from-host --source HOST --name NAME --approve` | New project JSON with host globals; host read-only |
 | `pipeline keyframes --project PATH [--variants N] [--force]` | Generate KF variants to checkpoint (no heuristic pick) |
 | `pipeline record-qc --project PATH --seq SEQ --kf KF --image PATH [--rationale TEXT]` | Record vision QC selection |
@@ -153,9 +154,9 @@ Mirroring happens **automatically** on every `generate keyframe|video|asset` suc
 - HTML gallery does **not** open inside an IDE preview pane; use external default browser  
 - Agent `Read` of `workspace_path` is **agent-only** — not a substitute for opening the gallery
 
-**Preview naming:** `{group}-{variant}.png` — grouped on the **first** hyphen (`keyframe-shot1-walk.png` → group **Keyframe**, three tiles in one row). Thumbnails ~52vh max, side by side; labels de-emphasized; click a tile to open full size.
+**Preview naming — use the JSON ids, don't invent names:** name every tile `{seq}-{id}-take{N}` (videos: `{seq}-{vid}-take{N}`), where `seq`/`id`/`vid` are the sequence and keyframe/video ids and `take` is the output-file index. The dashboard renders the caption as **"seq · id · take N"** from this, groups on the leading `seq`, and it matches the debug-labeled export. Do **not** invent descriptive names like `vid-tight-womanportrait-A` — the user reads the monitor in sequence/id/take terms.
 
-**Additive gallery:** preview tiles accumulate. Add with `--src --name` (unique names per variant). **Only the user** deletes files from `{workspace_root}/{project}-files/previews/`. Agent must **not** use `gallery --clear`.
+**Additive gallery:** preview tiles accumulate. Add with `--src --name` (unique names per variant). **Only the user** deletes files from `{workspace_root}/{project}-files/previews/`, and the agent must **not** use `gallery --clear` during generation or review. The sole exception is the **startup new-run reset** (SKILL.md § startup order step 7): when the user is starting a new run / making meaningful changes, clear once after they finish instructions, then build the new run's tiles.
 
 **Gallery tab reuse:** `gallery --open` writes `launcher.html` and opens `index.html` in a named window (`thm-gallery-{project}`) — repeated opens refresh the same browser tab.
 
@@ -169,8 +170,9 @@ Mirroring happens **automatically** on every `generate keyframe|video|asset` suc
 | `--group video --group-note` | All items in group | *"Lip movement forbidden"* |
 | `--group video --group-pending` | Group decision | *"Pick best motion feel"* |
 | `--src … --name … --note` | Single tile | *"Straight-on shelf test"* |
+| `--name … --status {in-progress\|pass\|fail}` | QC status of one tile (works with or without `--src`) | flip a tile to `fail` the moment a note disqualifies it: `--name vid31-B --status fail --note "disqualified: extra dancer — regenerating"` |
 
-Groups and tiles sort **newest first**. The latest tile gets an orange **Latest** badge.
+Groups and tiles sort **newest first**. The latest tile gets an orange **Latest** badge. Set a tile's QC verdict with `--status` (drives the PASS/FAILED badge) — the moment QC resolves or a note disqualifies an item, update its status so the monitor reflects reality (see SKILL.md § Remote interface).
 
 **Python helpers** (agent scripts / internal use):
 
@@ -293,32 +295,20 @@ Show **every** image in chat; wait for user pick; then `select keyframe`. See [v
 
 ---
 
-## Export / stitch (real pipeline gap — read before proposing)
+## Export / stitch — the run's "final cut"
 
-`scripts/run_stitch.py` and `scripts/run_export.py` exist and are invoked the same way as `run_images.py` / `run_video.py` (`--config <project_json>`), but there is a confirmed architecture gap between them and the agent's video generation path:
-
-- `run_stitch.py` requires either a `_lossless.mkv` companion file next to each video, or a legacy `frames_{idx}/` PNG folder.
-- `run_video.py` only produces the `_lossless.mkv` companion when a `temp_frames_dir` exists during generation — and agent-triggered video runs do not have one. The agent's own generation log shows this directly:
-  ```
-  [LOSSLESS] Skipped - no temp_frames_dir
-  ```
-- **Net effect:** stitching an agent-generated project today produces **"0 frames"** for every agent-made clip.
-
-**Before proposing stitch or export to the user:** check the relevant clip's generation log for the exact string `[LOSSLESS] Skipped - no temp_frames_dir`. If present, stitching that clip will not work via the normal path.
-
-**Manual workaround (ffmpeg concat demuxer):** stitch the selected MP4s directly with ffmpeg's concat demuxer instead of `run_stitch.py`:
+When a run completes, produce a single stitched video with **debug labels** (each clip burned with its `seq:vid[:kf]` id) and feature it on the monitor as the hero:
 
 ```bash
-# 1. Build a concat list file (one line per selected_video_path, in sequence order)
-# file 'C:/path/to/seq1_vid0.mp4'
-# file 'C:/path/to/seq1_vid1.mp4'
-
-ffmpeg -f concat -safe 0 -i concat_list.txt -c copy stitched_output.mp4
+python thm-agent/cli.py export --project samples/my-project.json --json   # debug labels ON by default
 ```
 
-This re-encodes nothing (`-c copy`) and works on the MP4s that already exist on disk, bypassing the lossless-frames requirement entirely. It does not replace `run_export.py`'s other behavior (titles, audio mixing, etc. if any) — it is a stitch-only workaround.
+- `cli.py export` runs `scripts/run_stitch.py` over the project's `selected_video_path`s and returns the output path (`output_path` in the JSON). Use `--no-debug-labels` for a clean cut; `--format` for a non-mp4 container.
+- **Local (non-partner) video workflows** already emit a `_lossless.mkv` companion per clip, which `run_stitch` uses for a high-quality stitch.
+- **Partner-node (API) clips** (Seedance/ByteDance) return only an MP4 — no lossless companion — so `run_stitch` now **falls back to extracting frames from the MP4 itself** (in `frames_dir_from_selected_video_path`). Debug-labeled export therefore works for **every** workflow; the old "0 frames" gap and the manual ffmpeg-concat workaround are no longer needed.
+- **On completion:** copy the exported file into `previews/` (e.g. `final-cut.mp4`), then set `session.monitor.complete = true` and `session.monitor.final_export = "final-cut.mp4"` — the dashboard features it as the hero and drops the refresh to 60s (SKILL.md § Gallery session vocabulary).
 
-**This is a product gap, not just a doc gap.** Either `run_video.py` needs to also emit a frames folder (or lossless companion) for agent-triggered runs, or this workaround should remain the documented path until that's fixed. Do not assume the gap has been closed without re-checking the log string above.
+The debug labels use the same `seq:vid` vocabulary as the monitor's **seq · id · take** captions, so the export and the dashboard read consistently.
 
 ---
 
@@ -389,6 +379,36 @@ import builder  # noqa: E402
 
 Never infer job completion from agent conversation timeout — ComfyUI keeps running independently.
 
+### Batch reliability (ComfyUI health, VRAM, verification)
+
+Hard-won rules for any multi-take run. All are content-agnostic and apply to every project:
+
+| Rule | Detail |
+|------|--------|
+| **Verify by new output, never by exit status** | The runner's mtime guard (above) is the floor; in a driver, also record submit time and accept only files written after it. A take that "finishes" in a few seconds, or whose take number does not increment, is a silent failure — not a success. |
+| **Read ComfyUI `/history`, never glob newest file** | Success detection must poll `/history` for the submitted prompt id and check `status_str`. Globbing the newest matching file finds the *previous* take and reports false success. Partner/credit failures surface here as `status: error` (e.g. "Payment Required"). |
+| **Liveness = composite, not port alone** | A wedged listener can refuse connections while renders keep completing. Do not declare a crash on port-down alone: crash = API down **and** ComfyUI log last-write age stale (>~90s) and/or process gone. Log-mtime age is the reliable liveness signal. **Under [full auto](SKILL.md#automation-levels) the agent is authorized to restart ComfyUI** when it's truly hung (not merely slow) and resume; if the restart doesn't recover it, tell the user but keep the run going. |
+| **During-render poll cadence (detached runs)** | Because a detached render doesn't block the agent's turn, a monitor/driver loop polls on a short cadence (~20–30s) *while the render is in flight*: `GET /queue` + `GET /system_stats` (liveness + VRAM high-water) **and** the note queue (`notes pop-urgent`). This is the only context where a note can cancel a render mid-flight — on an urgent note that invalidates the in-flight item, issue `/interrupt` + `/queue {"clear":true}`. The foreground Manual `generate` path blocks (`process.wait()`), so it has no such cadence — its finest granularity is between generations. (SKILL.md § Remote interface — Polling cadence.) |
+| **Out-of-space is a pause, not a stop** | A disk "out of space" error truly blocks generation — stop submitting, tell the user — but under full auto keep monitoring free space and **resume automatically when it clears** (the user may be freeing space without saying so). |
+| **`POST /free` between video takes** | Back-to-back video renders in one ComfyUI instance leak VRAM until inference can't fit (long hangs). `POST /free {"unload_models":true,"free_memory":true}` after every video take. On starvation symptoms, restart the process — a poisoned cache survives a retry. |
+| **Serialize GPU work; flush after killing a client** | One generation batch at a time — launching a keyframe batch while a video batch renders can crash ComfyUI and fail both. Killing a hung client does **not** cancel its server-side job (orphan take files shift index numbering). After a kill: `POST /interrupt` + `POST /queue {"clear":true}`, or expect orphans. |
+| **Driver contract: STOP file + per-clip reload** | A long driver should (1) honor a `STOP` file at `{project}-files/STOP` to halt between clips, (2) reload the project JSON fresh for every clip so prompt/keyframe patches land on not-yet-rendered clips, and (3) treat its run-status file (`todo`/`done`) as launch-time state — only edit it while the driver is stopped. |
+| **Serve on port 8000 only — replace, don't relocate** | `serve` can bind silently to a **stale** server left on port 8000 from an earlier project — HTTP checks return 200 from the *old* gallery. The rule is one server on **port 8000** at a time: before serving, confirm 8000 is free or owned by *this* project (fetch the page `<title>`, or `Get-NetTCPConnection -LocalPort 8000` for the owning PID); if a stale/wrong server holds it, **kill it and take 8000** — do not invent a different port and do not run two servers at once. (SKILL.md § startup order + Remote interface.) |
+| **Windows env-var scope** | A partner-API key (e.g. `THM_COMFY_API_KEY`) added to Windows **User** scope *after* the harness process started is invisible to spawned Python (`os.environ` empty), so jobs fail inside ComfyUI with "Unauthorized". Self-heal in a driver: if the var is empty, read `HKCU\Environment` via `winreg` and inject it into `os.environ` before generating. |
+
+### Custom / partner video workflows (wiring gotchas)
+
+When a project points at a non-default video workflow (partner API such as Seedance/ByteDance, or any custom graph), several silent failure modes exist — verify at pre-flight:
+
+- **`video_model_family` must be `"custom"`.** Family `"default"` makes `resolve_project_video_workflow()` return the hardcoded default workflow and **ignore** `inbetween_generation.video_workflow_json` entirely — you can burn a full GPU job on the wrong graph with no warning.
+- **Only the basename of `video_workflow_json` survives resolution** (`WORKFLOWS_DIR / Path(stored).name`). Per-clip baked workflow copies (duration/seed written in) must be written **into `workflows/`** with a distinctive prefix (e.g. `_tmp_{proj}_`) and cleaned up after — a path elsewhere resolves to a non-existent file or collides with a real workflow.
+- **Partner nodes need duration and seed baked per clip.** The generic field-setters write only prompt/negative/frame-count/fps/width/height and find no seed target in a partner-only graph — so `duration_override_sec` and per-take seed variation never reach the node. Per clip: copy the template, write `duration` and a fresh `seed` onto the partner node's inputs, save to `workflows/`, point `video_workflow_json` at it.
+- **End-frame support is per node set, not per tag.** Some partner node sets (e.g. ByteDance i2v) can only take a start frame; an end-frame-only (open-start) beat has no valid mapping and must be rewired to start-frame with mirrored motion. Partner workflows also don't auto-disconnect unused frame loaders — keep separate i2v and flf2v workflow files and pick per-clip wiring. (See [schema-reference.md](schema-reference.md) § Video chain logic.)
+
+### Selecting the right file (mirror vs real output)
+
+`select keyframe`/`select video` must point at the **real ComfyUI output path** (`main_path` from the generate JSON, or a glob of the real output dir). The workspace **mirror** copy has a different filename (it carries a `__seed{N}` suffix the real output lacks), so a path built from a mirror filename does not exist on disk. The failure is silent at select time and only surfaces later as a ComfyUI `LoadImage` 400 ("Invalid image file") when a video's start/end still can't be loaded. Treat `workspace_path` as agent-vision-only.
+
 ---
 
 ## Troubleshooting
@@ -404,7 +424,8 @@ Never infer job completion from agent conversation timeout — ComfyUI keeps run
 | IDE embedded browser / MCP `open_resource` for images | Unreliable for user QC — use `gallery --open` |
 | Too many tiles in HTML gallery | User deletes unwanted files from `{workspace_root}/{project}-files/previews/`; agent does not clear |
 | `--layout-override` ignored | Must pass on `generate asset`; wired through `run_asset` → `prep_asset_run` |
-| Gen reports `"ok"/"success": true` but output looks stale or byte-identical across runs | `success` is derived from "newest file in the output folder" (`runner.py` `success=bool(main_path)`), **not** from the run's own result — a real ComfyUI failure (e.g. Windows paging-file `os error 1455`) can return success while pointing at a pre-existing file. **Check `result_lines` is non-empty** before trusting a result during unattended runs; the real error surfaces only in the `log` field, so never pipe generate `--json` through `tail`/`head` (it truncates `log`) |
+| Gen reports `"ok"/"success": true` but output looks stale or byte-identical across runs | Largely guarded now: `runner.py` records a submit timestamp and only accepts an output file whose mtime is newer than the run, so a pre-existing file no longer counts as success — a stale result returns `success:false`, `main_path:null`, `is_new_output:false`, and a `stale_output:` line in `log` (ComfyUI likely crashed/offline — check `comfy-status`). Still **check `result_lines` is non-empty** and read `is_new_output` before trusting a result during unattended runs; the real error surfaces only in `log`, so never pipe generate `--json` through `tail`/`head` (it truncates `log`) |
+| A `generate video` that "succeeds" in seconds (real renders take minutes) | Same class of silent failure: ComfyUI may serve a cached execution, or a client killed mid-render leaves the server job running. With the mtime guard a genuinely-cached return now surfaces as `stale_output`; if a client CLI was killed, the job keeps running server-side and the file lands later — poll the output folder for the next take index instead of re-submitting (re-submitting duplicates the render) |
 
 ---
 

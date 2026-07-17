@@ -33,6 +33,8 @@ After every generate: **`gallery --src … --name … --open`** for the user —
 
 **Do not** rank variants, pick winners, or call `select keyframe` in Manual mode unless the user explicitly asked for variant comparison or told you which file to select.
 
+**A scoped user comment is not a full QC pass.** When the user remarks on **one** axis ("the slow-mo looks good", "nice color"), that resolves only that axis — it is **not** approval of the whole item, and not a reason to mark it pass or skip its QC. Every generated item still gets a full agent QC across **all** axes (identity, hands/anatomy, artifacts, subject count, outfit/location consistency, motion quality *and* speed, expression) before any pass verdict. Assume a scoped comment leaves the rest unexamined, not endorsed.
+
 ---
 
 ## What to compare each output against
@@ -202,6 +204,26 @@ Sampled frames each looking fine **in isolation is not a pass.** Three checks op
 - **Re-verify the full constraint list on every regen** — fixing the one named defect that motivated a regenerate does not pass the new take. Re-check *every* explicit prompt constraint independently against the new frames (framing, in-frame persistence, product legibility, expression, motion direction) — confirming one constraint holds is no evidence another still does.
 
 **Solo-beat trap:** Never use “every dinosaur in both keyframes visible” when end KF already introduces the join partner — use explicit solo roster for that clip only.
+
+### Multi-subject count and continuity (verify through motion)
+
+- **A correct count on the still is not enough — verify it holds through the motion.** Multi-subject clips can gain, duplicate, or merge subjects mid-clip even when both anchor keyframes have the right count. Sample densely (~6–8 frames per 5s clip) and count people **per frame** against the expected cast; watch late frames especially. On any **wide or group** keyframe, count subjects **first** before other axes — extra figures materialize behind the principals easily at small scale.
+- **Check the start keyframe before blaming the video model.** A "contaminated" clip is often faithfully following an approved keyframe that already carries the defect (a migrated garment, an extra figure, a wrong pose). Diff the start still first; a keyframe-level defect is fixed in the layout, not the motion prompt.
+- **Airborne / crossing / occluding beats are the worst identity-swap risk.** When subjects cross or leave the ground, compare each subject's identity at takeoff vs landing frames (and check subject **order** across the two anchors first — a left-to-right order mismatch between start and end anchors predicts the swap). Count-only + end-frame-match QC misses this.
+- **With end-frame (SE) conditioning, expect a brief (~0.5s) identity/outfit morph in the final fraction** as the clip snaps to the end keyframe. QC the true last frame (which converges exactly) before failing a clip for late-frame wobble.
+
+### QC cadence during batches
+
+- **QC each clip as it lands — don't batch verdicts to the end.** Frame-extraction + vision QC (~2–3 min) runs entirely inside the next clip's render window (generation is GPU, QC is CPU/ffmpeg + vision — no conflict). Extract and judge each clip while the next renders, push the verdict to the dashboard immediately, and queue any regen decision the moment it's made. Batching QC to the end of a run wastes that shadow time and hides failures until it's too late to react.
+- **Enhancement re-renders are fail-safe.** When re-rendering a clip that already has a passing selected take (a prompt-enhancement pass), a failing new take changes nothing — the prior pass stays selected. Push the FAIL verdict but do **not** queue a regen; nothing is blocked. Worst case is a wasted render, never a hole in the timeline.
+
+### QC method notes (canon, plate audits, reroll cap, tooling)
+
+- **Canon comes from the user-named reference frame, never from the majority of recent renders.** When the user points at a specific frame ("like id41"), diff every attribute against **that** image and update the reusable descriptor before touching anything downstream. Majority-vote QC amplifies your own earlier mistake — a "fix" can itself be the drift, then propagate through many later frames.
+- **Reference plates need the same anatomy/costume audit as renders.** A missing arm, stripped detail, or wrong garment in a plate propagates into every keyframe that binds it — audit limb count and costume on plates, not only on final renders.
+- **Small-scale subjects: crop and upscale each one.** On group/overhead frames each subject may be a few dozen pixels; crop each subject and upscale (e.g. PIL 2–3× LANCZOS) and check head/torso/legs/shoes against canon per subject. Layout prompts must name **leg-level** items (footwear, leg coverings) explicitly — anything unnamed below the waist defaults to the model's prior.
+- **Two identical re-rolls is the cap for a "stochastic" theory.** If the same defect survives a third identical re-roll, it's **systematic** (usually scale-driven) — stop rerolling and do targeted prompt surgery (a dedicated clause naming the affected element by name + coverage + duration, and a negative for the exact failure mode you saw), or escalate.
+- **`qc_frames`-style samplers: the last evenly-spaced sample *is* the last frame** (index `total-1`), so `qc_NN == qc_last` by construction — near-identical there is expected. Freeze/settle detection must compare the last two **distinct** sample indices, not the final sample against itself.
 
 For user viewing: **`gallery --src … --name … --open`** after agent approves. Same verdict format when asked.
 

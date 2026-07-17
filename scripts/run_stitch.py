@@ -763,10 +763,32 @@ def assemble_sequence_animatic(
     return frame_counter - start_index, current_time
 
 
+def _legacy_frames_folder(sel_path: str, layer_suffix: str = "") -> Optional[Path]:
+    """Compute the legacy frames_{idx} folder for a selected video (may not exist)."""
+    sp = sel_path.replace("/", "\\")
+    m = re.search(r"^(.*)\\[^\\]+_(\d+)_\.mp4$", sp)
+    if not m:
+        vid_dir = Path(os.path.dirname(sp))
+        search_pattern = f"frames_{layer_suffix}_*" if layer_suffix else "frames_*"
+        candidates = sorted([p for p in vid_dir.glob(search_pattern) if p.is_dir()], reverse=True)
+        if candidates:
+            return candidates[0]
+        if not layer_suffix:
+            return vid_dir / "frames"
+        return None
+    base_dir = m.group(1)
+    idx_str = m.group(2)
+    folder_name = f"frames_{layer_suffix}_{idx_str}" if layer_suffix else f"frames_{idx_str}"
+    return Path(base_dir) / folder_name
+
+
 def frames_dir_from_selected_video_path(sel_path: str, layer_suffix: str = "", temp_base: Path = None) -> Path:
     """
     Get frames directory for a selected video.
-    Tries lossless video first (extracts to temp), falls back to frames folder.
+    Tries lossless video first (extracts to temp), then a legacy frames folder, and
+    finally extracts frames straight from the MP4 (partner-node/API clips return only an
+    MP4 — no lossless companion and no frames folder — so this fallback is what lets a
+    debug-labeled stitch/export cover them instead of finding 0 frames).
     """
     vid_dir = Path(os.path.dirname(sel_path))
     
@@ -796,22 +818,27 @@ def frames_dir_from_selected_video_path(sel_path: str, layer_suffix: str = "", t
         if extracted:
             return extracted
     
-    # Fallback to legacy frames folder
-    sp = sel_path.replace("/", "\\")
-    m = re.search(r"^(.*)\\[^\\]+_(\d+)_\.mp4$", sp)
-    if not m:
-        vid_dir = Path(os.path.dirname(sp))
-        search_pattern = f"frames_{layer_suffix}_*" if layer_suffix else "frames_*"
-        candidates = sorted([p for p in vid_dir.glob(search_pattern) if p.is_dir()], reverse=True)
-        if candidates: return candidates[0]
-        if not layer_suffix: return vid_dir / "frames"
-        return None 
-    
-    base_dir = m.group(1)
-    idx_str = m.group(2)
-    
-    folder_name = f"frames_{layer_suffix}_{idx_str}" if layer_suffix else f"frames_{idx_str}"
-    return Path(base_dir) / folder_name
+    # Legacy frames folder (older format) — use it only if it really holds frames.
+    legacy = _legacy_frames_folder(sel_path, layer_suffix)
+    if legacy is not None and legacy.is_dir() and any(legacy.glob("*.png")):
+        return legacy
+
+    # Final fallback: extract frames directly from the MP4 itself. Partner-node (API)
+    # clips have neither a lossless companion nor a frames folder, so this is what makes
+    # a debug-labeled export cover them.
+    if os.path.isfile(sel_path):
+        if temp_base is None:
+            temp_base = vid_dir / "_temp_extract"
+        suffix_tag = f"_{layer_suffix}" if layer_suffix else ""
+        temp_frames = temp_base / f"extract_{Path(sel_path).stem}{suffix_tag}_mp4"
+        print(
+            f"[STITCH] No lossless/frames for {Path(sel_path).name}; "
+            "extracting from MP4 (partner-clip fallback)"
+        )
+        if extract_frames_to_temp(Path(sel_path), temp_frames):
+            return temp_frames
+
+    return legacy
 
 def _run_ffmpeg_stitch(
     seq_id: str,

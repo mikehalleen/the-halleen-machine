@@ -57,7 +57,7 @@ the judgment doesn't need.
 | `video_qc_frames.py` → `extract_frame()` | ffmpeg extracts each sampled frame at the source video's native resolution, no scaling | Add `-vf "scale='min(1024,iw)':-2"` (cap long edge at 1024px) to the ffmpeg call — story/pose/continuity reads don't need full native res |
 | `video_qc_frames.py` → `sample_times()` | Already capped at up to 8 frames per video QC pass (4 base + 3 crash-beat + 1 end) | Treat this as the intentional ceiling — don't quietly raise frame count in a new script without weighing the added cost per video |
 | `mirror_generation_output` (keyframe-still copies) | Copies at full native resolution | **Keep user-facing copies full-res** — they're what the user sees via `gallery --open`. Agent-only QC reads can tolerate a smaller copy; don't downsize the file the user will actually view |
-| Any new QC-frame-extraction script | — | Follow the same `-vf scale=` pattern as `video_qc_frames.py`, whether it's for the dino arc or a future project |
+| Any new QC-frame-extraction script | — | Follow the same `-vf scale=` pattern as `video_qc_frames.py`, whatever the project |
 
 **Don't hold a whole run's images "open" to compare across beats.** Score each
 beat against its own storyboard intent as you go, log the verdict via

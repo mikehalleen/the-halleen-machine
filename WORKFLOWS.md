@@ -372,8 +372,8 @@ Bundled legacy workflow [`workflows/i2v_base.json`](workflows/i2v_base.json) sta
 | Frame count | `THM-FrameCount` | — | `value` on wired int/float constant (user wires to generator `length`) |
 | Frame rate | `THM-FrameRate` | — | `value` on wired constant (user wires to `THM-SaveVideo.frame_rate`) |
 | Save video | `THM-SaveVideo` | `SaveVideo` / `VHS_VideoCombine` class | `filename_prefix` only |
-| Start keyframe | `THM-StartFrame` | — | `LoadImage.image` |
-| End keyframe | `THM-EndFrame` | — | `LoadImage.image` |
+| Start keyframe | `THM-StartFrame` (alias `THM-StartImage`) | — | `LoadImage.image` |
+| End keyframe | `THM-EndFrame` (alias `THM-EndImage`) | — | `LoadImage.image` |
 
 Workflows may export **both** frame loaders wired into `THM-VideoGenerator`. At run time THM configures open vs closed use:
 
@@ -497,6 +497,30 @@ Unlike the keyframe panel, this scan uses the project **Default video workflow**
 
 **`show_generation_info`** is separate: it controls **Generations → Seed** visibility in the Editor (keyframe seed from the keyframe workflow; in-between seed from the same project default video workflow scan). You can enable one flag without the other.
 
+## Partner API nodes (`THM-PartnerNode`)
+
+Some ComfyUI nodes wrap an entire external cloud API video call in a **single node** (e.g. `KlingStartEndFrameNode`, `ByteDanceFirstLastFrameNode`). Tag that node **`THM-PartnerNode`**. Examples: [`THM-api_kling_flf.json`](workflows/THM-api_kling_flf.json), [`THM-api_bytedace_seedance1_5_flf2v.json`](workflows/THM-api_bytedace_seedance1_5_flf2v.json).
+
+Because field names vary per provider, THM inspects the tagged node's `inputs` and writes **only field names it recognizes, only when already present** (no fields are ever added):
+
+| Driver | Field aliases tried |
+|--------|---------------------|
+| Positive prompt | `prompt`, `positive_prompt` |
+| Negative prompt | `negative_prompt` |
+| Frame count | `length`, `frame_count`, `num_frames`, `frames` |
+| Frame rate | `frame_rate`, `fps` |
+| Width / Height | literal `width` / `height` only |
+
+**Never written** (stay workflow-baked — set them in ComfyUI before export): `aspect_ratio`, `resolution`, `mode`, `duration`, and any other provider enum/opaque field.
+
+**Start/end images:** tag the upstream `LoadImage` nodes with ordinary `THM-StartFrame` / `THM-EndFrame` — same as any other video workflow.
+
+**API key:** partner nodes require a Comfy API key (from [platform.comfy.org](https://platform.comfy.org)), sent as `extra_data.api_key_comfy_org` on the `/prompt` POST. Set the **`THM_COMFY_API_KEY`** environment variable before launching THM. Keys are **never** read from `config.toml` (a stray `api_key_comfy_org` there is ignored with a warning), and the key value is never logged. If a partner workflow runs without the variable set, the runner logs a `[VIDEO] WARNING` but still submits (ComfyUI may hold its own key).
+
+**Derived metadata (read-only):** THM reads baked duration/size hints from the partner node for UI display (workflow dropdown hint + debug capabilities panel): literal `duration` seconds (Seedance), duration parsed from Kling's `mode` string (e.g. "5s duration"), and size from `resolution` ("720p") + ratio-style `aspect_ratio`; `"adaptive"` means size follows the input image. These values are informational — they do not auto-set project duration or dimensions (yet).
+
+**Image sizing & frame fit:** when the partner output size is known, the Dimensions panel suggests a **model-safe ~1MP generation size** — the nearest SDXL training bucket by aspect ratio, /64 dims, safe for SDXL- and Flux-class models (16:9 → **1344x768**, 9:16 → **768x1344**). Generating keyframes at the raw video size (e.g. 1920x1080, ~2MP) exceeds SDXL's training budget and distorts anatomy. At run time THM automatically injects an `ImageScale` (`lanczos`, `crop="center"` — cover then center-crop) between each wired `THM-StartFrame` / `THM-EndFrame` loader and its consumers, so keyframes of any size are fitted to the partner output size without stretching. Injected nodes are titled `Injected_PartnerScale_<loader id>`. No scaler is injected when the partner size is adaptive/unknown (the API follows the input image).
+
 ## BYO video workflow checklist
 
 Minimal tags for a new ComfyUI export:
@@ -517,6 +541,8 @@ THM-Lora-Low                dual-pass low-noise LoRA anchor (with THM-Lora-High)
 THM-Seed                    optional
 THM-SlowMoPrimer            optional KSamplerAdvanced primer pass
 THM-KSampler                one or more chain passes (duplicate bare titles)
+THM-PartnerNode             single-node external API call (Kling, ByteDance, ...) — replaces
+                            generator/sampler tags; see "Partner API nodes" above
 ```
 
 **Do not tag:** CLIP/VAE/checkpoint loaders, baked workflow LoRAs.

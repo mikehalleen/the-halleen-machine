@@ -18,6 +18,12 @@ from client.prep import AssetType, prep_asset_run, prep_keyframe_run, prep_video
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 PREVIEW_KEYWORDS = {"openposepreview", "shapepreview", "outlinepreview"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+# Slack applied to the submit timestamp when deciding whether an output file is
+# "new" (this run) vs "stale" (a pre-existing file from a crashed/offline run).
+# Absorbs filesystem-vs-clock timestamp-resolution jitter; real renders take
+# seconds, and stale files predate the run by minutes-to-hours, so this cleanly
+# separates the two without risking a stale file being accepted.
+_MTIME_TOLERANCE_SEC = 2.0
 
 
 @dataclass
@@ -31,6 +37,23 @@ class GenerationResult:
     seq_id: str = ""
     node_id: str = ""
     project_name: str = ""
+    is_new_output: bool = False
+
+
+def _dir_has_any(directory: Path, exts: set[str]) -> bool:
+    """True if the directory holds any file with one of the given extensions."""
+    if not directory.exists():
+        return False
+    return any(p.suffix.lower() in exts for p in directory.iterdir())
+
+
+def _stale_output_note(directory: Path, kind: str) -> str:
+    """Distinct stale_output message: a pre-existing file, but nothing new this run."""
+    return (
+        f"\n\nstale_output: no new {kind} produced in {directory} — the newest file "
+        f"predates this run. ComfyUI likely crashed or is offline; check `comfy-status` "
+        f"and the ComfyUI log before treating any existing file as this run's output."
+    )
 
 
 def _run_script(script_name: str, temp_data: dict) -> tuple[int, str, list[str]]:
@@ -68,11 +91,13 @@ def _run_script(script_name: str, temp_data: dict) -> tuple[int, str, list[str]]
             pass
 
 
-def _find_latest_image(image_dir: Path) -> tuple[str | None, dict]:
+def _find_latest_image(image_dir: Path, min_mtime: float | None = None) -> tuple[str | None, dict]:
     previews: dict = {}
     if not image_dir.exists():
         return None, previews
     image_files = [str(p) for p in image_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS]
+    if min_mtime is not None:
+        image_files = [f for f in image_files if os.path.getmtime(f) > min_mtime]
     if not image_files:
         return None, previews
 
@@ -90,11 +115,13 @@ def _find_latest_image(image_dir: Path) -> tuple[str | None, dict]:
     return main_path, previews
 
 
-def _find_latest_video(video_dir: Path) -> str | None:
+def _find_latest_video(video_dir: Path, min_mtime: float | None = None) -> str | None:
     if not video_dir.exists():
         return None
     for _ in range(5):
         video_files = list(video_dir.glob("*.mp4"))
+        if min_mtime is not None:
+            video_files = [p for p in video_files if p.stat().st_mtime > min_mtime]
         if video_files:
             return str(max(video_files, key=lambda p: p.stat().st_mtime))
         time.sleep(0.5)
@@ -110,15 +137,20 @@ def run_keyframe(
 ) -> GenerationResult:
     temp_data = prep_keyframe_run(project_data, seq_id, kf_id, seed=seed)
     project_name = temp_data.get("project", {}).get("name", "")
+    submitted_at = time.time()
     exit_code, log, result_lines = _run_script("run_images.py", temp_data)
 
     output_root = temp_data.get("project", {}).get("comfy", {}).get("output_root", "")
     image_dir = Path(output_root) / project_name / seq_id / kf_id
-    main_path, previews = _find_latest_image(image_dir)
+    main_path, previews = _find_latest_image(image_dir, min_mtime=submitted_at - _MTIME_TOLERANCE_SEC)
     if exit_code != 0 and not log.strip():
         log = f"run_images.py exited with code {exit_code}"
-    if exit_code == 0 and not main_path:
-        log += f"\n\nError: no image found in {image_dir}"
+    if not main_path:
+        log += (
+            _stale_output_note(image_dir, "image")
+            if _dir_has_any(image_dir, IMAGE_EXTS)
+            else f"\n\nError: no image found in {image_dir}"
+        )
 
     return GenerationResult(
         success=bool(main_path),
@@ -129,6 +161,7 @@ def run_keyframe(
         seq_id=seq_id,
         node_id=kf_id,
         project_name=project_name,
+        is_new_output=bool(main_path),
     )
 
 
@@ -141,15 +174,20 @@ def run_video(
 ) -> GenerationResult:
     temp_data = prep_video_run(project_data, seq_id, vid_id, seed=seed)
     project_name = temp_data.get("project", {}).get("name", "")
+    submitted_at = time.time()
     exit_code, log, result_lines = _run_script("run_video.py", temp_data)
 
     output_root = temp_data.get("project", {}).get("comfy", {}).get("output_root", "")
     video_dir = Path(output_root) / project_name / seq_id / vid_id
-    main_path = _find_latest_video(video_dir)
+    main_path = _find_latest_video(video_dir, min_mtime=submitted_at - _MTIME_TOLERANCE_SEC)
     if exit_code != 0 and not log.strip():
         log = f"run_video.py exited with code {exit_code}"
-    if exit_code == 0 and not main_path:
-        log += f"\n\nError: no video found in {video_dir}"
+    if not main_path:
+        log += (
+            _stale_output_note(video_dir, "video")
+            if _dir_has_any(video_dir, {".mp4"})
+            else f"\n\nError: no video found in {video_dir}"
+        )
 
     return GenerationResult(
         success=bool(main_path),
@@ -159,6 +197,7 @@ def run_video(
         seq_id=seq_id,
         node_id=vid_id,
         project_name=project_name,
+        is_new_output=bool(main_path),
     )
 
 
@@ -180,15 +219,20 @@ def run_asset(
         layout_override=layout_override,
     )
     project_name = temp_data.get("project", {}).get("name", "")
+    submitted_at = time.time()
     exit_code, log, result_lines = _run_script("run_images.py", temp_data)
 
     output_root = temp_data.get("project", {}).get("comfy", {}).get("output_root", "")
     image_dir = Path(output_root) / project_name / seq_id / kf_id
-    main_path, previews = _find_latest_image(image_dir)
+    main_path, previews = _find_latest_image(image_dir, min_mtime=submitted_at - _MTIME_TOLERANCE_SEC)
     if exit_code != 0 and not log.strip():
         log = f"run_images.py exited with code {exit_code}"
-    if exit_code == 0 and not main_path:
-        log += f"\n\nError: no image found in {image_dir}"
+    if not main_path:
+        log += (
+            _stale_output_note(image_dir, "image")
+            if _dir_has_any(image_dir, IMAGE_EXTS)
+            else f"\n\nError: no image found in {image_dir}"
+        )
 
     return GenerationResult(
         success=bool(main_path),
@@ -199,6 +243,7 @@ def run_asset(
         seq_id=seq_id,
         node_id=kf_id,
         project_name=project_name,
+        is_new_output=bool(main_path),
     )
 
 

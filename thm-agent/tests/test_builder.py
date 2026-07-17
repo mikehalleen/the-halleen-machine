@@ -33,6 +33,38 @@ def test_create_blank_has_sequence_and_keyframe():
     assert data["sequences"][sid]["keyframe_order"]
 
 
+def _placeholder_keyframe(data):
+    seq = data["sequences"][data["sequence_order"][0]]
+    return seq["keyframes"][seq["keyframe_order"][0]]
+
+
+def test_create_blank_default_family_resolves_default_workflow():
+    data = builder.create_blank("default-blank")
+    kf = _placeholder_keyframe(data)
+    assert Path(kf["workflow_json"]).name == builder.DEFAULT_PROJECT_WORKFLOW_FILENAME
+
+
+def test_create_blank_custom_family_leaves_workflow_blank():
+    data = builder.create_blank("custom-blank", family="custom")
+    assert data["project"]["image_model_family"] == "custom"
+    kf = _placeholder_keyframe(data)
+    assert kf["workflow_json"] == ""
+
+
+def test_add_keyframe_custom_family_leaves_workflow_blank():
+    data = builder.create_blank("custom-add-kf", family="custom")
+    sid = data["sequence_order"][0]
+    data, kf_id = builder.add_keyframe(data, sid, "wide shot")
+    assert data["sequences"][sid]["keyframes"][kf_id]["workflow_json"] == ""
+
+
+def test_add_keyframe_explicit_workflow_wins_on_custom_family():
+    data = builder.create_blank("custom-add-kf-explicit", family="custom")
+    sid = data["sequence_order"][0]
+    data, kf_id = builder.add_keyframe(data, sid, "wide shot", workflow="my_custom.json")
+    assert data["sequences"][sid]["keyframes"][kf_id]["workflow_json"] == "my_custom.json"
+
+
 def test_narrative_build_video_chain(tmp_project_path):
     """build_narrative_sequence chains multiple beats into ONE sequence (oner)."""
     data = builder.create_blank("store-walk")

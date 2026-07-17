@@ -311,6 +311,9 @@ def post_prompt(api_base, graph, project_name=None, label=None):
         extra_data["machine_ui_project"] = project_name
     if label:
         extra_data["machine_ui_label"] = label
+    comfy_api_key = os.environ.get("THM_COMFY_API_KEY", "").strip()
+    if comfy_api_key:
+        extra_data["api_key_comfy_org"] = comfy_api_key
     r = requests.post(api_base.rstrip("/") + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4()), "extra_data": extra_data}, timeout=60)
     if not r.ok:
         print(f"[COMFY] POST /prompt failed: {r.status_code}")
@@ -735,7 +738,7 @@ def run(config_path, export_only=False, status_file_override=None):
     _src = Path(__file__).resolve().parent.parent / "src"
     if str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
-    from helpers import resolve_project_video_workflow
+    from helpers import resolve_project_video_workflow, resolve_project_video_seed_titles
 
     wf_path = resolve_project_video_workflow({"project": project})
     iters_def = int(vg.get("video_iterations_default", 8))
@@ -743,7 +746,10 @@ def run(config_path, export_only=False, status_file_override=None):
     seed_step = int(vg.get("advance_seed_by", 13))
     dur_def_sec = float(vg.get("duration_default_sec", 3.0))
     
-    express_video = bool(get(project, "inbetween_generation", "express_video", default=False))
+    # express_video (aka "draft mode") is deprecated: step reduction is now handled by the
+    # custom workflow, and the toggle was removed from the UI. Force it off so run_video always
+    # uses the full step budget, ignoring any leftover inbetween_generation.express_video in a project.
+    express_video = False
     quarter_size_video = bool(get(project, "inbetween_generation", "quarter_size_video", default=False))
     upscale_video = bool(get(project, "inbetween_generation", "upscale_video", default=DEFAULT_UPSCALE))
     # fix_slowmo = bool(get(project, "inbetween_generation", "fix_slowmo", default=DEFAULT_SLOMOFIX))
@@ -754,8 +760,9 @@ def run(config_path, export_only=False, status_file_override=None):
 
 
 
-    seed_target_title = vg.get("seed_target_title", "IterKSampler")
-    seed_exclude_title = vg.get("seed_exclude_title", "WanFixedSeed")
+    # Family-aware: Default overrides to i2v_base's seed nodes even when the project
+    # still stores a last-used custom workflow's titles.
+    seed_target_title, seed_exclude_title = resolve_project_video_seed_titles({"project": project})
     project_fps = _resolve_project_fps(vg, wf_path)
 
     export_collect = []
@@ -880,6 +887,13 @@ def run(config_path, export_only=False, status_file_override=None):
                         except Exception as e: print(f"[ERR] Workflow load failed: {e}"); break
 
                         vid_caps = wc.discover_video_capabilities(graph)
+                        if vid_caps.has_partner_node and not os.environ.get("THM_COMFY_API_KEY", "").strip():
+                            classes = ", ".join(vid_caps.partner_node_classes) or "unknown"
+                            print(
+                                f"[VIDEO] WARNING: workflow contains THM-PartnerNode ({classes}) "
+                                "but THM_COMFY_API_KEY is not set - the partner API call will likely fail. "
+                                "Set the environment variable before launching THM."
+                            )
                         need_start = vid_caps.supports_start_frame and ctype in ("SE", "SO")
                         need_end = vid_caps.supports_end_frame and ctype in ("SE", "OE")
                         if (need_start and not sp) or (need_end and not ep):
@@ -997,7 +1011,8 @@ def run(config_path, export_only=False, status_file_override=None):
                                 json.dump(graph, f, indent=2)
                             print(f"[DEBUG] Saved workflow to: {debug_path}")
                             
-                            pid = post_prompt(api_base, graph, project_name=project_name, label=vid_id)
+                            job_label = f"{seq_id}|{vid_id}" if seq_id and seq_id != vid_id else vid_id
+                            pid = post_prompt(api_base, graph, project_name=project_name, label=job_label)
                             print("[PID]", pid)
                             print(f"[DEBUG] Posted prompt {pid}, waiting with timeout={timeout_s}s")
                             wait_result = wait_history_done(api_base, pid, timeout_s)

@@ -277,7 +277,7 @@ image2 is a character reference.
 image3 is the setting and location reference.
 ```
 
-Ribbon thumbnails above the keyframe **Prompt** field are labeled **`image1`**, **`image2`**, … in **wiring order** (empty slots are skipped — indices compress to active refs only).
+Ribbon thumbnails above the keyframe **Prompt** field are labeled **`image1`**, **`image2`**, … in **wiring order** (empty slots are skipped — indices compress to active refs only). To map slots/indices on a workflow you haven't used before: [lookup-reference.md](lookup-reference.md) § Introspecting a workflow you've never seen.
 
 **Unfilled slots are safe, not an error case to work around.** Confirmed via `mute_inactive_reference_slots()` ([scripts/workflow_controls.py](../../../scripts/workflow_controls.py)): an unset slot in a multi-reference workflow is muted cleanly (`[REF] muted inactive {role} subgraph` in the run log) rather than erroring. Not every reference slot needs to be filled to generate — leave a slot unbound when the beat genuinely has nothing for it, rather than inventing a filler reference.
 
@@ -481,6 +481,19 @@ Example:
 - Layout: `close-up, person holds product near camera, label visible, smiling`  
 - Inbetween: `person walks down aisle until they find and pick up the product`
 
+### Derive the plan from the request wording
+
+Read the plan **off the user's brief**, before writing any prompt. The frame that must be exact is the keyframe; the wording says where it sits:
+
+| Brief says | Plan | Keyframe is… |
+|------------|------|--------------|
+| "land on X" / "arrive at X" / "end on X" / "push in to X" | `open_start: true, open_end: false` | The **landing** — the exact frame the motion settles on |
+| "start from X" / "X, then reveal…" / "open on X" | `open_start: false, open_end: true` | The **start** — motion departs from it |
+| "travel from exact A to exact B" | Both false, 2 KFs (`ShotSpec.layout_end`) | **Both endpoints** — but two independently generated anchors interpolate poorly (mid-clip dissolve/morph); prefer a single-anchor shape unless both endpoints truly must be exact. See [schema-reference.md](schema-reference.md) § Two-anchor controlled interpolation |
+| "pass through exact X mid-move" | Both true, 1 KF | The **middle** peak pose (two videos, higher QC surface) |
+
+**Trap — narration order is not timeline order.** "Make a keyframe, *then* animate it" does **not** mean keyframe = first frame. Derive placement from *what must be exact* and *where the motion lands*, never from the order the user described the steps. A "slow push-in landing on the product" is open-start: the product close-up is the keyframe, the video generates **into** it — built start-only, the landing (the one frame that matters) is left for the video model to invent.
+
 ### Approach-and-arrive (open start → closed end)
 
 When the beat is **approach and land on one pose** — walk to shelf, reach and pick, enter frame and settle — prefer **`open_start: true`, `open_end: false`**: one video from open → landing keyframe.
@@ -545,6 +558,8 @@ angle to reference, pixel-stable backdrop
 ```
 
 **Why travel breaks on plate lock:** pinning a prior KF freezes composition; tracking/dolly reads as backward motion, moonwalk, or U-turn when the model tries to reconcile moving subjects with a static backdrop.
+
+**Same-spot oner master plate:** when several keyframes share one fixed camera position (a static oner), each new keyframe otherwise re-invents the near-ground background (foreground props, surfaces, clutter differ per frame even when the far background matches) and the assembled clips visibly jump. After approving the first keyframe, erase the subjects from it ("remove the people, keep every structure identical") to mint a **master location plate**, save it additively (`gallery_2`), and rebind every later keyframe's location slot to that master. QC axis for oners: diff the near-ground background of each new keyframe against the **previous selected keyframe**, not only against the setting reference.
 
 ### Velocity and real-time sprint motion
 
@@ -624,6 +639,8 @@ High-energy beats need **named direction** every inbetween — not just "they ru
 
 **Video negatives for travel:** `camera reversing, dolly backward, backward tracking, running backward, moonwalking, time reverse, returning to start, U-turn, 180 degree turn`.
 
+**A rotated end keyframe cannot be end-frame conditioned into a rotation.** If start and end anchors show the same subjects in a rotated arrangement, the model produces a clothing/identity **swap morph**, not a rotation. To rotate a group or formation, keep the anchors' arrangement stable and describe a **camera** rotation (open-end) instead — camera-orbit language reads as the formation turning and renders cleanly.
+
 ### Obstacle and crash choreography
 
 For crash-heavy oners and obstacle beats:
@@ -638,6 +655,62 @@ For crash-heavy oners and obstacle beats:
 | **Safety clause** | Debris hits obstacles only; crowd behind barriers — user-defined tone, but pattern is consistent per project |
 
 Effect LoRA token belongs on the **one** clip where debris occurs — not spread across the chain.
+
+### Video prompts are literal-visual only (the LLM is the concept translator)
+
+The video model has no memory of prior events, no motivation, no knowledge of story position — it renders only what the current prompt literally describes as visible motion. This **generalizes** the "Literal description over metaphor" principle to the whole video layer:
+
+- **Banned in video prompts:** relational verbs that assume context ("she answers with…", "trades blows"), concept labels ("button ending", "the finale", "hero-shot style"), and any reference to a larger arc. The model can't render a concept — only bodies, faces, camera, and effects doing something.
+- **Required:** sequential, present-tense, literal description ("First X does A. When A stops, Y does B."), body-part-level moves, and every concept translated into what the camera/bodies/faces *visibly* do. **Longer, more descriptive literal prompts outperform** terse ones.
+- **Category-adjectives need literal values.** Any adjective that names a *category* rather than a visible attribute gets dropped or defaulted — "colored smoke" renders white/grey; name the literal color ("thick magenta and teal smoke"). Same class as the metaphor rule: give the model concrete values, not labels.
+
+### Some video models ignore negatives — use positive invariants, and restate them against drift
+
+Many video model paths — partner-API nodes especially — **ignore the negative prompt entirely**; only positive statements steer them. And over the length of a clip a model tends to **drift back toward "normal"** (a hover settles to the ground, an overhead camera sinks to eye level, a held pose starts moving, a scripted state relaxes). Two content-neutral levers:
+
+- **State the intended state as a positive per-frame invariant**, not as a negation — e.g. "in every frame the subject stays airborne, feet off the ground" beats "no landing" in `negative_prompt`. Subject-scale invariants ("the subject stays small in frame, seen from above, and never grows larger") hold better than camera-verb locks ("camera never descends").
+- **Restate the invariant inside the ending sentence**, since drift is worst late in the clip. If you need a scripted change (a camera whip, a designed final beat), confine it to "only in the final fraction of the clip" with a concrete visual, and design it to work *with* the model's ease-out rather than fighting it.
+
+### Anchor signature/prop/aerial actions in a keyframe, not in prompt text
+
+If a beat's signature action involves **props, set interaction, or aerial/off-ground positions** (grabbing something, climbing, launching, floating, a specific stunt), put that action **in a keyframe** (start or end) — prompt-only requests for it reliably degrade to generic motion. The video then only has to *carry* the action, not invent it. This is also how "AI-only" / low-gravity moments become reliable: a keyframe that clearly shows the subject already airborne/mid-action + a motion prompt that keeps that state as an invariant (with stability positives against background warping and drift) renders far better than asking the video to initiate the impossible move from a grounded plate.
+
+### Large positional change needs a time window and a scene landmark
+
+The model keeps a subject near its keyframe-conditioned position; intensity words alone ("leaps up", "rockets across") don't move it far. Pin a large translation (rising, crossing, climbing) to **both** a clip-time window and a named scene landmark: "keeps rising through the first quarter of the clip, climbing past the [named landmark] until [end state]." Pair with the keyframe-support rule above — put the launch in the start keyframe so the video carries the travel rather than initiating it.
+
+### Name every human — no collective references
+
+Every human in a video (or keyframe) prompt must be named individually with a compact appearance/outfit descriptor — **collective references spawn extra or wrong people.** "The other people in the background" reliably produces an extra figure or a duplicate; naming each one by appearance fixes it. This holds even for **small, soft-focus background** subjects — vague group language plus blur weakens the reference grip exactly like a wide "scattered" layout does; describe each background subject individually (depth-of-field language like "slightly soft" is safer than "blurred" for bound subjects). For multi-subject group frames, a tight named **formation** ("in a line, left to right: [each subject named once]") holds count far better than "scattered across" phrasing.
+
+### Identity maintenance in video prompts
+
+Video models drift a subject's identity mid-clip (skin tone, hair, and features can shift, and open-conditioned clips can be off-identity until the conditioning frame). Two fixes that stick: (a) state each subject's **explicit** identity (ethnicity/skin/hair as applicable) in the video prompt **every clip**, not just the keyframe; (b) add a maintenance clause tied to the conditioning shape — "maintain each subject's clothing, hair, and [identity attributes] exactly from the {first / final / first and final} frame{s}."
+
+### Off-frame wardrobe migrates onto visible body — and close framings widen on their own
+
+Describing a subject's full canonical outfit in a **close** prompt puts invisible items onto visible ones (a "thigh-high sock" in a waist-up shot can render as a striped sleeve on a bare arm). Two-sided rule:
+
+- **When a reveal is *unwanted*:** describe only what the crop shows, hold the framing as an invariant ("the camera holds this waist-up framing for the entire clip, never pulling back"), and add a defensive negative for the migrating item ("bare arms, no sleeves").
+- **When a reveal is *possible*** (a close clip can widen unscripted): defensively describe the off-frame wardrobe correctly anyway, so if that body area enters frame it renders in canon rather than a hallucinated default.
+
+(Complements the shoe-color lesson: naming a garment can pull it into frame — so leave it undescribed when it's out of frame and you want it to stay out, but lock the framing too.)
+
+### Prompts must extend the start plate, never contradict it
+
+Before writing a camera or lighting beat, check that the **selected start keyframe supports it.** Demanding a state the plate can't reach makes the model drift or invert the move: "true top-down" on an oblique-high plate makes the camera wander trying to reconcile; "floodlights slam on from near-dark" when the plate is already fully lit is unrenderable and the model may invert it (rendering a pull-back where you scripted a push-in). Lock the shot to "the exact angle of the very first frame" or regenerate the plate to support the beat. **QC corollary:** judge a take against what is *achievable from its plate* — an inverted-but-coherent move that still meets every content invariant can be a pass-with-note instead of a doomed reroll loop.
+
+### Prompt directives are scoped to their layer
+
+Keep each user directive in the layer it belongs to: keyframe/still commands → `keyframe.layout`; motion commands → `video.inbetween_prompt`; general doctrine → the reusable descriptor, not every prompt. Don't defensively stuff every instruction into every layer — a still-only note ("keep hair out of her face") folded into a video prompt wastes tokens and attention and can misfire.
+
+### Prompting under a motion (or style) LoRA
+
+When a project uses a trained LoRA, **read its training captions first** and mirror that format before iterating on content: the trigger phrase in position 1, the trained caption template (energy/subject/background/lighting structure), and trained tag combos. Prompting a LoRA *outside* its caption vocabulary leaves most of its value unused. Nuance: a "zero extra description" rule is usually too absolute — **one** concrete action sentence inside the trained structure typically helps; several fight it. Also, a LoRA **imposes its trained material** — negatives cannot override a LoRA's trained look (e.g. a "blast" LoRA that renders fire will keep rendering fire despite fire-negatives). Use the LoRA when you want its material; for a different material, drop the LoRA and use pure prompt language. Keep an effect LoRA on the **one** clip where the effect occurs.
+
+### Two-reference binding for face-vs-costume conflicts (Custom family)
+
+When one subject's face and full costume can't both be captured by a single reference plate, bind **two** slots for that subject — a face/MCU reference and a full-body costume reference — plus the location slot, the same multi-slot pattern group shots already use. Fixes likeness-vs-canon conflicts without losing either.
 
 ---
 

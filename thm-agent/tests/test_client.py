@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -232,9 +235,122 @@ def test_gallery_recency_and_session_notes(tmp_path, monkeypatch):
     assert html_text.index("shot2") < html_text.index("shot1")
 
 
+def test_gallery_header_branding_and_favicon_always_present(tmp_path, monkeypatch):
+    from client import workspace as ws
+
+    monkeypatch.setattr(ws, "_resolve_configured_workspace_root", lambda: tmp_path)
+    preview_dir = ws.preview_dir_for_project("brand-test")
+    preview_dir.mkdir(parents=True)
+    (preview_dir / "seq1-id1-take1.png").write_bytes(b"\x89PNG\r\n\x1a\nkf")
+    # Stale copy from an older build — must be cleaned up, not shown as a tile.
+    (preview_dir / "icon.png").write_bytes(b"stale")
+
+    html_text = Path(ws.build_preview_gallery("brand-test")).read_text(encoding="utf-8")
+    # Branded header is non-optional (a past run dropped it in monitor mode).
+    assert "The Halleen Machine</span>" in html_text
+    assert 'class="thm-wordmark"' in html_text
+    assert 'class="thm-logo"' in html_text
+    assert '<link rel="icon"' in html_text
+    # Logo is inlined as a data URI; nothing is copied into the project folder.
+    assert "data:image/png;base64," in html_text
+    assert not (preview_dir / "icon.png").exists()
+
+
+def test_gallery_complete_shows_final_cut_and_slower_refresh(tmp_path, monkeypatch):
+    from client import workspace as ws
+
+    monkeypatch.setattr(ws, "_resolve_configured_workspace_root", lambda: tmp_path)
+    preview_dir = ws.preview_dir_for_project("done-test")
+    preview_dir.mkdir(parents=True)
+    (preview_dir / "seq1-id1-take1.mp4").write_bytes(b"clip")
+    (preview_dir / "final-cut.mp4").write_bytes(b"stitched")
+
+    # Active run: 30s refresh, no final-cut section.
+    session = ws.load_gallery_session("done-test")
+    session["monitor"] = {"complete": False}
+    ws.save_gallery_session("done-test", session)
+    active = Path(ws.build_preview_gallery("done-test")).read_text(encoding="utf-8")
+    assert "30000" in active and "60000" not in active
+    assert 'class="final-cut"' not in active
+
+    # Completed run: 60s refresh, stitched final cut featured.
+    session = ws.load_gallery_session("done-test")
+    session["monitor"] = {"complete": True, "final_export": "final-cut.mp4"}
+    ws.save_gallery_session("done-test", session)
+    done = Path(ws.build_preview_gallery("done-test")).read_text(encoding="utf-8")
+    assert "60000" in done and "30000" not in done
+    assert 'class="final-cut"' in done
+    assert "final-cut.mp4" in done
+
+
+def test_gallery_long_hero_video_slows_refresh_to_play_through(tmp_path, monkeypatch):
+    from client import workspace as ws
+
+    monkeypatch.setattr(ws, "_resolve_configured_workspace_root", lambda: tmp_path)
+    preview_dir = ws.preview_dir_for_project("long-hero-test")
+    preview_dir.mkdir(parents=True)
+    (preview_dir / "seq1-vid1-take1.mp4").write_bytes(b"clip")
+    (preview_dir / "final-cut.mp4").write_bytes(b"stitched")
+
+    # Hero video > 28s: refresh becomes length + 2s so it plays through once.
+    monkeypatch.setattr(ws, "_video_duration_sec", lambda p: 45.0)
+    session = ws.load_gallery_session("long-hero-test")
+    session["monitor"] = {"complete": True, "final_export": "final-cut.mp4"}
+    ws.save_gallery_session("long-hero-test", session)
+    done = Path(ws.build_preview_gallery("long-hero-test")).read_text(encoding="utf-8")
+    assert "47000" in done and "60000" not in done
+
+    # Applies to the newest-item hero during an active run too.
+    session = ws.load_gallery_session("long-hero-test")
+    session["monitor"] = {"complete": False}
+    ws.save_gallery_session("long-hero-test", session)
+    active = Path(ws.build_preview_gallery("long-hero-test")).read_text(encoding="utf-8")
+    assert "47000" in active and "30000" not in active
+
+    # Short hero video: default cadence stands.
+    monkeypatch.setattr(ws, "_video_duration_sec", lambda p: 5.0)
+    short = Path(ws.build_preview_gallery("long-hero-test")).read_text(encoding="utf-8")
+    assert "30000" in short and "47000" not in short
+
+
+def test_format_item_label_seq_id_take():
+    from client import workspace as ws
+
+    assert ws._format_item_label("seq3-id7-take4") == "seq3 · id7 · take 4"
+    assert ws._format_item_label("seq12-vid2-take10") == "seq12 · vid2 · take 10"
+    # real ComfyUI output stem: {proj}_{seq}_{id}_{index}
+    assert ws._format_item_label("california-home_seq5_id2_00004_") == "seq5 · id2 · take 4"
+    # non-conforming (invented) names fall back to the raw stem
+    assert ws._format_item_label("vid-tight-womanportrait-A") == "vid-tight-womanportrait-A"
+
+
+def test_stitch_mp4_fallback_extracts_from_mp4(tmp_path, monkeypatch):
+    scripts_dir = _REPO_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import run_stitch
+
+    vid_dir = tmp_path / "seq1" / "vid1"
+    vid_dir.mkdir(parents=True)
+    mp4 = vid_dir / "proj_seq1_vid1_00003_.mp4"
+    mp4.write_bytes(b"fake-mp4")  # no _lossless.mkv, no frames_00003/ folder
+
+    calls: dict = {}
+
+    def fake_extract(src, temp_dir):
+        calls["src"] = Path(src)
+        Path(temp_dir).mkdir(parents=True, exist_ok=True)
+        return Path(temp_dir)
+
+    monkeypatch.setattr(run_stitch, "extract_frames_to_temp", fake_extract)
+    result = run_stitch.frames_dir_from_selected_video_path(str(mp4))
+    # Partner-clip fallback: frames extracted straight from the MP4 itself.
+    assert calls.get("src") == mp4
+    assert result is not None and Path(result).is_dir()
+
+
 @patch("client.runner._run_script")
 def test_run_keyframe_collects_output(mock_run):
-    mock_run.return_value = (0, "RESULT: /out/test.png\n", ["RESULT: /out/test.png"])
     data = builder.create_blank("run-kf")
     sid = data["sequence_order"][0]
     kf_id = data["sequences"][sid]["keyframe_order"][0]
@@ -245,9 +361,44 @@ def test_run_keyframe_collects_output(mock_run):
     out_dir = Path(data["project"]["comfy"]["output_root"]) / "run-kf" / sid / kf_id
     out_dir.mkdir(parents=True, exist_ok=True)
     fake_png = out_dir / "run-kf_seq1_id1_001.png"
-    fake_png.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    def _side_effect(script_name, temp_data):
+        # A real render writes the output file during the run (mtime > submitted_at).
+        fake_png.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return (0, "RESULT: /out/test.png\n", ["RESULT: /out/test.png"])
+
+    mock_run.side_effect = _side_effect
 
     result = runner.run_keyframe(data, sid, kf_id)
     assert result.success
+    assert result.is_new_output
     assert result.main_path
     mock_run.assert_called_once()
+
+
+@patch("client.runner._run_script")
+def test_run_keyframe_rejects_stale_output(mock_run):
+    # A pre-existing file that predates the run must NOT count as this run's output.
+    mock_run.return_value = (0, "", [])
+    data = builder.create_blank("stale-kf")
+    sid = data["sequence_order"][0]
+    kf_id = data["sequences"][sid]["keyframe_order"][0]
+    data["project"]["comfy"]["output_root"] = str(Path(__file__).parent / "_fixtures_out")
+    data["project"]["name"] = "stale-kf"
+
+    stale_root = Path(data["project"]["comfy"]["output_root"]) / "stale-kf"
+    out_dir = stale_root / sid / kf_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stale_png = out_dir / "stale-kf_seq1_id1_001.png"
+    stale_png.write_bytes(b"\x89PNG\r\n\x1a\n")
+    old = time.time() - 3600
+    os.utime(stale_png, (old, old))  # newest file predates the run
+
+    try:
+        result = runner.run_keyframe(data, sid, kf_id)
+        assert result.success is False
+        assert result.is_new_output is False
+        assert result.main_path is None
+        assert "stale_output" in result.log
+    finally:
+        shutil.rmtree(stale_root, ignore_errors=True)

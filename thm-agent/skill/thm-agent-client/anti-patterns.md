@@ -54,6 +54,9 @@ Common mistakes from real sessions. Link from [SKILL.md](SKILL.md) hard-stops wh
 | Re-run completed sequences after crash | Resume forward from first incomplete beat |
 | Many separate CLI invocations for one arc | One detached forward script + skip-complete |
 | Interrupt without killing detached runner | Terminate pipeline processes; verify none remain before same-turn resume |
+| Start-only shot (`open_end: true`) for a "land on X" brief | Landing is the fidelity moment ⇒ **open-start**: keyframe = landing, video generates **into** it ([schema-reference.md](schema-reference.md) § Approach-and-arrive) |
+| Fix a bad landing by adding a second independently generated keyframe (KF→KF) | Independently generated anchors never pixel-align — interpolation dissolves/morphs; prefer single-anchor flows unless both endpoints truly must be exact ([schema-reference.md](schema-reference.md) § Two-anchor controlled interpolation) |
+| Silently invent the background in the keyframe prompt and composite the subject in one pass | Default to a **setting plate first** (reviewed, approved, reusable), pin it, bind plates in the keyframe; if inline one-step is tempting, **ask the user which they prefer** ([asset-library-guide.md](asset-library-guide.md) § Phase order) |
 
 ---
 

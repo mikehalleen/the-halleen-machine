@@ -264,6 +264,8 @@ def prep_asset_run(
         "id": unique_id,
         "type": "sequence",
         "order": 0,
+        # let workflow reference resolution find the asset's own pinned reference_image
+        "setting_id": asset_id if asset_type == "setting" else "",
         "setting_prompt": setting_prompt,
         "style_prompt": style_prompt,
         "action_prompt": "",

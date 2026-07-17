@@ -49,6 +49,7 @@ from workflow_capabilities import (
     compose_reference_present_slots,
     format_capabilities_markdown,
     format_video_capabilities_markdown,
+    partner_hint_texts,
     generations_seed_visible,
     keyframe_editor_visibility,
     video_workflow_name_from_project,
@@ -1704,6 +1705,31 @@ def _eh_kf_fields(project_dict: dict, loaded_nid: str, loaded_proj: str, pose_ui
     return data
 
 
+def _vid_partner_hint_updates(wf_scan):
+    """Length-group visibility + partner hint markdown for the in-between panel.
+
+    Time-locked partner workflow (baked duration): hide the clip-length radio /
+    reset button and show the full partner summary in their place. Otherwise the
+    length controls stay, with sizing / API-key warnings shown below them.
+    """
+    hints = partner_hint_texts(wf_scan)
+    if not hints:
+        return gr.update(visible=True), gr.update(visible=False, value="")
+    lines = []
+    if hints["time_locked"]:
+        lines.append(hints["summary"])
+    if hints["sizing"]:
+        lines.append(hints["sizing"])
+    if hints["api_key_warning"]:
+        lines.append(hints["api_key_warning"])
+    if not lines:
+        return gr.update(visible=not hints["time_locked"]), gr.update(visible=False, value="")
+    return (
+        gr.update(visible=not hints["time_locked"]),
+        gr.update(visible=True, value="<br>".join(lines)),
+    )
+
+
 def _vid_length_ui_updates(data: dict, loaded_nid: str):
     """Return gr.update for clip-length radio label and reset button."""
     v, kind, _, _ = _resolve_node_context(data, loaded_nid)
@@ -2831,7 +2857,7 @@ def _eh_node_selected(project_dict: dict, raw_value, cur_sel: str):
     # But allow when cur_sel is empty/None (initial load)
     if raw_value and cur_sel and raw_value == cur_sel:
         print(f"[NODE_SEL] SKIP - already on {raw_value}")
-        return tuple([gr.update()] * 67)
+        return tuple([gr.update()] * 69)
     
     # Handle both dict and string (JSON) input
     
@@ -2884,7 +2910,7 @@ def _eh_node_selected(project_dict: dict, raw_value, cur_sel: str):
     # Initialize Defaults
     seq_vals = [gr.update()] * 9
     kf_vals = [gr.update()] * 31
-    vid_vals = [gr.update()] * 6
+    vid_vals = [gr.update()] * 8
     
     # Batch iteration defaults (seeds removed from UI)
     pj_kf = data.get("project", {}).get("keyframe_generation", {})
@@ -3015,6 +3041,8 @@ def _eh_node_selected(project_dict: dict, raw_value, cur_sel: str):
         
         radio_value, label_text, reset_label = _get_vid_dur_ui_vals(val, default_dur)
 
+        length_group_upd, partner_hint_upd = _vid_partner_hint_updates(wf_scan)
+
         vid_vals = [
             gr.update(
                 value=s_path,
@@ -3026,7 +3054,9 @@ def _eh_node_selected(project_dict: dict, raw_value, cur_sel: str):
             ),
             gr.update(value=radio_value, label=label_text),
             gr.update(value=v.get("inbetween_prompt", "")), gr.update(value=v.get("negative_prompt", "")),
-            gr.update(value=reset_label)
+            gr.update(value=reset_label),
+            length_group_upd,
+            partner_hint_upd,
         ]
         
         vid_files = _get_vid_gallery_files(data, nid)
@@ -4524,9 +4554,10 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                                 with gr.Column(scale=1, min_width=10):
                                     vid_end_image = gr.Image(label="End Image", interactive=False, height=101)
                             with gr.Row():
-                                with gr.Group(elem_classes="vid-inspector-controls"):
+                                with gr.Group(elem_classes="vid-inspector-controls") as vid_length_group:
                                     vid_length = gr.Radio(DUR_CHOICES, label="Clip Length (seconds)", value=None, elem_classes="vid-length-radio")
-                                    clear_vid_len_btn = gr.Button("Default (3 sec)") 
+                                    clear_vid_len_btn = gr.Button("Default (3 sec)")
+                            vid_partner_hint = gr.Markdown(visible=False, elem_classes=["field-info"])
                             vid_prompt = gr.Textbox(label="In-between prompt", info="Applies only to this In-bewteen", lines=1, interactive=True)
                             with gr.Accordion("Advanced", open=False):
                                 vid_lora = gr.Dropdown(
@@ -4599,6 +4630,7 @@ def build_editor_tab(preview: gr.Code, settings_json: gr.State, current_file_pat
                 kf_cn_outline_enable, kf_cn_outline_thumb, kf_cn_outline_strength, kf_cn_outline_start, kf_cn_outline_end,
                 kf_char_left, kf_char_right, kf_prompt, kf_template, kf_workflow_json, kf_neg_left, kf_neg_right, kf_neg_heal, kf_join_smoothing, kf_join_offset, kf_lora,
                 vid_start_image, vid_end_image, vid_length, vid_prompt, vid_neg, clear_vid_len_btn,
+                vid_length_group, vid_partner_hint,
                 seq_len, main_preview_image, kf_gallery, vid_gallery_dd, vid_player, vid_lora,
                 gr.State(), # seq_status placeholder
                 seq_kf_inputs["seq_kf_iter"], seq_ib_inputs["seq_ib_iter"],  # batch iteration controls

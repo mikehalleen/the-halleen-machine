@@ -1401,15 +1401,19 @@ def check_comfyui_status(project_dict, api_base=None):
                     job_project = (extra_data or {}).get("machine_ui_project")
                     job_label = (extra_data or {}).get("machine_ui_label")
 
+                    # Labels may carry a sequence prefix ("seq26|vid0"); type detection
+                    # keys off the item part, display keeps the full label.
+                    item_label = (job_label or "").split("|")[-1]
+
                     if not job_project or not job_label:
                         item_html = '<span style="color:#888">&#9675; external</span>'
                     elif job_project != current_project_name:
                         item_html = f'<span style="color:#aaa">{job_project} | {job_label}</span>'
-                    elif job_label.startswith("vid"):
+                    elif item_label.startswith("vid"):
                         item_html = f'<span style="color:var(--color-vid)">&#9655; {job_label}</span>'
                     else:
                         test_name = next(
-                            (v for k, v in _TEST_LABEL_NAMES.items() if job_label == k or job_label.startswith(k)),
+                            (v for k, v in _TEST_LABEL_NAMES.items() if item_label == k or item_label.startswith(k)),
                             None,
                         )
                         if test_name:
@@ -1662,8 +1666,8 @@ def handle_project_export_task(fp, pj, fmt, res, fps, layer="Original", audio=No
     yield from handle_export_task(fp, pj, "project", None, fmt, res, fps, layer, audio, animatic, debug_labels)
 
 def build_run_tab(fp, pj, sett, form=None, features={}):
-    with gr.Row():
-        with gr.Column(scale=1):
+    with gr.Row(elem_id="utilities-row"):
+        with gr.Column(scale=1, min_width=320, elem_id="utilities-col-left"):
             with gr.Accordion("ComfyUI", open=False,elem_classes=["themed-accordion", "proj-theme"]):
                 cancel_all = gr.Button("Cancel and Clear Queue", variant="stop")
                 restart = gr.Button("Restart ComfyUI", variant="stop")
@@ -1675,7 +1679,7 @@ def build_run_tab(fp, pj, sett, form=None, features={}):
                     beats = gr.Button("Beats")
                     bout = gr.Textbox(lines=5)
         
-        with gr.Column(scale=4):
+        with gr.Column(scale=1, min_width=320, elem_id="utilities-col-right"):
             with gr.Accordion("Batch Manager", open=True,elem_classes=["themed-accordion", "proj-theme"]):
                 stat = build_run_status_ui()
                 with gr.Row():

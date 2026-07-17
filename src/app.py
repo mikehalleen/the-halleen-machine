@@ -26,7 +26,6 @@ from helpers import (
     VIDEO_MODEL_FAMILY_DEFAULT, is_default_video_family, is_custom_video_family,
     video_model_family, video_family_label_to_json, video_family_json_to_label,
     effective_video_workflow_filename, stored_video_workflow_filename,
-    migrate_video_to_default_workflow, should_migrate_video_on_family_change,
     cb_refresh_video_workflow_dropdown, resolve_project_video_workflow,
     migrate_keyframes_to_custom_reference_bindings,
     should_migrate_keyframes_to_custom_bindings,
@@ -37,6 +36,7 @@ from helpers import (
 from workflow_capabilities import (
     project_negative_visibility,
     scan_workflow_file,
+    partner_hint_texts,
     scan_video_workflow_file,
     video_generation_defaults_visibility,
     video_workflow_name_from_project,
@@ -919,6 +919,9 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
                                 to_ui=video_workflow_path_to_dropdown,
                                 to_json=video_workflow_dropdown_to_path,
                             )
+                            video_partner_hint = gr.Markdown(
+                                visible=False, elem_classes=["field-info"]
+                            )
                         video_fps = form.add(
                             "project.inbetween_generation.fps",
                             gr.Number(
@@ -1008,6 +1011,9 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
                             with gr.Row():
                                 width = form.add("project.width", gr.Number(label="Width", precision=0, minimum=1), default=1152, to_json=int)
                                 height = form.add("project.height", gr.Number(label="Height", precision=0, minimum=1), default=768, to_json=int)
+                            dimensions_video_hint = gr.Markdown(
+                                visible=False, elem_classes=["field-info"]
+                            )
 
                             vid_quarter = form.add("project.inbetween_generation.quarter_size_video", 
                                 gr.Checkbox(label="Quarter Size Video", info="Recommended in conjunction with 2x upscaling"), 
@@ -1619,7 +1625,7 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
         first_id = first_outline_node_id(data)
         if first_id:
             return _eh_node_selected(data, first_id, None)
-        return tuple([gr.update()] * 67)
+        return tuple([gr.update()] * 69)
 
     def _reselect_node_after_reload(project_dict, previous_node_id):
         """After an in-place reload, stay on the same outline row instead of
@@ -1629,7 +1635,7 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
         node_id = previous_node_id if outline_node_exists(data, previous_node_id) else first_outline_node_id(data)
         if node_id:
             return _eh_node_selected(data, node_id, None)
-        return tuple([gr.update()] * 67)
+        return tuple([gr.update()] * 69)
 
     file_picker.change(
         fn=load_and_update,
@@ -1871,16 +1877,16 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
 
         return sync
 
-    def _sync_video_model_family(family_label):
+    def _sync_video_model_family(family_label, preview=None):
         """Sync video family to preview; normalize workflow when switching to Default."""
-        preview = _preview_snapshot[0]
+        if not isinstance(preview, dict):
+            preview = _preview_snapshot[0]
         if preview is None:
             return {}
-        old_family = video_model_family(preview)
+        # The family flag overrides the stored workflow at resolution time, so switching
+        # to Default must NOT clobber video_workflow_json: we preserve the last-used
+        # custom workflow so toggling back to Custom restores it without re-selecting.
         data = form.update_json_field(preview, "project.video_model_family", family_label)
-        new_family = video_model_family(data)
-        if should_migrate_video_on_family_change(old_family, new_family):
-            data = migrate_video_to_default_workflow(data)
         return data
 
     def _sync_image_model_family(family_label):
@@ -1972,6 +1978,12 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
             gr.update(visible=neg_vis.show_heal_all),
         )
 
+    # (workflow name, family) the video defaults UI was last computed for.
+    # preview_code changes on every editor interaction (node select, etc.);
+    # rescanning and re-emitting visible=/info= updates each time flickers the
+    # UI and spams [VIDEO] logs, so skip entirely when nothing relevant changed.
+    _video_defaults_key = [None]
+
     def _refresh_video_generation_defaults_ui(preview, video_workflow_dropdown=None):
         data = preview if isinstance(preview, dict) else {}
         default_family = is_default_video_family(data)
@@ -1983,13 +1995,42 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
                 wf_name = effective_video_workflow_filename(data)
             else:
                 wf_name = Path(video_workflow_dropdown_to_path(wf_name)).name
+        key = (wf_name, default_family)
+        if key == _video_defaults_key[0]:
+            return gr.update(), gr.update(), gr.update(), gr.update()
+        _video_defaults_key[0] = key
         scan = scan_video_workflow_file(wf_name if wf_name else None)
         vis = video_generation_defaults_visibility(scan)
         show_steps = (not default_family) and vis.show_video_steps
+        partner_upd, dims_upd = _video_partner_hint_update(scan, wf_name)
         return (
             gr.update(visible=show_steps, info=vis.video_steps_info),
             gr.update(visible=vis.show_video_fps, info=vis.video_fps_info),
+            partner_upd,
+            dims_upd,
         )
+
+    # Last workflow the partner hints were computed for; the hints persist across
+    # refreshes (preview changes, transient empty dropdown) until this changes.
+    _partner_hint_workflow = [None]
+
+    def _video_partner_hint_update(scan, wf_name):
+        if not wf_name or getattr(scan, "error", None):
+            return gr.update(), gr.update()
+        if wf_name == _partner_hint_workflow[0]:
+            return gr.update(), gr.update()
+        _partner_hint_workflow[0] = wf_name
+        hidden = gr.update(visible=False, value="")
+        hints = partner_hint_texts(scan)
+        if not hints:
+            return hidden, hidden
+        text = hints["summary"]
+        if hints["api_key_warning"]:
+            text += f"<br>{hints['api_key_warning']}"
+        dims_upd = hidden
+        if hints["sizing"]:
+            dims_upd = gr.update(visible=True, value=hints["sizing"])
+        return gr.update(visible=True, value=text), dims_upd
 
     def _refresh_video_model_family_ui(preview, video_workflow_dropdown=None):
         data = preview if isinstance(preview, dict) else {}
@@ -1997,11 +2038,8 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
         default_family = is_default_video_family(data)
 
         if default_family:
-            proj = data.setdefault("project", {})
-            ib = proj.setdefault("inbetween_generation", {})
-            default_path = str((WORKFLOWS_DIR / DEFAULT_VIDEO_WORKFLOW_FILENAME).resolve())
-            if ib.get("video_workflow_json") != default_path:
-                ib["video_workflow_json"] = default_path
+            # Preserve the stored (last-used custom) workflow; the family flag overrides
+            # it at resolution time. Just hide the now-irrelevant selector.
             wf_update = gr.update(visible=False)
         else:
             wf_sel = stored_video_workflow_filename(data)
@@ -2011,8 +2049,10 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
             else:
                 wf_update = gr.update(visible=True)
 
-        steps_upd, fps_upd = _refresh_video_generation_defaults_ui(preview, video_workflow_dropdown)
-        return wf_update, steps_upd, fps_upd
+        steps_upd, fps_upd, partner_upd, dims_upd = _refresh_video_generation_defaults_ui(
+            preview, video_workflow_dropdown
+        )
+        return wf_update, steps_upd, fps_upd, partner_upd, dims_upd
 
     def _refresh_image_model_family_ui(preview, workflow_filename=None):
         data = preview if isinstance(preview, dict) else {}
@@ -2102,43 +2142,78 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=custom_css) as demo:
         video_workflow_dd,
         video_steps,
         video_fps,
+        video_partner_hint,
+        dimensions_video_hint,
     ]
 
-    def _on_video_family_change(family_label, wf_dd):
-        data = _sync_video_model_family(family_label)
-        wf_upd, steps_upd, fps_upd = _refresh_video_model_family_ui(data, wf_dd)
-        return data, wf_upd, steps_upd, fps_upd
+    def _on_video_family_change(family_label, wf_dd, preview):
+        data = _sync_video_model_family(family_label, preview)
+        wf_upd, steps_upd, fps_upd, partner_upd, dims_upd = _refresh_video_model_family_ui(
+            data, wf_dd
+        )
+        return data, wf_upd, steps_upd, fps_upd, partner_upd, dims_upd
 
-    def _on_video_workflow_change(wf_dd):
-        preview = _preview_snapshot[0]
+    def _on_video_workflow_change(wf_dd, preview):
+        # Read live preview state, not _preview_snapshot: this fires when the family
+        # switch programmatically updates the dropdown, before the snapshot listener
+        # runs, and a stale base would clobber the just-changed video_model_family.
+        if not isinstance(preview, dict):
+            preview = _preview_snapshot[0]
         if preview is None:
             preview = {}
         data = form.update_json_field(
             preview, "project.inbetween_generation.video_workflow_json", wf_dd
         )
-        steps_upd, fps_upd = _refresh_video_generation_defaults_ui(data, wf_dd)
-        return data, steps_upd, fps_upd
+        steps_upd, fps_upd, partner_upd, dims_upd = _refresh_video_generation_defaults_ui(
+            data, wf_dd
+        )
+        return data, steps_upd, fps_upd, partner_upd, dims_upd
+
+    def _refresh_video_defaults_and_family_visibility(preview, wf_dd):
+        # Default family locks i2v_base.json, so the workflow selector is meaningless
+        # there and must be hidden. This runs on every preview change (incl. project
+        # load), not just when the family radio is toggled.
+        steps_upd, fps_upd, partner_upd, dims_upd = _refresh_video_generation_defaults_ui(
+            preview, wf_dd
+        )
+        data = preview if isinstance(preview, dict) else {}
+        wf_vis = gr.update(visible=not is_default_video_family(data))
+        return wf_vis, steps_upd, fps_upd, partner_upd, dims_upd
 
     preview_code.change(
-        fn=_refresh_video_generation_defaults_ui,
+        fn=_refresh_video_defaults_and_family_visibility,
         inputs=[preview_code, video_workflow_dd],
-        outputs=[video_steps, video_fps],
+        outputs=[video_workflow_dd, video_steps, video_fps, video_partner_hint, dimensions_video_hint],
         queue=False,
         show_progress="hidden",
     )
 
     video_model_family_radio.change(
         fn=_on_video_family_change,
-        inputs=[video_model_family_radio, video_workflow_dd],
+        inputs=[video_model_family_radio, video_workflow_dd, preview_code],
         outputs=[preview_code, *_video_model_family_outputs],
+        queue=False,
+        show_progress="hidden",
+    ).then(
+        # Re-scan the open segment so Start/End "not supported" labels don't go stale
+        # after the effective workflow changes with the Properties panel already open.
+        fn=_eh_node_selected,
+        inputs=[preview_code, node_selector, gr.State(value=None)],
+        outputs=node_selector_outputs,
         queue=False,
         show_progress="hidden",
     )
 
     video_workflow_dd.change(
         fn=_on_video_workflow_change,
-        inputs=[video_workflow_dd],
-        outputs=[preview_code, video_steps, video_fps],
+        inputs=[video_workflow_dd, preview_code],
+        outputs=[preview_code, video_steps, video_fps, video_partner_hint, dimensions_video_hint],
+        queue=False,
+        show_progress="hidden",
+    ).then(
+        fn=_eh_node_selected,
+        inputs=[preview_code, node_selector, gr.State(value=None)],
+        outputs=node_selector_outputs,
         queue=False,
         show_progress="hidden",
     )

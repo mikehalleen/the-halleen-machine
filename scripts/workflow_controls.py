@@ -87,6 +87,7 @@ VIDEO_END_FRAME = "video_end_frame"
 LORA_HIGH = "lora_high"
 LORA_LOW = "lora_low"
 SLOWMO_PRIMER = "slowmo_primer"
+PARTNER_NODE = "partner_node"
 
 SAMPLER_CHAIN_CLASSES = frozenset({"KSampler", "KSamplerAdvanced"})
 LATENT_UPSTREAM_KEYS = ("latent_image", "latent", "samples")
@@ -116,11 +117,12 @@ CONTROL_TAGS: dict[str, list[str]] = {
     FRAME_COUNT: ["THM-FrameCount"],
     FRAME_RATE: ["THM-FrameRate", "THM-FPS"],
     SAVE_VIDEO: ["THM-SaveVideo"],
-    VIDEO_START_FRAME: ["THM-StartFrame"],
-    VIDEO_END_FRAME: ["THM-EndFrame"],
+    VIDEO_START_FRAME: ["THM-StartFrame", "THM-StartImage"],
+    VIDEO_END_FRAME: ["THM-EndFrame", "THM-EndImage"],
     LORA_HIGH: ["THM-Lora-High"],
     LORA_LOW: ["THM-Lora-Low"],
     SLOWMO_PRIMER: ["THM-SlowMoPrimer"],
+    PARTNER_NODE: ["THM-PartnerNode"],
 }
 
 _DEPRECATED_REFERENCE_TAG_PREFIXES = (
@@ -154,6 +156,15 @@ VIDEO_GENERATOR_WIDTH_KEYS = ("width", "W", "out_width", "video_width")
 VIDEO_GENERATOR_HEIGHT_KEYS = ("height", "H", "out_height", "video_height")
 VIDEO_GENERATOR_START_KEYS = ("start_image", "first_frame", "clip_vision_start_image")
 VIDEO_GENERATOR_END_KEYS = ("end_image", "last_frame", "clip_vision_end_image")
+
+# Partner API nodes (THM-PartnerNode) bundle a whole external call on one node;
+# field names vary per provider, so writes are strictly "only if already present".
+PARTNER_PROMPT_KEYS = ("prompt", "positive_prompt")
+PARTNER_NEGATIVE_PROMPT_KEYS = ("negative_prompt",)
+PARTNER_FRAME_COUNT_KEYS = ("length", "frame_count", "num_frames", "frames")
+PARTNER_FRAME_RATE_KEYS = ("frame_rate", "fps")
+PARTNER_WIDTH_KEYS = ("width",)
+PARTNER_HEIGHT_KEYS = ("height",)
 VideoFrameClipType = Literal["SE", "SO", "OE"]
 
 
@@ -3731,6 +3742,8 @@ class VideoCapabilities:
     start_frame_mechanisms: list[str] = field(default_factory=list)
     end_frame_mechanisms: list[str] = field(default_factory=list)
     workflow_baked_sigma_schedules: list[dict[str, Any]] = field(default_factory=list)
+    has_partner_node: bool = False
+    partner_node_classes: list[str] = field(default_factory=list)
 
 
 def discover_workflow_baked_sigma_schedules(workflow: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3768,6 +3781,7 @@ def discover_workflow_baked_sigma_schedules(workflow: dict[str, Any]) -> list[di
 def discover_video_capabilities(workflow: dict[str, Any]) -> VideoCapabilities:
     sampler_caps = discover_video_sampler_capabilities(workflow)
     frame_support = discover_video_frame_input_support(workflow)
+    partner_nodes = find_control_nodes(workflow, PARTNER_NODE)
     caps = VideoCapabilities(
         lora_mode=video_lora_mode(workflow),
         has_video_generator=bool(find_control_nodes(workflow, VIDEO_GENERATOR)),
@@ -3788,6 +3802,8 @@ def discover_video_capabilities(workflow: dict[str, Any]) -> VideoCapabilities:
         start_frame_mechanisms=list(frame_support.start_mechanisms),
         end_frame_mechanisms=list(frame_support.end_mechanisms),
         workflow_baked_sigma_schedules=discover_workflow_baked_sigma_schedules(workflow),
+        has_partner_node=bool(partner_nodes),
+        partner_node_classes=[cn.class_type for cn in partner_nodes],
     )
     return caps
 
@@ -3810,9 +3826,182 @@ class VideoInjectionContext:
     seed_exclude_title: str | None = None
 
 
+PARTNER_SCALE_TITLE_PREFIX = "Injected_PartnerScale_"
+
+
+def inject_partner_frame_scalers(workflow: dict[str, Any], width: Any, height: Any) -> int:
+    """Insert ImageScale (lanczos, crop=center) after each wired frame loader.
+
+    Partner API nodes output a fixed size; keyframes are generated at a
+    model-safe ~1MP bucket, so each THM-StartFrame / THM-EndFrame feeding a
+    THM-PartnerNode is upscale-to-cover + center-cropped to the partner size.
+    Loaders without consumers (disconnected by SO/OE clip config) are skipped.
+    """
+    try:
+        w, h = int(width), int(height)
+    except (TypeError, ValueError):
+        return 0
+    if w <= 0 or h <= 0:
+        return 0
+    if not find_control_nodes(workflow, PARTNER_NODE):
+        return 0
+
+    loaders = find_control_nodes(workflow, VIDEO_START_FRAME) + find_control_nodes(
+        workflow, VIDEO_END_FRAME
+    )
+    inserted = 0
+    for loader in loaders:
+        loader_nid = str(loader.node_id)
+        consumers: list[tuple[str, str]] = []
+        for nid, node in workflow.items():
+            if not isinstance(node, dict) or "inputs" not in node:
+                continue
+            if node_title(node).startswith(PARTNER_SCALE_TITLE_PREFIX):
+                continue  # already scaled on a previous pass (idempotency)
+            for input_name, source in node["inputs"].items():
+                if (
+                    isinstance(source, list)
+                    and len(source) == 2
+                    and str(source[0]) == loader_nid
+                    and source[1] == 0
+                ):
+                    consumers.append((str(nid), input_name))
+        if not consumers:
+            continue
+
+        scaler_id = new_node_id(workflow)
+        workflow[scaler_id] = {
+            "inputs": {
+                "upscale_method": "lanczos",
+                "width": w,
+                "height": h,
+                "crop": "center",
+                "image": [loader_nid, 0],
+            },
+            "class_type": "ImageScale",
+            "_meta": {"title": f"{PARTNER_SCALE_TITLE_PREFIX}{loader_nid}"},
+        }
+        for target_node_id, target_input_name in consumers:
+            workflow[target_node_id]["inputs"][target_input_name] = [scaler_id, 0]
+        inserted += 1
+    return inserted
+
+
+def _write_matching_input_if_present(node: dict[str, Any], keys: tuple[str, ...], value: Any) -> bool:
+    """Write ``value`` to the first key already present on the node's inputs.
+
+    Unlike ``_write_first_matching_input`` this never invents a new field —
+    partner API nodes have fixed provider schemas that reject unknown inputs.
+    """
+    inputs = node.get("inputs") or {}
+    for key in keys:
+        if key in inputs:
+            inputs[key] = value
+            return True
+    return False
+
+
+def set_partner_node_fields(workflow: dict[str, Any], ctx: "VideoInjectionContext") -> int:
+    """Write project-driven values onto THM-PartnerNode inputs when the field exists.
+
+    Enum/opaque provider fields (aspect_ratio, resolution, mode, duration) are
+    never written; they stay workflow-baked.
+    """
+    count = 0
+    for control_node in find_control_nodes(workflow, PARTNER_NODE):
+        node = control_node.node
+        if ctx.positive_prompt:
+            count += _write_matching_input_if_present(node, PARTNER_PROMPT_KEYS, ctx.positive_prompt)
+        if ctx.negative_prompt is not None:
+            count += _write_matching_input_if_present(
+                node, PARTNER_NEGATIVE_PROMPT_KEYS, ctx.negative_prompt
+            )
+        if ctx.frame_count:
+            count += _write_matching_input_if_present(
+                node, PARTNER_FRAME_COUNT_KEYS, int(ctx.frame_count)
+            )
+        if ctx.fps:
+            count += _write_matching_input_if_present(node, PARTNER_FRAME_RATE_KEYS, float(ctx.fps))
+        if ctx.width is not None:
+            count += _write_matching_input_if_present(node, PARTNER_WIDTH_KEYS, int(ctx.width))
+        if ctx.height is not None:
+            count += _write_matching_input_if_present(node, PARTNER_HEIGHT_KEYS, int(ctx.height))
+    return count
+
+
+_KLING_MODE_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*s\b[^/]*duration", re.IGNORECASE)
+_RESOLUTION_ENUM_RE = re.compile(r"^(\d+)p$", re.IGNORECASE)
+_ASPECT_RATIO_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$")
+
+
+def derive_partner_metadata(workflow: dict[str, Any]) -> dict[str, Any] | None:
+    """Read baked duration/size hints from a THM-PartnerNode for UI display.
+
+    Returns None when the workflow has no partner node. Values that cannot be
+    determined are None — never raises. Does not affect injection.
+    """
+    partner_nodes = find_control_nodes(workflow, PARTNER_NODE)
+    if not partner_nodes:
+        return None
+    node = partner_nodes[0].node
+    inputs = node.get("inputs") or {}
+    provider_class = partner_nodes[0].class_type
+
+    duration_sec: float | None = None
+    width: int | None = None
+    height: int | None = None
+    source_fields: dict[str, Any] = {}
+
+    duration_val = inputs.get("duration")
+    if isinstance(duration_val, (int, float)):
+        duration_sec = float(duration_val)
+        source_fields["duration"] = duration_val
+
+    mode_val = inputs.get("mode")
+    if duration_sec is None and isinstance(mode_val, str):
+        match = _KLING_MODE_DURATION_RE.search(mode_val)
+        if match:
+            duration_sec = float(match.group(1))
+        source_fields["mode"] = mode_val
+
+    if isinstance(inputs.get("width"), (int, float)):
+        width = int(inputs["width"])
+        source_fields["width"] = inputs["width"]
+    if isinstance(inputs.get("height"), (int, float)):
+        height = int(inputs["height"])
+        source_fields["height"] = inputs["height"]
+
+    resolution_val = inputs.get("resolution")
+    aspect_val = inputs.get("aspect_ratio")
+    if isinstance(resolution_val, str):
+        source_fields["resolution"] = resolution_val
+    if isinstance(aspect_val, str):
+        source_fields["aspect_ratio"] = aspect_val
+    if height is None and isinstance(resolution_val, str):
+        res_match = _RESOLUTION_ENUM_RE.match(resolution_val.strip())
+        if res_match:
+            height = int(res_match.group(1))
+            if width is None and isinstance(aspect_val, str):
+                ar_match = _ASPECT_RATIO_RE.match(aspect_val.strip())
+                if ar_match and float(ar_match.group(2)) > 0:
+                    ratio = float(ar_match.group(1)) / float(ar_match.group(2))
+                    width = int(round(height * ratio / 8) * 8)
+
+    return {
+        "provider_class": provider_class,
+        "duration_sec": duration_sec,
+        "width": width,
+        "height": height,
+        "source_fields": source_fields,
+    }
+
+
 def apply_video_injection(workflow: dict[str, Any], ctx: VideoInjectionContext) -> VideoCapabilities:
     """Apply tagged/legacy video controls; return capability scan for logging."""
     caps = discover_video_capabilities(workflow)
+    partner_fields = set_partner_node_fields(workflow, ctx)
+    if partner_fields:
+        print(f"[VIDEO] partner node fields written: {partner_fields}")
     if ctx.positive_prompt:
         set_prompt(workflow, ctx.positive_prompt)
     if ctx.negative_prompt is not None:
@@ -3838,6 +4027,16 @@ def apply_video_injection(workflow: dict[str, Any], ctx: VideoInjectionContext) 
         )
     elif ctx.start_frame_path or ctx.end_frame_path:
         set_video_frame_loaders(workflow, ctx.start_frame_path, ctx.end_frame_path)
+    partner_meta = derive_partner_metadata(workflow)
+    if partner_meta and partner_meta.get("width") and partner_meta.get("height"):
+        scalers = inject_partner_frame_scalers(
+            workflow, partner_meta["width"], partner_meta["height"]
+        )
+        if scalers:
+            print(
+                f"[VIDEO] partner frame scalers injected: {scalers} -> "
+                f"{partner_meta['width']}x{partner_meta['height']}"
+            )
     if ctx.lora_specs:
         inject_video_loras(workflow, ctx.lora_specs)
     set_video_seeds(

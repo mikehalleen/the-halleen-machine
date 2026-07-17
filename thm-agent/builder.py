@@ -317,6 +317,11 @@ def create_blank(name: str, *, family: str = "default") -> dict:
     data = _ensure_nonempty_api_base(data, "")
     data, _seq_id = _add_sequence(data)
     data, _kf_id = _add_keyframe(data, _seq_id)
+    if fam == IMAGE_MODEL_FAMILY_CUSTOM and _kf_id:
+        # Shared _add_keyframe resolves a default-family workflow; custom
+        # projects have none, so the placeholder keyframe stays blank until
+        # the user picks a workflow.
+        data["sequences"][_seq_id]["keyframes"][_kf_id]["workflow_json"] = ""
     return _ensure_project(data)
 
 
@@ -488,6 +493,10 @@ def add_keyframe(
         kf["workflow_json"] = workflow
     elif not is_custom_image_family(data):
         kf["workflow_json"] = _workflow_for_characters(data, kf["characters"])
+    else:
+        # Undo the default-family workflow shared _add_keyframe resolved;
+        # custom-family keyframes have no workflow until the user picks one.
+        kf["workflow_json"] = ""
     return data, kf_id
 
 

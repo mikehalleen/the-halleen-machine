@@ -27,6 +27,7 @@ from client.workspace import (
     open_with_default_app,
     preview_dir_for_project,
     reveal_in_explorer,
+    set_gallery_timer_state,
     update_gallery_session,
     group_key_from_filename,
 )
@@ -283,17 +284,32 @@ def cmd_gallery(
     src: Path | None,
     name: str | None,
     note: str | None,
+    status: str | None,
+    mode: str | None,
     pending: str | None,
     change: str | None,
     context: str | None,
+    monitor_current: str | None,
+    monitor_next: str | None,
+    monitor_eta: str | None,
+    monitor_progress: str | None,
+    monitor_clip_done_at: str | None,
+    monitor_batch_done_at: str | None,
+    monitor_avg_sec: str | None,
+    monitor_big: str | None,
+    regen_add: str | None,
+    regen_remove: str | None,
     group: str | None,
     group_note: str | None,
     group_pending: str | None,
+    work_state: str | None,
     as_json: bool,
 ) -> int:
     try:
         if clear:
             clear_preview_dir(project_name)
+        if work_state is not None:
+            set_gallery_timer_state(project_name, work_state)
         if src is not None:
             if not name:
                 if as_json:
@@ -301,18 +317,22 @@ def cmd_gallery(
                 else:
                     print("ERROR: --name required with --src")
                 return 1
-            copied = add_preview_image(project_name, src, name, note=note)
+            copied = add_preview_image(project_name, src, name, note=note, status=status)
             if not copied:
                 if as_json:
                     _print_json({"ok": False, "error": f"Source not found: {src}"})
                 else:
                     print(f"ERROR: source not found: {src}")
                 return 1
-        elif name and note is not None:
+        elif name and (note is not None or status is not None):
+            # Status/note update on an existing item must not bump its recency,
+            # or the monitor hero slot would jump to an old item.
             update_gallery_session(
                 project_name,
                 item_filename=name,
                 item_note=note,
+                item_status=status,
+                bump_item_recency=False,
             )
         effective_group = group
         if effective_group is None and name and (
@@ -321,9 +341,20 @@ def cmd_gallery(
             effective_group = group_key_from_filename(name)
         index_path = build_preview_gallery(
             project_name,
+            mode=mode,
             pending=pending,
             change=change,
             context=context,
+            monitor_current=monitor_current,
+            monitor_next=monitor_next,
+            monitor_eta=monitor_eta,
+            monitor_progress=monitor_progress,
+            monitor_clip_done_at=monitor_clip_done_at,
+            monitor_batch_done_at=monitor_batch_done_at,
+            monitor_avg_sec=monitor_avg_sec,
+            monitor_big=monitor_big,
+            regen_add=regen_add,
+            regen_remove=regen_remove,
             group=effective_group,
             group_note=group_note,
             group_pending=group_pending,
@@ -524,6 +555,112 @@ def cmd_select_keyframe(path: Path, seq_id: str, kf_id: str, image_path: str, *,
     return 0
 
 
+def cmd_select_video(path: Path, seq_id: str, vid_id: str, video_path: str, *, as_json: bool) -> int:
+    try:
+        selection.set_selected_video(path, seq_id, vid_id, video_path)
+    except Exception as e:
+        if as_json:
+            _print_json({"ok": False, "error": str(e)})
+        else:
+            print(f"ERROR: {e}")
+        return 1
+    msg = {
+        "ok": True,
+        "path": str(path),
+        "seq_id": seq_id,
+        "vid_id": vid_id,
+        "selected_video_path": video_path,
+        "reload_browser": "Reload Gradio if open to avoid write clashes.",
+    }
+    if as_json:
+        _print_json(msg)
+    else:
+        print(f"OK: selected {video_path}")
+        print(msg["reload_browser"])
+    return 0
+
+
+def cmd_serve(project_name: str, *, host: str, port: int) -> int:
+    from server.gallery_server import serve_gallery
+
+    try:
+        serve_gallery(project_name, host=host, port=port)
+    except OSError as e:
+        print(f"ERROR: cannot bind {host}:{port}: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_export(path: Path, *, fmt: str, debug_labels: bool, as_json: bool) -> int:
+    """Stitch the project's selected clips into a single file via scripts/run_stitch.py.
+
+    Debug labels (seq:vid[:kf] burned into each clip) are ON by default — this is the
+    "final cut" the monitor features when a run completes. Partner-node clips that have no
+    lossless companion are handled by run_stitch's MP4 frame-extraction fallback.
+    """
+    import subprocess
+
+    stitch = _REPO_ROOT / "scripts" / "run_stitch.py"
+    cmd = [sys.executable, "-u", str(stitch), "--config", str(path), "--format", fmt]
+    if debug_labels:
+        cmd.append("--debug_labels")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except Exception as e:  # noqa: BLE001 — surface any launch failure to the caller
+        if as_json:
+            _print_json({"ok": False, "error": str(e)})
+        else:
+            print(f"ERROR: {e}")
+        return 1
+
+    log = (proc.stdout or "") + (proc.stderr or "")
+    lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    out_path = None
+    if any("Successfully created" in ln for ln in lines) and lines:
+        cand = lines[-1]  # run_stitch prints the created file path as the final line
+        if Path(cand).suffix.lower() in (".mp4", ".mov", ".webm", ".gif"):
+            out_path = cand
+    ok = bool(out_path) and Path(out_path).is_file()
+    payload = {"ok": ok, "output_path": out_path, "debug_labels": debug_labels, "format": fmt}
+    if not ok:
+        payload["log"] = log[-2000:]
+    if as_json:
+        _print_json(payload)
+    else:
+        if ok:
+            print(f"OK: exported {out_path}")
+        else:
+            print("ERROR: export produced no file")
+            print(log[-2000:])
+    return 0 if ok else 1
+
+
+def cmd_notes(project_name: str, action: str, *, as_json: bool) -> int:
+    from server.notes_handler import notes_log_for_project
+
+    log = notes_log_for_project(project_name)
+    if action == "check":
+        queue = log.load_queue()
+        payload = {"ok": True, "project": project_name, **queue}
+    elif action == "pop-urgent":
+        popped = log.pop_urgent()
+        payload = {"ok": True, "project": project_name, "urgent": popped}
+    else:  # clear-batch
+        popped = log.clear_batch()
+        payload = {"ok": True, "project": project_name, "batch": popped}
+
+    if as_json:
+        _print_json(payload)
+    else:
+        notes = [n for key in ("urgent", "batch") for n in payload.get(key, [])]
+        if not notes:
+            print("No notes.")
+        for n in notes:
+            tag = f" [{n['item_id']}]" if n.get("item_id") else ""
+            print(f"{n['priority'].upper()}{tag} {n['ts']}: {n['text']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         resolve_agent_python()
@@ -652,6 +789,72 @@ def main(argv: list[str] | None = None) -> int:
         dest="group_pending",
         help="Pending decision for the --group section",
     )
+    p_gallery.add_argument(
+        "--mode",
+        choices=("review", "monitor"),
+        help="Gallery style: review = full compare, no refresh; monitor = auto-refreshing dashboard",
+    )
+    p_gallery.add_argument(
+        "--status",
+        choices=("in-progress", "pass", "fail"),
+        help="QC status for the --name item (works with or without --src)",
+    )
+    p_gallery.add_argument(
+        "--current",
+        dest="monitor_current",
+        help="Monitor: name of the item currently generating (empty string = idle)",
+    )
+    p_gallery.add_argument(
+        "--next",
+        dest="monitor_next",
+        help="Monitor: what generates after the current item",
+    )
+    p_gallery.add_argument(
+        "--eta",
+        dest="monitor_eta",
+        help="Monitor: ETA text for the current generation/batch",
+    )
+    p_gallery.add_argument(
+        "--progress",
+        dest="monitor_progress",
+        help='Monitor: "done/total" count across all planned generations (e.g. 18/25)',
+    )
+    p_gallery.add_argument(
+        "--clip-done-at",
+        dest="monitor_clip_done_at",
+        help="Monitor: epoch seconds when the current clip should finish (empty clears)",
+    )
+    p_gallery.add_argument(
+        "--batch-done-at",
+        dest="monitor_batch_done_at",
+        help="Monitor: epoch seconds when the batch should finish (empty clears)",
+    )
+    p_gallery.add_argument(
+        "--avg-sec",
+        dest="monitor_avg_sec",
+        help="Monitor: rolling average seconds per clip (used to cost queued regens)",
+    )
+    p_gallery.add_argument(
+        "--regen-add",
+        dest="regen_add",
+        help="Monitor: queue item(s) for regeneration (comma-separated); extends batch ETA immediately",
+    )
+    p_gallery.add_argument(
+        "--regen-remove",
+        dest="regen_remove",
+        help="Monitor: remove item(s) from the regen queue (comma-separated)",
+    )
+    p_gallery.add_argument(
+        "--big",
+        dest="monitor_big",
+        help='Monitor: big-picture lines, newline-separated "Label: text" (empty clears)',
+    )
+    p_gallery.add_argument(
+        "--work-state",
+        dest="work_state",
+        choices=("active", "paused"),
+        help="Toggle the elapsed-time counter; folds the finished span into the total",
+    )
 
     p_sel = sub.add_parser("select", parents=[common], help="Persist selection")
     p_sel_sub = p_sel.add_subparsers(dest="sel_cmd", required=True)
@@ -660,6 +863,11 @@ def main(argv: list[str] | None = None) -> int:
     p_sel_kf.add_argument("--seq", required=True)
     p_sel_kf.add_argument("--kf", required=True)
     p_sel_kf.add_argument("--image", required=True)
+    p_sel_vid = p_sel_sub.add_parser("video", parents=[common])
+    p_sel_vid.add_argument("--project", type=Path, required=True)
+    p_sel_vid.add_argument("--seq", required=True)
+    p_sel_vid.add_argument("--vid", required=True)
+    p_sel_vid.add_argument("--path", required=True, help="Approved video take path")
 
     p_clone = sub.add_parser(
         "clone-from-host",
@@ -675,6 +883,38 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Required: user opted in to clone from host",
     )
+
+    p_serve = sub.add_parser(
+        "serve",
+        parents=[common],
+        help="Serve gallery + note intake over the home LAN (phone monitoring)",
+    )
+    p_serve.add_argument("--project", required=True, help="Project name (JSON filename stem)")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument("--host", default="0.0.0.0")
+
+    p_export = sub.add_parser(
+        "export",
+        parents=[common],
+        help="Stitch selected clips into one file (debug labels on by default) — the run's final cut",
+    )
+    p_export.add_argument("--project", type=Path, required=True)
+    p_export.add_argument("--format", default="mp4", help="Output container (default mp4)")
+    p_export.add_argument(
+        "--no-debug-labels",
+        dest="debug_labels",
+        action="store_false",
+        help="Export without the seq:vid[:kf] debug overlays",
+    )
+    p_export.set_defaults(debug_labels=True)
+
+    p_notes = sub.add_parser(
+        "notes",
+        parents=[common],
+        help="Inspect or drain remote notes queued from the phone",
+    )
+    p_notes.add_argument("notes_cmd", choices=["check", "pop-urgent", "clear-batch"])
+    p_notes.add_argument("--project", required=True, help="Project name (JSON filename stem)")
 
     p_pipe = sub.add_parser("pipeline", parents=[common], help="Long-run pipeline + checkpoints")
     p_pipe_sub = p_pipe.add_subparsers(dest="pipe_cmd", required=True)
@@ -743,22 +983,47 @@ def main(argv: list[str] | None = None) -> int:
             src=args.src,
             name=args.name,
             note=args.note,
+            status=args.status,
+            mode=args.mode,
             pending=args.pending,
             change=args.change,
             context=args.context,
+            monitor_current=args.monitor_current,
+            monitor_next=args.monitor_next,
+            monitor_eta=args.monitor_eta,
+            monitor_progress=args.monitor_progress,
+            monitor_clip_done_at=args.monitor_clip_done_at,
+            monitor_batch_done_at=args.monitor_batch_done_at,
+            monitor_avg_sec=args.monitor_avg_sec,
+            monitor_big=args.monitor_big,
+            regen_add=args.regen_add,
+            regen_remove=args.regen_remove,
             group=args.group,
             group_note=args.group_note,
             group_pending=args.group_pending,
+            work_state=args.work_state,
             as_json=args.json,
         )
     if args.command == "select" and args.sel_cmd == "keyframe":
         return cmd_select_keyframe(
             args.project, args.seq, args.kf, args.image, as_json=args.json,
         )
+    if args.command == "select" and args.sel_cmd == "video":
+        return cmd_select_video(
+            args.project, args.seq, args.vid, args.path, as_json=args.json,
+        )
     if args.command == "clone-from-host":
         return cmd_clone_from_host(
             args.source, args.name, dest=args.dest, approve=args.approve, as_json=args.json,
         )
+    if args.command == "serve":
+        return cmd_serve(args.project, host=args.host, port=args.port)
+    if args.command == "export":
+        return cmd_export(
+            args.project, fmt=args.format, debug_labels=args.debug_labels, as_json=args.json,
+        )
+    if args.command == "notes":
+        return cmd_notes(args.project, args.notes_cmd, as_json=args.json)
     if args.command == "pipeline":
         if args.pipe_cmd == "keyframes":
             return cmd_pipeline_keyframes(

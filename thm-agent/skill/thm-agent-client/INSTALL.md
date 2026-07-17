@@ -22,11 +22,23 @@ Where that is depends on your client — this package does not prescribe it. As
 - Many clients use a project-level skills directory such as `.claude/skills/<name>/`.
 - Some use a client-specific location or a "rules" file that points at the skill.
 
-If you'd rather not copy by hand, use the helper (it copies and fixes links for you):
+If you'd rather not copy by hand, use the helper — it copies the skill, rewrites the
+guides' repo links, and leaves the maintenance-only files behind:
 
 ```
 python install_skill.py --dest <your client's skills dir>
 ```
+
+The helper installs to `<dest>/thm-agent-client/` and **excludes** material that a fresh
+install shouldn't carry: `_archived-notes/` (merged staging + audit history, which holds
+private project notes), any `skill-improvement-notes*` staging file, `INSTALL.md`, the
+installer itself, and build artifacts (`*.zip`, `*.pyc`). Useful flags:
+
+- `--dry-run` — show exactly what would be copied/rewritten/pruned; change nothing
+- `--prune` — also remove files in the destination that are no longer part of the skill
+  (e.g. clean up a previous hand-copy that included `_archived-notes/`)
+- `--keep-relative` — leave the `../../../` links as-is (only correct at the source depth;
+  see the link caveat below)
 
 ## Agent install (self-directed)
 
@@ -38,9 +50,11 @@ skill appears in your skills list. Either:
 python install_skill.py --dest <that directory>
 ```
 
-or copy `thm-agent/skill/thm-agent-client/` there directly (the whole folder, excluding
-`_archived-notes/`). Do not edit the user's global or client config to do this — only
-place the skill folder where your client looks.
+or copy `thm-agent/skill/thm-agent-client/` there directly (the whole folder, but leave
+behind `_archived-notes/`, any `skill-improvement-notes*` staging file, `INSTALL.md`, the
+installer, and `*.zip`/`*.pyc` artifacts — the helper does this filtering for you). Do not
+edit the user's global or client config to do this — only place the skill folder where your
+client looks.
 
 ## Link caveat (and the fix)
 
@@ -50,8 +64,11 @@ the same depth as the canonical folder — 3 levels below the repo root. If you 
 elsewhere:
 
 - **Use `install_skill.py`** — it rewrites those `../../../` links to absolute repo paths
-  on copy, so they resolve from any location, **or**
-- keep the copy at an equivalent depth inside the repo.
+  on copy **by default**, so they resolve from any install location (pass `--keep-relative`
+  to skip the rewrite), **or**
+- keep the copy at an equivalent depth inside the repo (3 levels below the root) — then the
+  relative links resolve unchanged, which is what a hand-copy to `.claude/skills/<name>/`
+  gets you.
 
 The skill drives the THM CLI/builder, so it is meant to live **inside this repo** — it is
 agnostic about which *client* loads it, not about whether the repo is present.

@@ -203,6 +203,32 @@ def _conventional_venv_python() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _read_agent_python_from_toml() -> str:
+    """Read [agent].python straight from config.toml (fork-local, no src/ import).
+
+    src/helpers.py::load_config() rebuilds config from an explicit key allowlist
+    that omits the [agent] section, so going through it always loses
+    [agent].python. We read the raw TOML here instead. See config_helpers note in
+    skill-improvement-notes for the longer-term "drop src dependency" follow-up.
+    """
+    try:
+        import tomllib  # Python 3.11+
+    except Exception:  # pragma: no cover - older interpreters
+        try:
+            import tomli as tomllib  # type: ignore
+        except Exception:
+            return ""
+    config_path = REPO_ROOT / "config.toml"
+    if not config_path.is_file():
+        return ""
+    try:
+        with open(config_path, "rb") as f:
+            toml_data = tomllib.load(f)
+        return str((toml_data.get("agent") or {}).get("python") or "").strip()
+    except Exception:
+        return ""
+
+
 def resolve_agent_python() -> Path:
     """
     Resolve the Python interpreter for thm-agent CLI and pipeline scripts.
@@ -210,14 +236,7 @@ def resolve_agent_python() -> Path:
     Priority: config.toml [agent].python → repo the-machine-ui-venv → fail fast.
     Never falls back to sys.executable (system python).
     """
-    configured = ""
-    try:
-        from helpers import load_config  # noqa: WPS433 — src helper
-
-        cfg = load_config()
-        configured = str((cfg.get("agent") or {}).get("python") or "").strip()
-    except Exception:
-        configured = ""
+    configured = _read_agent_python_from_toml()
 
     if configured:
         path = Path(configured)

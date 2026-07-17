@@ -493,6 +493,9 @@ def post_prompt(api_base, graph, project_name=None, label=None):
         extra_data["machine_ui_project"] = project_name
     if label:
         extra_data["machine_ui_label"] = label
+    comfy_api_key = os.environ.get("THM_COMFY_API_KEY", "").strip()
+    if comfy_api_key:
+        extra_data["api_key_comfy_org"] = comfy_api_key
     r = requests.post(api_base.rstrip("/") + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4()), "extra_data": extra_data}, timeout=60)
     if not r.ok:
         print(f"[COMFY] POST /prompt failed: {r.status_code}")
@@ -979,7 +982,8 @@ def run(config_path, status_file_override=None):
                                 json.dump(graph, f, indent=2, ensure_ascii=False)
                             print(f"[DEBUG] Graph content saved for inspection: {debug_file}")
 
-                            pid = post_prompt(api_base, graph, project_name=project_name, label=id_name)
+                            job_label = f"{seq_id}|{id_name}" if seq_id and seq_id != id_name else id_name
+                            pid = post_prompt(api_base, graph, project_name=project_name, label=job_label)
                             print("[PID]",pid)
                             ok = wait_history_done(api_base, pid, timeout_s=timeout_s)
 

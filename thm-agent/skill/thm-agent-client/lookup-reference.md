@@ -15,7 +15,7 @@ system `python` (see SKILL.md § Environment).
 ### Top level
 
 ```
-cli.py {validate,summarize,comfy-status,discover,images,generate,open,reveal,gallery,select,clone-from-host,pipeline}
+cli.py {validate,summarize,comfy-status,discover,images,generate,open,reveal,gallery,select,export,serve,notes,clone-from-host,pipeline}
 ```
 
 | Command | Args | Purpose |
@@ -29,12 +29,14 @@ cli.py {validate,summarize,comfy-status,discover,images,generate,open,reveal,gal
 | `reveal` | `path [--select]` | Open folder in Explorer; `--select` highlights the file |
 | `gallery` | see below | Build/refresh the additive HTML preview gallery |
 | `select keyframe` | `--project --seq --kf --image` | Persist a keyframe selection |
+| `select video` | `--project --seq --vid --path` | Persist a video selection (`selected_video_path`) — write it the moment a clip passes QC |
+| `export` | `--project [--format mp4] [--no-debug-labels]` | Stitch selected clips into the run's **final cut** (debug labels on by default) |
 | `clone-from-host` | `--source --name [--dest] --approve` | New project JSON with host globals; host file stays read-only |
 | `pipeline {keyframes,record-qc,apply-selections,status}` | see below | Long-run pipeline + checkpoints |
 
-**No `select video` subcommand exists** (only `select keyframe`). To select a video, set
-`sequences[seq].videos[vid].selected_video_path` directly via `builder.load_project_with_fingerprint`
-/ `builder.save_project(expected_fingerprint=...)`.
+`select video` writes `sequences[seq].videos[vid].selected_video_path` with the same stale-write
+fingerprint guard as `select keyframe` (via `selection.set_selected_video`); the JSON is the source
+of truth for a chosen take, not the dashboard tile.
 
 ### `gallery`
 
@@ -44,10 +46,12 @@ cli.py gallery --project NAME [--open] [--clear] [--src SRC] [--name NAME]
                [--group G] [--group-note GN] [--group-pending GP]
 ```
 - `--project` takes the **project name**, not the JSON path.
-- `--clear` is **user-only** — agent must never call it (galleries are additive; see
+- `--clear` is additive-safe policy: agent clears **only** at the startup new-run reset
+  (SKILL.md § startup order step 7); otherwise user-only (galleries are additive; see
   asset-library-guide.md § Never overwrite in-use gallery files).
-- `--src`/`--name` add a new tile; the session-level flags (`--pending`, `--change`, `--context`,
-  `--group*`) annotate the review session, not a specific tile.
+- `--src`/`--name` add a new tile; `--status {in-progress|pass|fail}` sets a tile's QC verdict;
+  the session-level flags (`--pending`, `--change`, `--context`, `--group*`) annotate the
+  dashboard session, not a specific tile.
 
 ### `generate`
 
@@ -158,30 +162,48 @@ action_prompt: str = ""
 
 ---
 
-## Discovering a Custom-family workflow's reference slots
+## Introspecting a workflow you've never seen
 
-Per [schema-reference.md](schema-reference.md), `reference_bindings` node-id keys are
-**workflow-specific** and carry no semantic label in the workflow graph itself — every reference
-slot is a generically-titled `LoadImage` node. To find a *new* workflow's available slots, don't
-guess — extract them directly:
+Users bring their own workflows — never assume node IDs, slot roles, or capabilities from any
+example. Run this procedure on any unfamiliar workflow **before** planning shots against it:
+
+**1. Confirm the export format.** The file must be the API-export format (a flat node-id-keyed
+dict, not the `{"nodes": [...]}` UI-export format — if `json.load` gives you a list under a
+`"nodes"` key instead, you're looking at the wrong export type for this purpose).
+
+**2. Enumerate reference slots and controls.** Per [schema-reference.md](schema-reference.md),
+`reference_bindings` node-id keys are **workflow-specific** and carry no semantic label in the
+workflow graph itself — every reference slot is a generically-titled `LoadImage` node. Extract them
+directly, along with THM control tags (`THM-Prompt`, `THM-ImageSize`, `THM-ImageReference`):
 
 ```python
 import json
 d = json.load(open("workflows/<workflow_name>.json", encoding="utf-8"))
 for node_id, node in d.items():
-    if node.get("class_type") == "LoadImage":
-        print(node_id, node.get("_meta", {}).get("title"))
+    title = node.get("_meta", {}).get("title", "")
+    if node.get("class_type") == "LoadImage" or title.startswith("THM-"):
+        print(node_id, node.get("class_type"), "|", title)
 ```
 
-This is the API-export format (a flat node-id-keyed dict, not the `{"nodes": [...]}` UI-export
-format — if `json.load` gives you a list under a `"nodes"` key instead, you're looking at the wrong
-export type for this purpose).
+**3. Determine start/end-frame support before planning oners or landings.** For a *video*
+workflow, whether it can condition on an end frame decides which `video_plan` shapes are buildable:
+an open-start (landing) beat and any KF→KF chain need end-frame conditioning; a start-only workflow
+renders a oner as **cuts** and cannot land on a keyframe at all. Check this **before**
+storyboarding, not after a failed clip — see [schema-reference.md](schema-reference.md) § Video
+chain logic and [generation-guide.md](generation-guide.md) § Custom / partner video workflows for
+how support varies by node set.
 
-To confirm which node-id maps to which `imageN` slot in the generation prompt (location vs
-character vs style), the mapping is fixed **per workflow** but must be confirmed empirically — run
-one generation with a known single binding active and read the `[REF] prelude` lines in the
-returned `log` field (e.g. `"image2 is a character reference."`). Do not assume slot order is
-sequential/renumbered based on which slots happen to be active — node-id identity is fixed.
+**4. Reference inputs are capabilities, not requirements.** An unbound slot is muted cleanly
+(`[REF] muted inactive {role} subgraph` in the run log) — the workflow generates from prompt alone
+if nothing is bound. And `imageN` numbering **renumbers to the active set**: node-id → *role* is
+fixed per workflow, but the `imageN` index a slot receives is its **position among the active
+(bound, file-exists) references in wiring order** — indices compress to skip unbound slots, so the
+same node-id can be `image2` in one keyframe and `image1` in another with fewer refs bound. Write
+layout `imageN` tags against each keyframe's *active* bindings.
+
+**5. Confirm empirically.** Run one generation with a known single binding active and read the
+`[REF] prelude` lines in the returned `log` field (e.g. `"image1 is a character reference."`) —
+this verifies both the node-id→role wiring and the renumbering for that binding combination.
 
 ---
 

@@ -1,6 +1,6 @@
 # The Halleen Machine
 
-**Version 1.1**  
+**Version 1.1.1**  
 Workflow management system for AI video generation using ComfyUI.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
@@ -76,7 +76,6 @@ https://www.youtube.com/halleen
 ## Road Map
 
 **Short term** 
-Expand beyond the SDXL and Wan2.2 ecosystem
 Batch quality of life improvements (status, task canceling, queue stability)
 Minor UX improvements
 

@@ -18,6 +18,45 @@ from client.config_helpers import REPO_ROOT, resolve_agent_python
 CLI_PATH = REPO_ROOT / "thm-agent" / "cli.py"
 
 
+def _notes_log_for(project: Path | str):
+    """NotesLog for a project JSON path or bare project name."""
+    from server.notes_handler import notes_log_for_project
+
+    name = Path(project).stem if str(project).endswith(".json") else str(project)
+    return notes_log_for_project(name)
+
+
+def check_notes_at_checkpoint(project: Path | str) -> dict[str, list]:
+    """
+    Remote notes waiting in the inbox — call at QC checkpoints.
+
+    Returns {"urgent": [...], "batch": [...]} without clearing anything; batch
+    notes inform the QC decision and are drained with clear_batch_notes()
+    (or `cli.py notes clear-batch`) once acted on.
+    """
+    return _notes_log_for(project).load_queue()
+
+
+def pop_urgent_notes(project: Path | str) -> list[dict]:
+    """
+    Drain urgent remote notes — call before each generation step.
+
+    Popped notes are removed from the queue (still in notes.jsonl for audit);
+    an urgent note may justify interrupting or re-ordering in-flight work.
+    """
+    popped = _notes_log_for(project).pop_urgent()
+    for note in popped:
+        tag = f" [{note['item_id']}]" if note.get("item_id") else ""
+        if str(project).endswith(".json"):
+            append_log(Path(project), f"URGENT note{tag}: {note['text']}")
+    return popped
+
+
+def clear_batch_notes(project: Path | str) -> list[dict]:
+    """Drain batch notes once they have been acted on at a checkpoint."""
+    return _notes_log_for(project).clear_batch()
+
+
 @dataclass
 class VariantRecord:
     index: int
@@ -174,6 +213,8 @@ def generate_single_variant(
     seed: int | None,
     variant_index: int,
 ) -> VariantRecord:
+    pop_urgent_notes(project)  # logs to the run log; may inform interrupt decisions
+
     cmd = [
         "generate", "keyframe",
         "--project", str(project),
@@ -343,6 +384,11 @@ def phase_keyframes_generate(
 
         ok_count = sum(1 for v in beat.variants if v.success)
         append_log(project, f"GENERATED {label}: {ok_count} variant(s) — pending vision QC")
+
+        checkpoint_notes = check_notes_at_checkpoint(project.stem)
+        if checkpoint_notes.get("batch") or checkpoint_notes.get("urgent"):
+            append_log(project, f"Checkpoint notes: {checkpoint_notes}")
+
         save_checkpoint(cp, project)
 
     return True

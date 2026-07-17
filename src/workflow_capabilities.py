@@ -1083,6 +1083,7 @@ class VideoWorkflowScan:
     start_frame_mechanisms: list[str] = field(default_factory=list)
     end_frame_mechanisms: list[str] = field(default_factory=list)
     workflow_baked_sigma_schedules: list[dict[str, Any]] = field(default_factory=list)
+    partner_metadata: dict[str, Any] | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -1105,6 +1106,7 @@ class VideoWorkflowScan:
             "start_frame_mechanisms": list(self.start_frame_mechanisms),
             "end_frame_mechanisms": list(self.end_frame_mechanisms),
             "workflow_baked_sigma_schedules": list(self.workflow_baked_sigma_schedules),
+            "partner_metadata": dict(self.partner_metadata) if self.partner_metadata else None,
             "video": {
                 "lora_mode": video.lora_mode if video else "none",
                 "has_video_generator": bool(video and video.has_video_generator),
@@ -1123,6 +1125,8 @@ class VideoWorkflowScan:
                 "start_frame_mechanisms": list(video.start_frame_mechanisms) if video else [],
                 "end_frame_mechanisms": list(video.end_frame_mechanisms) if video else [],
                 "workflow_baked_sigma_schedules": list(video.workflow_baked_sigma_schedules) if video else [],
+                "has_partner_node": bool(video and video.has_partner_node),
+                "partner_node_classes": list(video.partner_node_classes) if video else [],
             },
         }
 
@@ -1169,6 +1173,45 @@ def scan_video_workflow_capabilities(
         start_frame_mechanisms=list(frame_support.start_mechanisms),
         end_frame_mechanisms=list(frame_support.end_mechanisms),
         workflow_baked_sigma_schedules=list(video.workflow_baked_sigma_schedules),
+        partner_metadata=wc.derive_partner_metadata(workflow),
+    )
+
+
+# SDXL primary training buckets (+ flipped variants), all ~1MP and /64.
+# Safe generation sizes for both SDXL- and Flux-class models; larger sizes
+# (e.g. raw 1920x1080) exceed SDXL's ~1MP training budget and distort anatomy.
+IMAGE_MODEL_BUCKETS: tuple[tuple[int, int], ...] = (
+    (1024, 1024),
+    (1152, 896),
+    (896, 1152),
+    (1216, 832),
+    (832, 1216),
+    (1344, 768),
+    (768, 1344),
+    (1536, 640),
+    (640, 1536),
+)
+
+
+def suggested_image_size_for_video(width: Any, height: Any) -> tuple[int, int] | None:
+    """Model-safe (~1MP, /64) generation size closest in aspect to the video frame.
+
+    The keyframe is later Lanczos upscale-to-cover + center-cropped to the exact
+    video size (ImageScale crop=center), so only aspect-ratio proximity matters
+    here, not absolute pixel match (16:9 video -> 1344x768, 1.6% crop loss).
+    """
+    import math
+
+    try:
+        w, h = int(width), int(height)
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    target_ar = w / h
+    return min(
+        IMAGE_MODEL_BUCKETS,
+        key=lambda b: abs(math.log((b[0] / b[1]) / target_ar)),
     )
 
 
@@ -1230,12 +1273,64 @@ def video_capabilities_summary_line(scan: VideoWorkflowScan | None) -> str:
         f"project_steps={'yes' if scan.project_controls_video_steps else 'no'}",
         f"seed={'yes' if scan.has_video_seed else 'no'}",
     ]
+    if vc.has_partner_node:
+        parts.append(f"partner_node={','.join(vc.partner_node_classes) or 'found'}")
     return " ".join(parts)
 
 
 def log_video_capabilities(scan: VideoWorkflowScan, workflow_label: str = "") -> None:
     label = workflow_label or (Path(scan.workflow_path).name if scan.workflow_path else "workflow")
     print(f"[VIDEO] {label}: {video_capabilities_summary_line(scan)}")
+
+
+def partner_hint_texts(scan: VideoWorkflowScan | None) -> dict[str, Any] | None:
+    """Shared partner-workflow hint strings (Project tab + editor video panel).
+
+    Returns None when the scanned workflow has no partner node. Keys:
+    ``summary`` (provider/duration/size line), ``api_key_warning`` (str or None),
+    ``sizing`` (suggested image size line or None), ``time_locked`` (True when
+    the workflow offers no THM-drivable duration — length is baked in the node).
+    """
+    if not scan or scan.error or not scan.video:
+        return None
+    vc = scan.video
+    if not vc.has_partner_node:
+        return None
+    provider = ", ".join(vc.partner_node_classes) or "unknown provider"
+    pm = scan.partner_metadata or {}
+    duration = pm.get("duration_sec")
+    dur_label = f"{duration:g}s" if duration is not None else "unknown"
+    width, height = pm.get("width"), pm.get("height")
+    if width and height:
+        size_label = f"{width}x{height}"
+    elif height:
+        size_label = f"height {height} (width adaptive)"
+    else:
+        size_label = "adaptive (follows input image)"
+    summary = f"Partner API workflow ({provider}) — baked duration: {dur_label} — size: {size_label}"
+
+    api_key_warning = None
+    if not os.environ.get("THM_COMFY_API_KEY", "").strip():
+        api_key_warning = "**WARNING: THM_COMFY_API_KEY not set** — partner API calls will fail."
+
+    sizing = None
+    suggestion = suggested_image_size_for_video(width, height)
+    if suggestion:
+        sw, sh = suggestion
+        sizing = (
+            f"Video workflow output is {width}x{height} (not size-controllable). "
+            f"Suggested image size: **{sw}x{sh}** (~1MP model-safe; THM upscales + "
+            f"center-crops keyframes to fit the video at run time)."
+        )
+
+    time_locked = not (vc.has_frame_count or vc.has_video_generator)
+    return {
+        "summary": summary,
+        "api_key_warning": api_key_warning,
+        "sizing": sizing,
+        "time_locked": time_locked,
+        "duration_sec": duration,
+    }
 
 
 def format_video_capabilities_markdown(scan: VideoWorkflowScan | None) -> str:
@@ -1291,6 +1386,27 @@ def format_video_capabilities_markdown(scan: VideoWorkflowScan | None) -> str:
     lines.append(_video_bool_line("THM-StartFrame tag", vc.has_start_frame))
     lines.append(_video_bool_line("THM-EndFrame tag", vc.has_end_frame))
     lines.append(_video_bool_line("Legacy WanFirstLastFrameToVideo", vc.has_legacy_wan_generator))
+
+    if vc.has_partner_node:
+        lines.append("")
+        lines.append("**Partner API node:**")
+        classes = ", ".join(f"`{c}`" for c in vc.partner_node_classes) or "detected"
+        lines.append(f"- **THM-PartnerNode:** {classes}")
+        pm = scan.partner_metadata or {}
+        duration = pm.get("duration_sec")
+        lines.append(
+            f"- **Baked duration:** {f'{duration:g}s' if duration is not None else '_unknown_'}"
+        )
+        width, height = pm.get("width"), pm.get("height")
+        if width and height:
+            lines.append(f"- **Baked size:** {width}x{height}")
+            lines.append(
+                f"- **Frame fit:** keyframes upscaled + center-cropped to {width}x{height} at run time"
+            )
+        elif height:
+            lines.append(f"- **Baked size:** height {height} (width adaptive)")
+        else:
+            lines.append("- **Baked size:** adaptive (follows input image)")
 
     lines.append("")
     lines.append("**Timing / output:**")

@@ -44,6 +44,12 @@ Work in this order unless the user directs otherwise:
 
 If the user says *"assets only"*, *"not keyframes yet"*, or similar — **stop** after location/product work. Do not generate seq/kf/video, do not propose storyboard shots, do not set `selected_image_path` on keyframes.
 
+**The location phase applies even when a multi-reference/compositing workflow could generate the environment inline in the keyframe prompt.** Inline one-step generation skips plate review/approval and kills cross-shot reuse — every shot invents its own environment. **Recommended default: plate-first** — generate the location as a setting asset, get it approved/pinned, then bind it in keyframes. But this is a **user check-in point, not an absolute**: inline is a valid choice (fewer steps, less control). When the workflow could do it either way, surface the tradeoff and ask which they prefer — don't silently pick inline.
+
+### Mixed-model pipelines (assets vs keyframes)
+
+Asset generation may use a **different model/workflow than keyframes** — notably SDXL (+LoRAs) to create specific characters or locations, then a multi-reference image-edit workflow (Klein or similar) to composite them in keyframes. Even in a `custom`-family project, the project JSON retains SDXL fields populated from `config.toml [models]` (`model`, `pose_model_fast`, `pose_model_enhanced`, …) plus any SDXL defaults the user saved from the UI — these "hidden" settings stay in the JSON alongside the custom workflow selection and are the **best signal for the user's preferred SDXL settings** when generating assets. Read them from the loaded project; do not assume the custom keyframe workflow governs asset generation.
+
 ### Creator recipe
 
 1. **Identity explore** — clear `reference_image`; distinct prompts; spread seeds → user picks face
@@ -71,6 +77,10 @@ If the user says *"assets only"*, *"not keyframes yet"*, or similar — **stop**
 5. Update sequence `setting_prompt` text to match pinned environment (not old placeholder wording)
 
 **Vocabulary check:** *"straight"* often means **straight-on shelf** (camera facing products), not down-the-aisle. Confirm if ambiguous.
+
+### Scale-reference plate (when subjects get composited into a location)
+
+An **empty** location plate gives a compositing/reference workflow (e.g. Klein) no human-scale anchor, so subjects composited into keyframes come out **giant** relative to the environment. Fix: generate a version of the plate with a single ordinary person at natural height, stating the scale relationship explicitly in the prompt ("the [environment feature] stands only chest-to-shoulder height next to the person, wide establishing shot"). Bind that person-anchored plate as the keyframe's **location** reference and add the scale language to the layout, with a strong count-lock + anti-bystander negatives — the model then renders the real subjects at the reference person's scale and **drops the dummy**. Put the dummy in the **foreground** (not mid/background) or the composited subject inherits its pushed-back position. The setting asset-test path forces a no-people plate, so mint the scale plate via a temp keyframe on a pose workflow with the person in the layout instead.
 
 ---
 
@@ -207,6 +217,10 @@ python thm-agent/cli.py generate asset \
 ```
 
 Use for setting/character asset tests where framing matters more than identity exploration.
+
+### Reference-driven setting tests
+
+A **setting** asset test now injects the setting's own pinned `reference_image` (the asset-test temp sequence carries `setting_id` for setting-type runs, so `resolve_sequence_setting_reference_path()` resolves the pin). This makes real photo/diagram references dramatically improve geometry adherence versus prompt-only attempts (e.g. a downloaded floor-plan/diagram bound as the setting's `reference_image`). **Pre-flight check:** the generation log's `[REF]` line should read `location=1` (with a non-empty `location_path`) when a setting pin is meant to be active — `location=0 location_path=(none)` means the reference isn't reaching the workflow.
 
 ---
 
