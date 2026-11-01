@@ -1,0 +1,67 @@
+{
+  "82078876-ecce-49c3-997f-fecf60ed7adc": {
+    "prompt": [],
+    "outputs": {
+      "36": {
+        "images": [
+          {
+            "filename": "ComfyUI_temp_djtcp_00001_.png",
+            "subfolder": "",
+            "type": "temp"
+          }
+        ]
+      },
+      "74": {
+        "images": [
+          {
+            "filename": "test-v2_seq1_id1_00002_.png",
+            "subfolder": "test-v2\\seq1\\id1",
+            "type": "output"
+          }
+        ]
+      }
+    },
+    "status": {
+      "status_str": "success",
+      "completed": true,
+      "messages": [
+        [
+          "execution_start",
+          {
+            "prompt_id": "82078876-ecce-49c3-997f-fecf60ed7adc",
+            "timestamp": 1788732668867
+          }
+        ],
+        [
+          "execution_cached",
+          {
+            "nodes": [],
+            "prompt_id": "82078876-ecce-49c3-997f-fecf60ed7adc",
+            "timestamp": 1788732668874
+          }
+        ],
+        [
+          "execution_success",
+          {
+            "prompt_id": "82078876-ecce-49c3-997f-fecf60ed7adc",
+            "timestamp": 1788732684310
+          }
+        ]
+      ]
+    },
+    "meta": {
+      "36": {
+        "node_id": "36",
+        "display_node": "36",
+        "parent_node": null,
+        "real_node_id": "36"
+      },
+      "74": {
+        "node_id": "74",
+        "display_node": "74",
+        "parent_node": null,
+        "real_node_id": "74"
+      }
+    }
+  }
+}

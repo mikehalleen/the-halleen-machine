@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Install the generic `thm-agent-client` Agent Skill into a directory you choose.
+"""Install the `thm-agent` Agent Skill (the 2.x client skill) into a directory you choose.
 
 This is deliberately client-agnostic: it does NOT detect your editor, does NOT
 manage `.claude/`, `.cursor/`, or any client config, and does NOT guess where your
@@ -8,10 +8,10 @@ self-contained skill there.
 
 Usage:
     python install_skill.py --print-path          # show the canonical skill path, do nothing
-    python install_skill.py --dest <DIR>          # copy the skill into <DIR>/thm-agent-client/
+    python install_skill.py --dest <DIR>          # copy the skill into <DIR>/thm-agent/
     python install_skill.py --dest <DIR> --force  # overwrite an existing install
 
-See thm-agent/skill/thm-agent-client/INSTALL.md for where each client discovers skills.
+The skill is self-contained: SKILL.md plus its reference files (recipes, qc, iteration, params).
 """
 
 import argparse
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
-SKILL_NAME = "thm-agent-client"
+SKILL_NAME = "thm-agent"
 CANONICAL_SKILL_DIR = REPO_ROOT / "thm-agent" / "skill" / SKILL_NAME
 
 # Outbound links in the guides use this repo-relative prefix, which only resolves
@@ -40,7 +40,7 @@ def _rewrite_outbound_links(md_path: Path) -> None:
 
 
 def install_skill(dest: Path, force: bool = False) -> Path:
-    """Copy the skill folder into dest/thm-agent-client/. Returns the install path."""
+    """Copy the skill folder into dest/thm-agent/. Returns the install path."""
     if not CANONICAL_SKILL_DIR.is_dir():
         raise FileNotFoundError(f"Canonical skill not found at {CANONICAL_SKILL_DIR}")
 
@@ -76,14 +76,13 @@ def _print_path() -> None:
     print("")
     print("To install into your agent client's skill directory:")
     print(f"  python install_skill.py --dest <YOUR_CLIENT_SKILLS_DIR>")
-    print("See thm-agent/skill/thm-agent-client/INSTALL.md for details.")
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Install the generic thm-agent-client Agent Skill into a directory you choose."
+        description="Install the thm-agent Agent Skill into a directory you choose."
     )
-    parser.add_argument("--dest", help="Destination directory; skill copied to <dest>/thm-agent-client/")
+    parser.add_argument("--dest", help="Destination directory; skill copied to <dest>/thm-agent/")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing install")
     parser.add_argument("--print-path", action="store_true", help="Print the canonical skill path and exit")
     args = parser.parse_args(argv)

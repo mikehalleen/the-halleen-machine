@@ -5,9 +5,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from helpers import inject_the_machine_snapshot, wait_for_file_stable
+from thm_core.runner_helpers import inject_the_machine_snapshot, wait_for_file_stable
 
 
 def test_wait_for_file_stable_small_png():

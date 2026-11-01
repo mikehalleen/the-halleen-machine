@@ -6,6 +6,7 @@ controllable nodes in an already-loaded ComfyUI workflow dictionary.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -88,6 +89,7 @@ LORA_HIGH = "lora_high"
 LORA_LOW = "lora_low"
 SLOWMO_PRIMER = "slowmo_primer"
 PARTNER_NODE = "partner_node"
+VIDEO_REFERENCE = "video_reference"
 
 SAMPLER_CHAIN_CLASSES = frozenset({"KSampler", "KSamplerAdvanced"})
 LATENT_UPSTREAM_KEYS = ("latent_image", "latent", "samples")
@@ -102,7 +104,7 @@ CONTROL_TAGS: dict[str, list[str]] = {
     CHECKPOINT: ["THM-Checkpoint"],
     LORA: ["THM-LoraAfterThisNode", "THM-Lora"],
     POSE_REFERENCE: [],  # legacy MainImageAndMask only — no THM tag
-    IMAGE_REFERENCE: ["THM-ImageReference"],
+    IMAGE_REFERENCE: ["THM-ImageReference", "THM-ReferenceImage"],  # the second is the common transposition
     SAVE_IMAGE: ["THM-SaveImage"],
     SEED: ["THM-Seed"],
     STEPS: ["THM-Steps"],
@@ -123,6 +125,7 @@ CONTROL_TAGS: dict[str, list[str]] = {
     LORA_LOW: ["THM-Lora-Low"],
     SLOWMO_PRIMER: ["THM-SlowMoPrimer"],
     PARTNER_NODE: ["THM-PartnerNode"],
+    VIDEO_REFERENCE: ["THM-VideoReference", "THM-ReferenceVideo"],  # same: accepted, not documented
 }
 
 _DEPRECATED_REFERENCE_TAG_PREFIXES = (
@@ -700,6 +703,91 @@ def clear_tagged_reference_nodes(workflow: dict[str, Any]) -> int:
     for control_node in find_tagged_control_nodes(workflow, IMAGE_REFERENCE):
         _write_image_input_on_control_node(control_node, "")
         count += 1
+    return count
+
+
+# --- Video reference slots (THM-VideoReference) ---------------------------------
+#
+# Reference clips for video-to-video workflows. Unlike THM-StartFrame / THM-EndFrame
+# (frame-exact anchors), a video reference is influence only and gets a positional
+# token in the prompt. There is no ReferenceLatent chain for video, so slot order is
+# numeric node id ascending; non-numeric ids follow in string order. No cap: the
+# workflow decides how many slots it exposes. The 1.x Gradio app ignores these slots.
+
+VIDEO_LOADER_PATH_KEYS = ("video", "file", "filename", "path", "video_path")
+
+
+@dataclass(frozen=True)
+class VideoReferenceSlot:
+    node_id: str
+    title: str
+    class_type: str
+    ordinal: int  # 1-based position in node-id order
+    binding_key: str  # == node_id; key into paths_by_slot
+
+
+def _node_id_sort_key(node_id: str) -> tuple[int, int, str]:
+    s = str(node_id)
+    return (0, int(s), "") if s.isdigit() else (1, 0, s)
+
+
+def discover_video_reference_slots(workflow: dict[str, Any]) -> list[VideoReferenceSlot]:
+    """Discover every ``THM-VideoReference`` node, ordered by node id."""
+    seen: set[str] = set()
+    raw: list[ControlNode] = []
+    for control_node in find_tagged_control_nodes(workflow, VIDEO_REFERENCE):
+        if control_node.node_id in seen:
+            continue
+        if control_node.slot:
+            _console_print(
+                f"[REF] Workflow uses suffixed THM-VideoReference tag "
+                f"({control_node.title}); use duplicate bare titles only."
+            )
+        seen.add(control_node.node_id)
+        raw.append(control_node)
+    raw.sort(key=lambda cn: _node_id_sort_key(cn.node_id))
+    return [
+        VideoReferenceSlot(
+            node_id=cn.node_id,
+            title=cn.title,
+            class_type=cn.class_type,
+            ordinal=i + 1,
+            binding_key=cn.node_id,
+        )
+        for i, cn in enumerate(raw)
+    ]
+
+
+def _write_video_input_on_control_node(control_node: ControlNode, path: str) -> None:
+    inputs = control_node.node.get("inputs") or {}
+    key = next((k for k in VIDEO_LOADER_PATH_KEYS if k in inputs), VIDEO_LOADER_PATH_KEYS[0])
+    set_input(control_node.node, key, path or "")
+
+
+def clear_tagged_video_reference_nodes(workflow: dict[str, Any]) -> int:
+    """Clear the path input on all ``THM-VideoReference`` nodes."""
+    count = 0
+    for control_node in find_tagged_control_nodes(workflow, VIDEO_REFERENCE):
+        _write_video_input_on_control_node(control_node, "")
+        count += 1
+    return count
+
+
+def inject_video_reference_slot_paths(
+    workflow: dict[str, Any],
+    slots: list[VideoReferenceSlot],
+    paths_by_slot: dict[str, str],
+) -> int:
+    """Write ``paths_by_slot[slot.binding_key]`` (or blank) onto each video reference node."""
+    count = 0
+    for slot in slots:
+        path = paths_by_slot.get(slot.binding_key, "")
+        for control_node in find_tagged_control_nodes(workflow, VIDEO_REFERENCE):
+            if control_node.node_id != slot.node_id:
+                continue
+            _write_video_input_on_control_node(control_node, path)
+            count += 1
+            break
     return count
 
 
@@ -1753,29 +1841,38 @@ def _apply_branch_skip_rewire(
     entries: list[ReferenceWiringEntry],
     active_by_role: dict[str, bool],
 ) -> int:
-    """Rewire conditioning in one ReferenceLatent stack to skip inactive roles."""
-    changes = 0
-    for i, entry in enumerate(entries):
-        if active_by_role.get(entry.role):
-            continue
-        changes += _mute_role_reference_subgraph(workflow, entry.load_image_id)
+    """Compact one ReferenceLatent stack: point each active hop's conditioning at the
+    nearest active predecessor (or the stack root) and mute inactive hops.
 
-        upstream = entry.upstream_conditioning
-        if not upstream:
+    Walking the chain in order and only advancing the "last good conditioning" past
+    active hops guarantees an active hop never inherits conditioning from a muted hop.
+    The old per-inactive-hop rewire broke when two inactive hops sat back-to-back: the
+    second one re-pointed the next active hop at the first (muted) hop, dragging its
+    empty LoadImage back into the execution path (ComfyUI's API ignores node mute, so a
+    reachable empty loader still runs and fails on the input folder)."""
+    changes = 0
+    if not entries:
+        return 0
+    prev_conditioning = (
+        list(entries[0].upstream_conditioning)
+        if entries[0].upstream_conditioning
+        else None
+    )
+    for entry in entries:
+        if not active_by_role.get(entry.role):
+            changes += _mute_role_reference_subgraph(workflow, entry.load_image_id)
             continue
-        for j in range(i + 1, len(entries)):
-            next_entry = entries[j]
-            if not active_by_role.get(next_entry.role):
-                continue
-            next_ref = workflow.get(next_entry.reference_latent_id)
-            if isinstance(next_ref, dict):
-                next_ref.setdefault("inputs", {})["conditioning"] = list(upstream)
+        ref_node = workflow.get(entry.reference_latent_id)
+        if isinstance(ref_node, dict) and prev_conditioning is not None:
+            current = list(ref_node.get("inputs", {}).get("conditioning") or [])
+            if current != prev_conditioning:
+                ref_node.setdefault("inputs", {})["conditioning"] = list(prev_conditioning)
                 changes += 1
                 _console_print(
-                    f"[REF] branch inactive: {entry.role} "
-                    f"(rewired {next_entry.reference_latent_id} conditioning -> {upstream[0]})"
+                    f"[REF] branch skip: {entry.role} "
+                    f"(rewired {entry.reference_latent_id} conditioning -> {prev_conditioning[0]})"
                 )
-            break
+        prev_conditioning = [entry.reference_latent_id, 0]
     return changes
 
 
@@ -1937,7 +2034,7 @@ def _prelude_line_for_role(role: str, image_index: int, binding_semantic: str | 
     if role == "location" or sem == "location":
         return f"image{image_index} is the setting and location reference."
     if role == "style" or sem == "style":
-        return f"image{image_index} is the style reference."
+        return f"image{image_index} is another reference."
     return ""
 
 
@@ -2644,11 +2741,142 @@ def _is_comfy_prompt_node(value: Any) -> bool:
     return isinstance(value, dict) and bool(value.get("class_type"))
 
 
+# Orphan text carriers the app reads (thm_core/enhancer.py) and ComfyUI never should: a
+# ``CLIPTextEncode`` with no clip wired in would fail validation if anything consumed it.
+ENHANCER_TITLE_PREFIX = "THM-Enhancer"
+
+
 def strip_prompt_metadata(workflow: dict[str, Any]) -> None:
-    """Remove non-node keys (e.g. ``_is_flux2``) before posting to ComfyUI ``/prompt``."""
+    """Remove non-node keys (e.g. ``_is_flux2``) and enhancer carrier nodes before posting to ``/prompt``."""
     for key in list(workflow.keys()):
-        if not _is_comfy_prompt_node(workflow.get(key)):
+        node = workflow.get(key)
+        if not _is_comfy_prompt_node(node) or node_title(node).startswith(ENHANCER_TITLE_PREFIX):
             del workflow[key]
+
+
+# ComfyUI hardened ``LoadImage`` validation: ``folder_paths.exists_annotated_filepath``
+# now requires the resolved path to stay inside the input/output/temp dirs, so a bare
+# absolute path fails with "Invalid image file". Reference paths under the Comfy output
+# tree are re-expressed as ``rel [output]``; anything else is uploaded to the input dir.
+# The upload-style video loaders (VHS_LoadVideo, core LoadVideo) resolve their path the same
+# way and fail the same way ("Invalid video file"); VHS_LoadVideoPath takes any absolute path
+# and is left alone.
+COMFY_IMAGE_LOADER_CLASSES = ("LoadImage", "LoadImageMask")
+COMFY_ANNOTATED_LOADERS: dict[str, str] = {
+    "LoadImage": "image",
+    "LoadImageMask": "image",
+    "VHS_LoadVideo": "video",
+    "LoadVideo": "file",
+}
+_COMFY_PATH_ANNOTATIONS = ("[output]", "[input]", "[temp]")
+_COMFY_UPLOAD_SUBFOLDER = "thm-refs"
+_comfy_upload_cache: dict[str, str] = {}
+
+
+def _path_under(root: str, path: str) -> str:
+    """``path`` relative to ``root`` with forward slashes, or "" when outside it."""
+    if not root:
+        return ""
+    try:
+        rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
+    except ValueError:
+        # Different drives on Windows, or an embedded null byte.
+        return ""
+    if os.path.isabs(rel) or rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return ""
+    return rel.replace(os.sep, "/")
+
+
+def _upload_image_to_comfy_input(api_base: str, path: str) -> str:
+    """Upload a local image into the ComfyUI input dir; return its ``subfolder/name``."""
+    if not api_base or not os.path.isfile(path):
+        return ""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return ""
+    fingerprint = f"{os.path.abspath(path)}|{info.st_mtime_ns}|{info.st_size}"
+    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:10]
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(path).stem)[:48] or "ref"
+    name = f"{stem}_{digest}{Path(path).suffix.lower() or '.png'}"
+    cache_key = f"{api_base}|{name}"
+    cached = _comfy_upload_cache.get(cache_key)
+    if cached:
+        return cached
+    try:
+        import requests  # local import: this module stays dependency-free for callers
+
+        with open(path, "rb") as handle:
+            response = requests.post(
+                api_base.rstrip("/") + "/upload/image",
+                files={"image": (name, handle, "application/octet-stream")},
+                data={"type": "input", "subfolder": _COMFY_UPLOAD_SUBFOLDER, "overwrite": "true"},
+                timeout=120,
+            )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        _console_print(f"[REF] Upload to ComfyUI input failed for {path}: {exc}")
+        return ""
+    uploaded_name = str(payload.get("name") or name)
+    subfolder = str(payload.get("subfolder") or "").strip("/")
+    reference = f"{subfolder}/{uploaded_name}" if subfolder else uploaded_name
+    _comfy_upload_cache[cache_key] = reference
+    return reference
+
+
+def annotate_comfy_image_inputs(
+    workflow: dict[str, Any],
+    output_root: str = "",
+    api_base: str = "",
+) -> int:
+    """Rewrite absolute paths on annotated-path loaders (``LoadImage``, ``VHS_LoadVideo``,
+    ``LoadVideo``) into ComfyUI-annotated references.
+
+    ``output_root`` is the ComfyUI output directory (project ``comfy.output_root``);
+    the sibling ``input``/``temp`` dirs are picked up from it when they exist.
+    """
+    roots: list[tuple[str, str]] = []
+    output_root = str(output_root or "").strip()
+    if output_root:
+        roots.append((output_root, "output"))
+        comfy_home = Path(output_root).parent
+        for folder in ("input", "temp"):
+            candidate = comfy_home / folder
+            if candidate.is_dir():
+                roots.append((str(candidate), folder))
+    count = 0
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        key = COMFY_ANNOTATED_LOADERS.get(node_class(node) or "")
+        if not key:
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        value = inputs.get(key)
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if not value or value.endswith(_COMFY_PATH_ANNOTATIONS) or not os.path.isabs(value):
+            continue
+        replacement = ""
+        for root, tag in roots:
+            rel = _path_under(root, value)
+            if rel:
+                replacement = f"{rel} [{tag}]"
+                break
+        if not replacement:
+            uploaded = _upload_image_to_comfy_input(api_base, value)
+            if uploaded:
+                replacement = f"{uploaded} [input]"
+        if not replacement:
+            _console_print(f"[REF] Could not express reference path for ComfyUI: {value}")
+            continue
+        inputs[key] = replacement
+        count += 1
+    return count
 
 
 def rewire_model_consumers(
@@ -3723,6 +3951,171 @@ def discover_video_frame_input_support(workflow: dict[str, Any]) -> VideoFrameIn
     )
 
 
+# Guide classes that pass their conditioning/latent through unchanged, so an unused
+# frame branch can be bypassed the way ComfyUI's UI bypass does: each output slot is
+# re-pointed at the source feeding the same-named input.
+GUIDE_PASSTHROUGH_OUTPUTS: dict[str, tuple[str, ...]] = {
+    "LTXVAddGuide": ("positive", "negative", "latent"),
+    "LTXVAddLatentGuide": ("positive", "negative", "latent"),
+}
+VIDEO_GENERATOR_START_INPUT_KEYS = ("start_image", "start_frame")
+VIDEO_GENERATOR_END_INPUT_KEYS = ("end_image", "end_frame")
+# Terminal nodes have no consumers by definition, so orphan pruning must skip them.
+OUTPUT_NODE_CLASSES = VIDEO_SAVE_CLASSES + ("SaveImage", "SaveAnimatedWEBP", "SaveWEBM", "PreviewImage")
+
+
+def _input_consumers(workflow: dict[str, Any], node_id: str) -> list[tuple[str, str, int]]:
+    """Every ``(consumer_id, input_key, output_slot)`` referencing ``node_id``."""
+    found: list[tuple[str, str, int]] = []
+    for consumer_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        for key, value in (node.get("inputs") or {}).items():
+            if isinstance(value, list) and len(value) == 2 and str(value[0]) == str(node_id):
+                found.append((str(consumer_id), key, int(value[1])))
+    return found
+
+
+def bypass_passthrough_node(
+    workflow: dict[str, Any],
+    node_id: str,
+    passthrough_keys: tuple[str, ...],
+) -> int:
+    """Re-point consumers past ``node_id`` and drop it, mirroring ComfyUI bypass.
+
+    ComfyUI's API ignores node mode, so an unused branch has to actually leave the
+    graph — muting it would still drag its empty loader into the execution path.
+    """
+    node = workflow.get(node_id)
+    if not isinstance(node, dict):
+        return 0
+    inputs = node.get("inputs") or {}
+    changes = 0
+    for consumer_id, key, slot in _input_consumers(workflow, node_id):
+        if slot >= len(passthrough_keys):
+            continue
+        source = inputs.get(passthrough_keys[slot])
+        if not isinstance(source, list):
+            continue
+        workflow[consumer_id].setdefault("inputs", {})[key] = list(source)
+        changes += 1
+    del workflow[node_id]
+    return changes
+
+
+def _prune_orphan_nodes(workflow: dict[str, Any], protect: set[str] | None = None) -> int:
+    """Drop nodes nothing consumes, except outputs and tagged controls THM writes to."""
+    protect = protect or set()
+    removed = 0
+    while True:
+        dead = None
+        for node_id, node in workflow.items():
+            if not isinstance(node, dict) or node_id in protect:
+                continue
+            cls = node_class(node)
+            if cls in OUTPUT_NODE_CLASSES or node_title(node).startswith(TAG_PREFIX):
+                continue
+            if not _input_consumers(workflow, node_id):
+                dead = node_id
+                break
+        if dead is None:
+            return removed
+        del workflow[dead]
+        removed += 1
+
+
+def deactivate_empty_reference_loaders(workflow: dict[str, Any], controls: tuple[str, ...] = (IMAGE_REFERENCE, VIDEO_REFERENCE)) -> int:
+    """Drop the tagged reference loaders that got no path this run, and unlink them.
+
+    A workflow declares as many ``THM-ImageReference`` / ``THM-VideoReference`` slots as it
+    could use; a shot binds however many it has. ComfyUI's API ignores node mode, and a
+    loader left with an empty path still executes - ``LoadImage`` opens the input folder as
+    a file, ``VHS_LoadVideo`` reports the input folder "could not be loaded with cv" - so an
+    unused slot has to leave the graph. Its consumer loses that one input (an optional
+    ``ref_image_N`` on a reference-to-video node); a single-input node in between (a resize)
+    goes with it. The linear ``ReferenceLatent`` stack has its own bypass and is left alone.
+    """
+    linear = discover_reference_wiring_order(workflow).tier == "linear_ref_stack"
+    removed = 0
+    for control in controls:
+        if control == IMAGE_REFERENCE and linear:
+            continue
+        keys = ("image",) if control == IMAGE_REFERENCE else VIDEO_LOADER_PATH_KEYS
+        for control_node in find_tagged_control_nodes(workflow, control):
+            inputs = control_node.node.get("inputs") or {}
+            path = next((inputs.get(k) for k in keys if k in inputs), None)
+            if not isinstance(path, str) or path.strip():
+                continue  # a real path, or a linked input rather than a path: not ours to drop
+            _drop_branch(workflow, control_node.node_id)
+            removed += 1
+            _console_print(f"[REF] unused reference slot {control_node.node_id} ({control_node.title}): dropped")
+    return removed
+
+
+def _drop_branch(workflow: dict[str, Any], node_id: str) -> None:
+    """Delete ``node_id``; a consumer that only had this one link goes too, a consumer with
+    other links just loses the key."""
+    consumers = _input_consumers(workflow, node_id)
+    workflow.pop(node_id, None)
+    for consumer_id, key, _ in consumers:
+        node = workflow.get(consumer_id)
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs") or {}
+        linked = [k for k, v in inputs.items() if isinstance(v, list) and len(v) == 2]
+        if linked == [key] and node_class(node) not in OUTPUT_NODE_CLASSES:
+            _drop_branch(workflow, consumer_id)
+        else:
+            inputs.pop(key, None)
+
+
+def _ltx_guide_role(node: dict[str, Any]) -> str:
+    """LTX guides address frames by index: 0 is the start frame, -1 the last."""
+    frame_idx = (node.get("inputs") or {}).get("frame_idx")
+    if not isinstance(frame_idx, (int, float)):
+        return ""
+    return "start" if int(frame_idx) == 0 else "end"
+
+
+def deactivate_video_frame_branch(workflow: dict[str, Any], role: str) -> int:
+    """Remove the start or end keyframe branch for an open-ended clip.
+
+    Covers both shapes THM sees: a pass-through guide node (LTX) gets bypassed and
+    dropped, while an optional generator input (``end_image`` on WAN-style nodes) is
+    simply unlinked. Orphaned loader/preprocess nodes left behind are pruned so the
+    empty ``LoadImage`` can't fail validation.
+
+    Whatever image the saved workflow happens to hold is irrelevant: workflows are
+    templates, and anything sitting in an injection-tagged node is placeholder that a
+    run overwrites. An unused branch goes regardless of what is parked in it.
+    """
+    changes = 0
+    for node_id, node in list(workflow.items()):
+        if not isinstance(node, dict):
+            continue
+        passthrough = GUIDE_PASSTHROUGH_OUTPUTS.get(node_class(node))
+        if not passthrough or _ltx_guide_role(node) != role:
+            continue
+        if bypass_passthrough_node(workflow, str(node_id), passthrough):
+            changes += 1
+            _console_print(f"[VIDEO] {role} frame branch: bypassed guide {node_id}")
+
+    keys = VIDEO_GENERATOR_END_INPUT_KEYS if role == "end" else VIDEO_GENERATOR_START_INPUT_KEYS
+    for control_node in find_control_nodes(workflow, VIDEO_GENERATOR):
+        inputs = control_node.node.get("inputs") or {}
+        for key in keys:
+            if isinstance(inputs.get(key), list):
+                del inputs[key]
+                changes += 1
+                _console_print(f"[VIDEO] {role} frame branch: unlinked {control_node.node_id}.{key}")
+
+    if changes:
+        pruned = _prune_orphan_nodes(workflow)
+        if pruned:
+            _console_print(f"[VIDEO] {role} frame branch: pruned {pruned} orphaned node(s)")
+    return changes
+
+
 @dataclass
 class VideoCapabilities:
     lora_mode: Literal["none", "single", "dual"] = "none"
@@ -3744,6 +4137,8 @@ class VideoCapabilities:
     workflow_baked_sigma_schedules: list[dict[str, Any]] = field(default_factory=list)
     has_partner_node: bool = False
     partner_node_classes: list[str] = field(default_factory=list)
+    video_reference_count: int = 0
+    video_reference_node_ids: list[str] = field(default_factory=list)
 
 
 def discover_workflow_baked_sigma_schedules(workflow: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3782,6 +4177,7 @@ def discover_video_capabilities(workflow: dict[str, Any]) -> VideoCapabilities:
     sampler_caps = discover_video_sampler_capabilities(workflow)
     frame_support = discover_video_frame_input_support(workflow)
     partner_nodes = find_control_nodes(workflow, PARTNER_NODE)
+    video_refs = discover_video_reference_slots(workflow)
     caps = VideoCapabilities(
         lora_mode=video_lora_mode(workflow),
         has_video_generator=bool(find_control_nodes(workflow, VIDEO_GENERATOR)),
@@ -3804,6 +4200,8 @@ def discover_video_capabilities(workflow: dict[str, Any]) -> VideoCapabilities:
         workflow_baked_sigma_schedules=discover_workflow_baked_sigma_schedules(workflow),
         has_partner_node=bool(partner_nodes),
         partner_node_classes=[cn.class_type for cn in partner_nodes],
+        video_reference_count=len(video_refs),
+        video_reference_node_ids=[s.node_id for s in video_refs],
     )
     return caps
 
@@ -4037,8 +4435,9 @@ def apply_video_injection(workflow: dict[str, Any], ctx: VideoInjectionContext) 
                 f"[VIDEO] partner frame scalers injected: {scalers} -> "
                 f"{partner_meta['width']}x{partner_meta['height']}"
             )
-    if ctx.lora_specs:
-        inject_video_loras(workflow, ctx.lora_specs)
+    # Always run: a single-path marker is THM-owned, so its baked LoRA must be neutralised
+    # even when nothing is selected (dual mode returns early on an empty list).
+    inject_video_loras(workflow, ctx.lora_specs)
     set_video_seeds(
         workflow,
         int(ctx.seed),

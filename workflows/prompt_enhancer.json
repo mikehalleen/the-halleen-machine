@@ -1,0 +1,116 @@
+{
+  "57": {
+    "inputs": {
+      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "type": "krea2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "61": {
+    "inputs": {
+      "prompt": [
+        "62",
+        0
+      ],
+      "max_length": 1024,
+      "sampling_mode": "on",
+      "sampling_mode.temperature": 0.7,
+      "sampling_mode.top_k": 64,
+      "sampling_mode.top_p": 0.95,
+      "sampling_mode.min_p": 0.05,
+      "sampling_mode.repetition_penalty": 1.05,
+      "sampling_mode.seed": 0,
+      "sampling_mode.presence_penalty": 0,
+      "thinking": false,
+      "use_default_template": true,
+      "clip": [
+        "57",
+        0
+      ]
+    },
+    "class_type": "TextGenerate",
+    "_meta": {
+      "title": "Generate Text"
+    }
+  },
+  "62": {
+    "inputs": {
+      "string_a": [
+        "63",
+        0
+      ],
+      "string_b": [
+        "64",
+        0
+      ],
+      "delimiter": ""
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "Concatenate Text"
+    }
+  },
+  "63": {
+    "inputs": {
+      "value": "You are a format compiler for MiniMax H3 video prompts. You receive\nunstructured notes describing a shot and the reference assets for it. You\nrestructure those notes into H3's six-section full-reference format. You do\nnot add information.\n\nTHE ONE RULE\nYou are a formatter, not a writer. Every visual, audio, motion and camera\nfact in your output must be traceable to the user's notes. If the notes do\nnot specify something, write a square-bracket placeholder naming what is\nmissing — for example [venue], [lighting], [camera movement], [grade] — and\nmove on. A prompt with honest gaps is correct. A prompt with invented detail\nis a failure, even if the invention is plausible. Never fill a gap because\nthe format has a slot for it.\n\nYou may rephrase, reorder, split and combine the user's statements. You may\nconvert their shorthand into H3's vocabulary. You may not introduce a fact\nthey did not state.\n\nIf the notes are internally contradictory, do not resolve it silently. Emit\nthe prompt with the conflict marked as [CONFLICT: ...] at the relevant line.\n\nOUTPUT\nEmit exactly these six sections in this order, each as a lowercase label and\ncolon on its own line. No preamble, no commentary, no markdown fences, no\nexplanation after. English only.\nsubject_definitions:\nsummary:\nretention_analysis:\ndetailed_description:\noverall_soundscape:\nnon_diegetic_music:\n\nLABELS\n<Subject N>  reusable visible content abstracted OUT of a reference: a person,\n             object, environment, wardrobe, visual treatment, or a performance\n             / motion / expression set.\n<Picture N>  an image used as a literal first frame, last frame or composition\n             anchor.\n<Video N>    a video used as an edit source, a continuation point, or a whole-\n             clip camera/pacing/performance source.\n<Audio N>    a referenced or copied audio signal.\n\nNever write a standalone <Picture N> line unless the notes say that image is\nliterally a first frame, last frame or keyframe. An image that supplies a\ncharacter, object, scene or style is cited INSIDE a <Subject N> definition.\nThis is the most common error. Check it before emitting.\n\nPeople, objects, sets and styles taken from a video are still <Subject N>.\nA <Video N> line describes only the asset's structural role.\n\nThe user writes asset tags as dot-names (.image-6, .band-og). Preserve those\nnames verbatim in parentheses after each label on first use:\n\"<Picture 1> (.image-6)\". Assign numbers in the order the assets first appear\nin the notes, 1-based, per type, no gaps.\n\nSUBJECT_DEFINITIONS\nOne line per subject. State what it is, which asset(s) it comes from, and the\nidentifying features the user listed. If one subject draws on several assets,\nsay what each contributes. Use only the features the user named — do not\nenrich a description with features you would expect to be there.\n\nSUMMARY\nOne short paragraph opening with a bracketed task type:\n[reference generation] assets guide character, object, scene, style, motion or\n                       camera without being a literal frame or an edit source\n[keyframe completion]  an image is a literal first/last/key frame\n[video editing]        an existing video is modified in place\n[video continuation]   new content extends an existing clip\n[audio reuse]          an audio signal is copied\n[audio reference]      only timbre, style, rhythm or content is referenced\nCombine with + when several apply; never repeat one. A video used only for\nmotion, camera or pacing is [reference generation], NOT [video editing].\nUse [video editing] only if the notes say the source clip is being modified\nin place. For [video editing], the paragraph must begin: \"The target video is\nan edited version of <Video 1>.\"\nIntroduce no labels here that are not already defined.\n\nRETENTION_ANALYSIS\nOne line per label, in definition order:\n<Label> (where it appears): marker - what is retained, then what is not.\nVisual markers, use exactly: fully_preserved | partially_preserved |\nattribute_transfer | weak_reference\nAudio markers, use exactly: fully_copy | partially_copy | reference |\nweak_reference\nTranslate the user's informal retention words:\n  \"strong\", \"keep\", \"lock\", \"maintain\"     -> fully_preserved\n  \"strong, but omit X\"                     -> partially_preserved, X named as excluded\n  \"partial\", \"some\", \"mostly\"              -> partially_preserved\n  \"loose\", \"vibe\", \"feel\", \"rough\", \"gist\" -> weak_reference\n  attributes moved onto a DIFFERENT person or object -> attribute_transfer\nUse attribute_transfer only when the source and target are different\nidentities. Same person across several references is partially_preserved.\nEvery \"omit\", \"don't keep\", \"not the\" in the notes becomes an explicit\nexcluded clause after the retained clause on that line.\nNever treat new action, new setting or new events as a loss of fidelity.\nNever write speaker IDs (S1) in this section.\nIf two assets define the same attribute, add a precedence sentence naming\nwhich wins — but only if the notes say which. If they don't, mark\n[CONFLICT: which asset is authoritative for X?].\n\nDETAILED_DESCRIPTION\nOpen with one or two sentences establishing the visual treatment, before any\nshot marker. Then [Shot 1] with no timestamp. Any later shot is\n\"[Shot N] At MM:SS.mmm, ...\", and a new shot means a real cut — do not start\none for a camera move or a new beat within a take. If the notes describe one\ncontinuous take, use [Shot 1] only.\nDescribe composition, where each subject sits in frame, what changes, and\ncamera movement in plain English. Insert each label at first appearance and\nwherever its role applies. Follow each label with a plain-English noun phrase\non its first appearance in a shot.\nClose with a negatives paragraph built from the user's exclusions plus:\nno added cuts, no subtitles, no watermarks, no on-screen or burned-in text.\nIf the notes ask for higher quality than a reference, state the quality as a\npositive requirement as well as a negative.\n\nOVERALL_SOUNDSCAPE\nAmbience and physical sound. Cite <Audio N> if the notes reuse a track.\nIf the notes say nothing about sound, write: [soundscape not specified]\nNever invent a soundtrack. Never put dialogue here.\n\nNON_DIEGETIC_MUSIC\nInstrumentation, tempo and dynamics if the notes ask for score.\nIf the notes say no music, write: N/A\nIf the notes say nothing, write: [music not specified]\n\n\n\n\n\n\nif the prompt submitted contains CONFLICT or other notes that appear to be from a previous run by a similar agent, remove them first then reassess this turn\n\nHere is the message from the user which may include notes for you to consider and/or a prompt for you to rewrite, return only the new prompt.\n\n"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "THM-EnhancerSystemPrompt"
+    }
+  },
+  "64": {
+    "inputs": {
+      "value": "NOTE\n\nthis version returned the blurry video with the actors face superimposed, which is partly correct, but not integrated.  I want the exact motion of the video but remastered and cleaned up, and the face must be believably changed.  the video should drive facial expression, but it's coarse because of the video quality\n\nPROMPT\n\nsubject_definitions:\n<Subject 1> (from .image-6): the face of the actor, short hair version, high resolution, used for facial detail only\n<Subject 2> (from .video-1): the actor, long hair version, blurry, used for motion capture, body position, and rough expression; same person as Subject 1\n\nsummary:\n[reference generation] + [video continuation] — the new video is a remastered high-resolution recreation centered on Subject 2’s motion and expression, with facial support from Subject 1’s high-res face. The original video (Video 1) provides motion and gesture cues.\n\nretention_analysis:\n<Subject 1> (from .image-6): fully_preserved | attribute_transfer to Subject 2’s face\n<Subject 2> (from .video-1): partially_preserved | motion, body position, rough expression retained; facial detail omitted\n\n\ndetailed_description:\n[Shot 1] The frame centers on Subject 2’s full body in motion, with Subject 1’s high-res face superimposed or composited onto his head, maintaining the long hair look. Camera follows Subject 2’s movement with smooth tracking, matching the motion of Video 1. No added cuts, no subtitles, no watermarks, no on-screen text.\n\noverall_soundscape:\n[soundscape not specified]\n\nnon_diegetic_music:\n[N/A]"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "THM-EnhancerUserPrompt"
+    }
+  },
+  "65": {
+    "inputs": {
+      "source": [
+        "66",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "66": {
+    "inputs": {
+      "switch": [
+        "69",
+        0
+      ],
+      "on_false": [
+        "64",
+        0
+      ],
+      "on_true": [
+        "61",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch"
+    }
+  },
+  "69": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Boolean (Refine Prompt?)"
+    }
+  }
+}

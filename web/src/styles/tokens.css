@@ -1,0 +1,203 @@
+/* Visual tokens from the v3 prototype (docs/design/create-in-place/v3-prototype-notes.md, section 7)
+   and the dark theme guide. Dark is the default; light is an override on body[data-theme="light"].
+   Roles: --ink is text, --line is borders, --inverse-bg is a deliberately dark surface with
+   --on-ink on it, --on-accent sits on an --accent fill, --sel-* is a selected chip or pill. */
+:root {
+  --font: "Space Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* the system bar, the agent panel chrome and the home list (docs: agent presence handoff) */
+  --font-ui: "Poppins", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: dark;
+
+  /* System bar + agent panel palette. Final values from the handoff; the bar is the machine's
+     and stays black in every theme, so these do not flip with body[data-theme]. The roles are
+     the only colours with a meaning: cyan = generating / selected, amber = needs you, green =
+     session live (filled = working, ring = standing by), --sb-ended = ended / absent. */
+  --sb-bar: #000000;
+  --sb-shell: #0d0d0f;
+  --sb-canvas: #111114;
+  --sb-panel: #131317;
+  --sb-raised: #16161a;
+  --sb-tile: #1c1c22;
+  --sb-amber-ground: #1b1810;
+
+  --sb-line: #1e1e24; /* structural */
+  --sb-line-frame: #23232a;
+  --sb-line-card: #26262d;
+  --sb-line-control: #2e2e36;
+  --sb-line-em: #3a3a44; /* control emphasis */
+  --sb-line-bright: #4a4a55;
+
+  --sb-title: #f4f4f6;
+  --sb-control: #e8e8ea;
+  --sb-body: #d4d4dc;
+  --sb-secondary: #b4b4bd;
+  --sb-muted: #8a8a93;
+  --sb-label: #6d6d78;
+  --sb-dim: #5c5c66;
+  --sb-faint: #4a4a55;
+
+  --sb-cyan: #2bd4f5;
+  --sb-cyan-wash: rgba(43, 212, 242, 0.12);
+  --sb-cyan-wash-remote: rgba(43, 212, 242, 0.07);
+  --sb-cyan-edge-remote: rgba(43, 212, 242, 0.55);
+  --sb-amber: #ffb224;
+  --sb-amber-ink: #0d0d0f;
+  --sb-amber-border: rgba(255, 178, 36, 0.45);
+  --sb-amber-fill: rgba(255, 178, 36, 0.14);
+  --sb-green: #35d07f;
+  --sb-ended: #4a4a55;
+
+  --accent: #3ad8ff;
+  --accent-hover: #63e2ff;
+  --on-accent: #06141a;
+
+  --ink: #eceaf0;
+  --on-ink: #ffffff;
+  --line: #43434e;
+  --line-soft: #3a3a44;
+  --line-softer: #4e4e5a;
+  --line-soft2: #33333c;
+  --divider: #2b2b33;
+
+  --page-bg: #0b0b0e;
+  --surface: #17171c;
+  --rail-bg: #1c1c22;
+  --timeline-bg: #121217;
+  --note-bg: #24242b;
+  --inverse-bg: #000000;
+
+  --muted: #8b8b96;
+  --muted-2: #9b9ba6;
+  --muted-25: #a8a8b3;
+  --muted-3: #c2c2cc;
+
+  --empty: #26262d;
+  --empty-fg: #34343d;
+
+  --green: #6ee787;
+  --green-text: #6ee787;
+  --amber: #f0b429;
+  --amber-bg: #2b2210;
+  --destructive: #ff6b5e;
+
+  --badge-bg: rgba(12, 12, 15, 0.82);
+  --spinner-track: rgba(255, 255, 255, 0.28);
+  --pill-idle: rgba(255, 255, 255, 0.16);
+  --scrim: rgba(0, 0, 0, 0.6);
+  --shadow: rgba(0, 0, 0, 0.6);
+  --shadow-2: rgba(0, 0, 0, 0.7);
+
+  --sel-bg: var(--accent);
+  --sel-fg: var(--on-accent);
+  --sel-line: var(--accent);
+
+  --w-sidebar: 232px;
+  --w-slideover: 500px; /* three 16:9 picker tiles (80px tall, ~145px wide) plus gaps and padding */
+  /* the agent rail: 520px on a 1440 desk, never under the handoff's 380px floor; a push
+     column, so the canvas keeps what is left */
+  --w-rail: clamp(380px, 36vw, 520px);
+  --h-bar: 40px;
+
+  --r-card: 8px;
+  --r-pill: 99px;
+  --b-thin: 1.5px;
+  --b-strong: 2px;
+  --b-selected: 2.5px;
+
+  /* Breakpoints. Media queries cannot read these; the literals live in base.css and
+     web/src/layout/breakpoints.ts. Keep all three in step. */
+  --bp-wide: 760px;
+  --bp-xwide: 1120px;
+}
+
+/* Mixed on body, not :root: a var() inside a custom property resolves where the property is
+   declared, so a tint mixed on :root would keep the dark surface under a light body override. */
+body {
+  --accent-tint: color-mix(in oklab, var(--accent) 16%, var(--surface));
+  --accent-fill: color-mix(in oklab, var(--accent) 34%, var(--surface));
+}
+
+body[data-theme="light"] {
+  color-scheme: light;
+  --ink: #1a1a1a;
+  --on-ink: #ffffff;
+  --line: #1a1a1a;
+  --line-soft: #cccccc;
+  --line-softer: #bbbbbb;
+  --line-soft2: #dddddd;
+  --divider: #e5e2da;
+
+  --page-bg: #f0eee9;
+  --surface: #ffffff;
+  --rail-bg: #fafaf8;
+  --timeline-bg: #f2f0eb;
+  --note-bg: #f4f4f4;
+  --inverse-bg: #1a1a1a;
+
+  --muted: #999999;
+  --muted-2: #777777;
+  --muted-25: #666666;
+  --muted-3: #555555;
+
+  --empty: #eeeeee;
+  --empty-fg: #e8e6e0;
+
+  --green: #6ee787;
+  --green-text: #2c9e4b;
+  --amber: #e0a800;
+  --amber-bg: #fff7e0;
+  --destructive: #c0392b;
+
+  --badge-bg: rgba(255, 255, 255, 0.9);
+  --spinner-track: rgba(255, 255, 255, 0.4);
+  --pill-idle: rgba(255, 255, 255, 0.18);
+  --scrim: rgba(0, 0, 0, 0.28);
+  --shadow: rgba(0, 0, 0, 0.12);
+  --shadow-2: rgba(0, 0, 0, 0.14);
+
+  --sel-bg: #1a1a1a;
+  --sel-fg: #ffffff;
+  --sel-line: #1a1a1a;
+}
+
+/* accent schemes: each ships its own --on-accent, since a light accent needs a dark label */
+body[data-scheme="lime"] { --accent: #c6f24e; --accent-hover: #d6f97a; --on-accent: #12180a; }
+body[data-scheme="mint"] { --accent: #35d6a4; --accent-hover: #5ee3ba; --on-accent: #062018; }
+body[data-scheme="iris"] { --accent: #7b7bff; --accent-hover: #9797ff; --on-accent: #ffffff; }
+body[data-scheme="magenta"] { --accent: #ff4d9d; --accent-hover: #ff74b4; --on-accent: #ffffff; }
+body[data-scheme="amber"] { --accent: #f5c542; --accent-hover: #ffd76b; --on-accent: #1c1505; }
+
+/* ground tones, and soft edges that trade outlines for surface separation */
+body[data-tone="slate"] { --page-bg: #080b10; --surface: #141920; --rail-bg: #19202a; --timeline-bg: #10151c;
+  --note-bg: #212a35; --divider: #26303c; --line: #3b4a5a; --line-soft: #33404f; --ink: #e6ecf3; --muted: #8593a3; }
+body[data-tone="warm"] { --page-bg: #0d0b09; --surface: #1a1714; --rail-bg: #201c18; --timeline-bg: #151210;
+  --note-bg: #282320; --divider: #332d27; --line: #4b4239; --line-soft: #3f382f; --ink: #f0eae2; --muted: #988d80; }
+body[data-edge="soft"] { --line: var(--divider); --line-soft: var(--divider); }
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* the render dot in the system bar: motion is reserved for renders, nothing else pulses */
+@keyframes softpulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

@@ -1,20 +1,22 @@
 # The Halleen Machine
 
-**Version 1.1.1**  
-Workflow management system for AI video generation using ComfyUI.
+**Version 2.0** (pre-release)
+Asset management and generation layer for AI video projects on top of ComfyUI.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-Organize AI video projects into structured timelines. Create reusable asset libraries for poses, characters, locations, and styles. Batch operations for generation, upscaling, and exports.
+Organize a project as a library of **bins** — each a recipe (workflow, prompt, references, LoRAs) plus the gallery of everything generated from it. Render image and video takes through your own ComfyUI, review them in the web UI, and optionally hand the whole loop to an AI agent through the same command API the UI uses.
+
+THM 2.0 is a rewrite: the 1.x Gradio app is gone, replaced by a FastAPI server (`thm_server/`), a UI-free core (`thm_core/`), and a React web client (`web/`).
 
 ---
 
 ## Requirements
 
-- Python 3.11+ 
-- ComfyUI installed and running
-
+- Python 3.11+
+- ComfyUI installed and running (its API reachable, usually `http://127.0.0.1:8188`)
+- Node.js 18+ — **only** if you want to modify and rebuild the web UI. A built copy ships in `web/dist/`.
 
 ---
 
@@ -37,50 +39,87 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure and download needed models and custom nodes
+# Configure: ComfyUI's API address and output folder, your projects folder
 python setup.py
 
-# Launch
-python run.py --listen 0.0.0.0 --port 7860
+# Launch the server
+python serve.py
 ```
 
-### Agent skill (optional)
+Then open **http://127.0.0.1:8010**. The server also prints a LAN address for other devices, and the API docs live at `/docs`.
 
-The repo ships a generic, client-neutral **Agent Skill** — `thm-agent-client` — that
-teaches an AI agent the full THM workflow (build/edit project JSON, run ComfyUI
-generation, vision QC, prompt revision). It lives at
-`thm-agent/skill/thm-agent-client/`.
+Windows shortcuts: `start_server.bat` (starts the server) and `start_server.ps1` (rebuilds the web client first, then starts; use `-NoBuild` to skip the build). Both use `venv`'s python when present.
 
-It is **agnostic about which agent client you use** and does not touch your editor's
-config. To wire it into your client (Claude Code, Cursor, or anything else), copy the
-folder into wherever your client discovers skills — or run:
+### Configuration
+
+`python setup.py` writes `config.toml` (see `config.toml.example` for every key). The ones that matter:
+
+| Key | What |
+|---|---|
+| `[comfyui] api_base` | ComfyUI's API address |
+| `[comfyui] output_root` | ComfyUI's output folder; THM reads renders from here |
+| `[paths] workspace` | Where projects are stored (default `./projects`) |
+| `[paths] loras` | ComfyUI's `models/loras`, for the LoRA picker |
+
+---
+
+## Workflows: bring your own
+
+THM does not ship models and does not install them. It drives ComfyUI through **your** workflows: export any working ComfyUI graph in API format, give the nodes THM wants to control the titles described in `WORKFLOWS.md` (prompt, references, sampler, save, and so on), and drop the file where its kind belongs:
+
+- `workflows_image/` — image workflows offered in the UI
+- `workflows_video/` — video workflows offered in the UI
+- `workflows/prompt_enhancer.json` — the local prompt-enhancer graph (optional)
+
+Anything in those folders appears as a model choice; whatever models and custom nodes the graph loads are yours to have in ComfyUI (ComfyUI-Manager is the usual way to get missing nodes). The files already in those folders are working examples of the tagging (Klein, LTX 2.5, WAN 2.2, MiniMax); `samples/workflows_openincomfy/` has editor-format versions you can open in ComfyUI to see how they are wired.
+
+---
+
+## Agent (optional)
+
+The repo ships a client-neutral **Agent Skill** — `thm-agent/skill/thm-agent/` — plus a CLI (`thm-agent/cli.py`) and a stdlib-only HTTP client (`thm-agent/thm_client.py`). An agent drives projects entirely through the server's command API: it never touches project files.
+
+Install the skill wherever your agent client (Claude Code, Cursor, …) discovers skills:
 
 ```bash
 python install_skill.py --dest <your client's skills dir>
 ```
 
-See `thm-agent/skill/thm-agent-client/INSTALL.md` for the human and agent-driven install
-paths. `python setup.py` also offers this as an optional step.
+`python setup.py` offers this as an optional step. With the server running, the CLI works on its own too:
+
+```bash
+python thm-agent/cli.py --server http://127.0.0.1:8010 projects
+```
 
 ---
 
+## Rebuilding the web UI
+
+The built client in `web/dist/` is what `serve.py` serves. To change it:
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+`npm run dev` starts a Vite dev server on port 5173 that proxies API calls to the THM server on 8010.
+
+---
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+---
 
 ## Learning More
 
-**Tutorials and guides:** 
+**Tutorials and guides:**
 https://www.youtube.com/halleen
-
----
-
-
-## Road Map
-
-**Short term** 
-Batch quality of life improvements (status, task canceling, queue stability)
-Minor UX improvements
-
-**Long term**
-Replace Gradio with another front end framework
 
 ---
 
@@ -93,4 +132,3 @@ GNU Affero General Public License v3.0 (AGPL-3.0)
 - ⚠️ Network use counts as distribution (must share source)
 
 See [LICENSE](LICENSE) for full terms.
-See [MODELS.md](MODELS) for model attribution.

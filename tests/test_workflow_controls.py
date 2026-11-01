@@ -538,6 +538,29 @@ def test_inject_loras_native_lora_loader_marker_never_has_empty_lora_name():
     assert workflow[nid(workflow, "MainPrompt")]["inputs"]["clip"] == [chain_end_id, 1]
 
 
+def test_inject_loras_empty_list_neutralises_native_marker_baked_lora():
+    """A tagged marker is THM-owned: with no LoRAs selected its baked LoRA must not run."""
+    workflow = {
+        "unet": node("Load Diffusion Model", "UNETLoader", {"unet_name": "base.safetensors"}),
+        "turbo": node("Turbo", "LoraLoaderModelOnly", {"lora_name": "turbo.safetensors", "strength_model": 0.7, "model": ["unet", 0]}),
+        "lora": node(
+            "THM-Lora",
+            "LoraLoaderModelOnly",
+            {"lora_name": "100_Workgear_Lora_v1.3_XL.safetensors", "strength_model": 1.0, "model": ["turbo", 0]},
+        ),
+        "guider": node("Basic Guider", "BasicGuider", {"model": ["lora", 0]}),
+        "sched": node("BasicScheduler", "BasicScheduler", {"model": ["lora", 0]}),
+    }
+
+    assert wc.inject_loras(workflow, []) == 0
+
+    assert node_by_title(workflow, "THM-Lora")["mode"] == wc.COMFY_NODE_MODE_NEVER
+    assert injected_lora_nodes(workflow) == []
+    # consumers skip the marker and keep the untagged turbo loader
+    assert workflow["guider"]["inputs"]["model"] == ["turbo", 0]
+    assert workflow["sched"]["inputs"]["model"] == ["turbo", 0]
+
+
 def test_inject_loras_clears_baked_rgthree_lora_slots():
     workflow = {
         "ckpt": node("THM-Checkpoint", "CheckpointLoaderSimple", {"ckpt_name": "base.safetensors"}),
@@ -1792,184 +1815,6 @@ def test_keyframe_pin_persists_after_semantic_refresh_simulation(tmp_path):
     )
     path = wc.resolve_location_reference_path_from_binding(project, seq, binding)
     assert path == str(kf_pin)
-
-
-def test_ref_slot_semantic_choice_changed_navigation_refresh():
-    from src.editor_helpers import _ref_slot_semantic_choice_changed
-
-    assert not _ref_slot_semantic_choice_changed("Alice", "Alice", "Alice")
-    assert not _ref_slot_semantic_choice_changed(None, "Restaurant", "Restaurant")
-    assert _ref_slot_semantic_choice_changed(None, "Restaurant", "Alice")
-    assert _ref_slot_semantic_choice_changed("Alice", "Bob", "Bob")
-
-
-def test_ensure_binding_keeps_pin_when_prev_unset_and_display_matches(tmp_path):
-    from src.editor_helpers import _ref_slot_semantic_choice_changed
-
-    asset = tmp_path / "asset.png"
-    kf_pin = tmp_path / "kf.png"
-    asset.write_bytes(b"a")
-    kf_pin.write_bytes(b"k")
-    project = {
-        "name": "proj",
-        "comfy": {"output_root": str(tmp_path)},
-        "settings": [{"id": "s1", "name": "Restaurant", "reference_image": str(asset)}],
-    }
-    old_binding = {"semantic": "location", "source": "sequence", "reference_image": str(kf_pin)}
-    new_binding = {"semantic": "location", "source": "sequence"}
-    merged = wc.merge_binding_on_semantic_choice(old_binding, new_binding, None, "Restaurant")
-    choice_changed = _ref_slot_semantic_choice_changed(None, "Restaurant", "Restaurant")
-    assert not choice_changed
-    out = wc.ensure_binding_default_reference_image(
-        merged, project, {"setting_id": "s1"}, choice_changed=choice_changed
-    )
-    assert out["reference_image"] == str(kf_pin)
-
-
-def test_reference_slot_semantic_change_one_preserves_other_slots(tmp_path):
-    from src.editor_helpers import _eh_reference_slot_semantic_change_one
-    from src.workflow_capabilities import scan_workflow_file
-
-    caps = scan_workflow_file("pixa-four-image_vague.json")
-    assert caps.image_reference_slots
-    slots = caps.image_reference_slots[:4]
-    pin_paths = []
-    for i in range(4):
-        p = tmp_path / f"pin_{i}.png"
-        p.write_bytes(bytes([i]))
-        pin_paths.append(str(p))
-
-    bindings = {}
-    for slot, pin in zip(slots, pin_paths):
-        bk = wc.binding_key_for_slot(slot)
-        bindings[bk] = {
-            "semantic": "character",
-            "character_id": f"c{i}",
-            "reference_image": pin,
-        }
-
-    project = {
-        "name": "proj",
-        "image_model_family": "custom",
-        "characters": [
-            {"id": f"c{i}", "name": f"Char{i}", "reference_image": pin_paths[i]}
-            for i in range(4)
-        ],
-    }
-    data = {
-        "project": project,
-        "sequences": {
-            "s1": {
-                "keyframes": {
-                    "k1": {
-                        "workflow_json": "pixa-four-image_vague.json",
-                        "reference_bindings": copy.deepcopy(bindings),
-                        "reference_slot_last_choice": {
-                            wc.binding_key_for_slot(slots[i]): f"Char{i}" for i in range(4)
-                        },
-                    }
-                },
-                "keyframe_order": ["k1"],
-            }
-        },
-    }
-
-    result = _eh_reference_slot_semantic_change_one(
-        data,
-        "k1",
-        "proj",
-        "pixa-four-image_vague.json",
-        0,
-        "Char0",
-    )
-    kf = result["sequences"]["s1"]["keyframes"]["k1"]
-    for i in range(4):
-        bk = wc.binding_key_for_slot(slots[i])
-        assert kf["reference_bindings"][bk]["reference_image"] == pin_paths[i]
-
-
-def test_reference_slot_semantic_change_one_preserves_pin_without_last_choice(tmp_path):
-    from src.editor_helpers import _eh_reference_slot_semantic_change_one
-    from src.workflow_capabilities import scan_workflow_file
-
-    asset = tmp_path / "asset.png"
-    kf_pin = tmp_path / "kf.png"
-    asset.write_bytes(b"a")
-    kf_pin.write_bytes(b"k")
-    caps = scan_workflow_file("pixa-four-image_vague.json")
-    slot0 = caps.image_reference_slots[0]
-    bk = wc.binding_key_for_slot(slot0)
-
-    data = {
-        "project": {
-            "name": "proj",
-            "image_model_family": "custom",
-            "settings": [{"id": "s1", "name": "Restaurant", "reference_image": str(asset)}],
-        },
-        "sequences": {
-            "s1": {
-                "setting_id": "s1",
-                "keyframes": {
-                    "k1": {
-                        "workflow_json": "pixa-four-image_vague.json",
-                        "reference_bindings": {
-                            bk: {
-                                "semantic": "location",
-                                "source": "sequence",
-                                "reference_image": str(kf_pin),
-                            }
-                        },
-                    }
-                },
-                "keyframe_order": ["k1"],
-            }
-        },
-    }
-
-    result = _eh_reference_slot_semantic_change_one(
-        data,
-        "k1",
-        "proj",
-        "pixa-four-image_vague.json",
-        0,
-        "Restaurant",
-    )
-    binding = result["sequences"]["s1"]["keyframes"]["k1"]["reference_bindings"][bk]
-    assert binding["reference_image"] == str(kf_pin)
-
-
-def test_seed_reference_slot_last_choices_from_bindings():
-    from src.editor_helpers import _eh_seed_reference_slot_last_choices
-    from src.workflow_capabilities import scan_workflow_file
-
-    caps = scan_workflow_file("pixa-four-image_vague.json")
-    slot0 = caps.image_reference_slots[0]
-    bk = wc.binding_key_for_slot(slot0)
-    data = {
-        "project": {
-            "name": "proj",
-            "image_model_family": "custom",
-            "settings": [{"id": "s1", "name": "Restaurant"}],
-        },
-        "sequences": {
-            "s1": {
-                "setting_id": "s1",
-                "keyframes": {
-                    "k1": {
-                        "workflow_json": "pixa-four-image_vague.json",
-                        "reference_bindings": {
-                            bk: {"semantic": "location", "source": "sequence"},
-                        },
-                    }
-                },
-                "keyframe_order": ["k1"],
-            }
-        },
-    }
-
-    result = _eh_seed_reference_slot_last_choices(data, "k1", "pixa-four-image_vague.json")
-    kf = result["sequences"]["s1"]["keyframes"]["k1"]
-    assert kf["reference_slot_last_choice"][bk] == "Restaurant"
 
 
 def test_resolve_sequence_style_reference_path(tmp_path):

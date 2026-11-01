@@ -16,8 +16,12 @@ import csv
 from pathlib import Path
 
 # --- CONSTANTS & REGEX ---
-from lora_tags import LoraSpec, find_lora_tags, format_lora_tag, scale_lora_spec, strip_lora_tags
+from lora_tags import LoraSpec, find_lora_tags, format_lora_tag, has_lora_named, scale_lora_spec, strip_lora_tags
 import workflow_controls as wc
+import comfy_history
+import comfy_progress
+import generation_spec
+_WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / "workflows"
 _TEMPLATE_RE = re.compile(r'\[([a-zA-Z0-9_.]+)\]')
 _WC_RE = re.compile(r"\{([^{}]+)\}")
 
@@ -98,17 +102,49 @@ def _is_pid_running(pid: int) -> bool:
     except OSError: return False
     else: return True
 
-def _write_status(status_path, pid: int, status: str, current_task: str = None, sub_task: str = None, error: str = None, progress_percent: float = None, completed_count: int = None, total_count: int = None):
+def _write_status(status_path, pid: int, status: str, current_task: str = None, sub_task: str = None, error: str = None, progress_percent: float = None, completed_count: int = None, total_count: int = None, outputs: list = None, extra: dict = None):
     try:
         status_data = {
             "pid": pid, "status": status, "current_task": current_task, "sub_task": sub_task, "error": error,
             "progress_percent": f"{progress_percent:.1f}" if progress_percent is not None else None,
             "batch_completed_count": completed_count, "batch_total_count": total_count, "last_update": datetime.now().isoformat()
         }
+        if extra:
+            # live ComfyUI progress (comfy_progress.PromptTracker): phase, step/steps, pass_no/passes, queue_ahead...
+            status_data.update({k: v for k, v in extra.items() if k not in status_data})
+        if outputs is not None:
+            # Files ComfyUI reported for this run: [{"path", "node_id", "prompt_id", "label"}]
+            status_data["outputs"] = list(outputs)
         temp_path = str(status_path) + ".tmp"
         with open(temp_path, 'w', encoding='utf-8') as f: json.dump(status_data, f, indent=2)
         os.replace(temp_path, status_path)
     except Exception as e: print(f"[WARN] Failed to write status file '{status_path}': {e}")
+
+def apply_force_open(ctype, force_open):
+    """Honor the project ``force_open`` override that turns a closed oner into a cut.
+
+    A video with BOTH keyframes normally renders as ``SE`` and its start/end frames
+    are matched against the neighboring clips to create one continuous take. When the
+    project setting ``inbetween_generation.force_open`` is set, one of the two images
+    is dropped so every such clip renders open-ended instead, breaking that join into
+    a hard cut:
+
+        force_open == "start" -> ignore the start image -> "OE" (open start)
+        force_open == "end"   -> ignore the end image   -> "SO" (open end)
+        anything else / empty -> no change (default)
+
+    The override only applies to ``SE`` clips. A video that already has just one
+    keyframe (``SO``/``OE``) or none is returned unchanged, so the setting is a no-op
+    for clips that are already open.
+    """
+    if ctype != "SE":
+        return ctype
+    mode = str(force_open or "").strip().lower()
+    if mode == "start":
+        return "OE"
+    if mode == "end":
+        return "SO"
+    return ctype
 
 def iter_video_entries(seq: dict):
     # V2 check
@@ -304,8 +340,9 @@ def new_node_id(graph):
     numeric = [int(k) for k in graph.keys() if isinstance(k, str) and k.isdigit()]
     return str(max(numeric) + 1) if numeric else str(int(time.time() * 1000) % 2_000_000_000)
 
-def post_prompt(api_base, graph, project_name=None, label=None):
+def post_prompt(api_base, graph, project_name=None, label=None, output_root=None, client_id=None):
     wc.strip_prompt_metadata(graph)
+    wc.annotate_comfy_image_inputs(graph, output_root=output_root or "", api_base=api_base)
     extra_data = {}
     if project_name:
         extra_data["machine_ui_project"] = project_name
@@ -314,7 +351,7 @@ def post_prompt(api_base, graph, project_name=None, label=None):
     comfy_api_key = os.environ.get("THM_COMFY_API_KEY", "").strip()
     if comfy_api_key:
         extra_data["api_key_comfy_org"] = comfy_api_key
-    r = requests.post(api_base.rstrip("/") + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4()), "extra_data": extra_data}, timeout=60)
+    r = requests.post(api_base.rstrip("/") + "/prompt", json={"prompt": graph, "client_id": client_id or str(uuid.uuid4()), "extra_data": extra_data}, timeout=60)
     if not r.ok:
         print(f"[COMFY] POST /prompt failed: {r.status_code}")
         try:
@@ -324,30 +361,19 @@ def post_prompt(api_base, graph, project_name=None, label=None):
     r.raise_for_status()
     return r.json().get("prompt_id")
 
+def fetch_history_entry(api_base, prompt_id, timeout_s=3600, poll_s=1.0):
+    """The ComfyUI history entry for ``prompt_id``, or None on timeout or execution error."""
+    entry = comfy_history.poll_history_entry(api_base, prompt_id, timeout_s, poll_s=poll_s)
+    if entry is None:
+        return None
+    detail = comfy_history.history_error_detail(entry)
+    if detail:
+        print(f"[ERR] ComfyUI prompt {prompt_id} failed: {detail}")
+        return None
+    return entry
+
 def wait_history_done(api_base, prompt_id, timeout_s=3600, poll_s=1.0):
-    url = api_base.rstrip("/") + f"/history/{prompt_id}"
-    t0 = time.time()
-    while True:
-        r = requests.get(url, timeout=30)
-        if r.status_code == 200:
-            payload = r.json()
-            if prompt_id in payload:
-                entry = payload[prompt_id]
-                status = entry.get("status") or {}
-                status_str = str(status.get("status_str") or "").lower()
-                if status_str == "error":
-                    messages = status.get("messages") or []
-                    detail = ""
-                    for msg in messages:
-                        if isinstance(msg, (list, tuple)) and len(msg) >= 2:
-                            detail = str(msg[1])[:500]
-                            break
-                    print(f"[ERR] ComfyUI prompt {prompt_id} failed: {detail or status_str}")
-                    return False
-                return True
-        if time.time() - t0 > timeout_s:
-            return False
-        time.sleep(poll_s)
+    return fetch_history_entry(api_base, prompt_id, timeout_s, poll_s) is not None
 
 def style_line(project):
     v = project.get("style_prompt", "")
@@ -491,6 +517,15 @@ def _apply_express_sampler_steps(
     return t_steps
 
 
+def _warn_partner_key_missing(vid_caps: "wc.VideoCapabilities") -> None:
+    if vid_caps.has_partner_node and not os.environ.get("THM_COMFY_API_KEY", "").strip():
+        classes = ", ".join(vid_caps.partner_node_classes) or "unknown"
+        print(
+            f"[VIDEO] WARNING: workflow contains THM-PartnerNode ({classes}) "
+            "but THM_COMFY_API_KEY is not set - the partner API call will likely fail. "
+            "Set the environment variable before launching THM."
+        )
+
 def _log_video_caps(
     caps: wc.VideoCapabilities,
     fps: float,
@@ -517,6 +552,7 @@ def _log_video_caps(
         ("THM-SaveVideo", caps.has_save_video),
         ("THM-StartFrame-tag", caps.has_start_frame),
         ("THM-EndFrame-tag", caps.has_end_frame),
+        ("THM-VideoReference", caps.video_reference_count > 0),
         ("THM-KSampler", caps.has_thm_ksampler_passes),
         ("THM-SlowMoPrimer", caps.has_thm_slowmo_primer),
         ("THM-Steps", caps.has_thm_steps),
@@ -525,6 +561,13 @@ def _log_video_caps(
     ):
         print(f"[VIDEO] {label}: {'found' if found else 'missed'}")
     print(f"[VIDEO] fps={fps} frames={frames}")
+
+VIDEO_OUTPUT_EXTS = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
+
+def _history_video_hit(found, folder, base_name):
+    """The single video ComfyUI reported in ``folder`` for this clip, else None."""
+    hits = comfy_history.outputs_in_folder(found, folder, VIDEO_OUTPUT_EXTS, prefix=base_name)
+    return hits[0] if len(hits) == 1 else None
 
 def list_videos_with_prefix(folder, base_prefix):
     files = list_videos(folder)
@@ -725,6 +768,7 @@ def inject_metadata_mp4(video_path, snapshot):
 def run(config_path, export_only=False, status_file_override=None):
     cfg = jload(config_path)
     script_pid = os.getpid()
+    discovered_outputs: list = []  # history-reported files, mirrored into the status file
     project, sequences = cfg["project"], cfg["sequences"]
     
     api_base = get(project, "comfy", "api_base")
@@ -735,17 +779,20 @@ def run(config_path, export_only=False, status_file_override=None):
     half_w, half_h = full_w // 2, full_h // 2
 
     vg = get(project, "inbetween_generation", default={})
-    _src = Path(__file__).resolve().parent.parent / "src"
-    if str(_src) not in sys.path:
-        sys.path.insert(0, str(_src))
-    from helpers import resolve_project_video_workflow, resolve_project_video_seed_titles
+    _root = Path(__file__).resolve().parent.parent
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
+    from thm_core.runner_helpers import resolve_project_video_workflow, resolve_project_video_seed_titles
 
     wf_path = resolve_project_video_workflow({"project": project})
     iters_def = int(vg.get("video_iterations_default", 8))
     seed_start = int(vg.get("seed_start", 500000))
     seed_step = int(vg.get("advance_seed_by", 13))
     dur_def_sec = float(vg.get("duration_default_sec", 3.0))
-    
+    # Project-level open/closed override applied to every SE (both-keyframe) in-between,
+    # for one-off and batch generation alike. "" (default) | "start" | "end".
+    force_open_mode = str(vg.get("force_open") or "").strip().lower()
+
     # express_video (aka "draft mode") is deprecated: step reduction is now handled by the
     # custom workflow, and the toggle was removed from the UI. Force it off so run_video always
     # uses the full step budget, ignoring any leftover inbetween_generation.express_video in a project.
@@ -777,7 +824,7 @@ def run(config_path, export_only=False, status_file_override=None):
         status_path = Path(out_root) / project_name / status_filename
         (Path(out_root) / project_name).mkdir(parents=True, exist_ok=True)
 
-    if status_path: _write_status(status_path, script_pid, "running", "Initializing...", progress_percent=0.0)
+    if status_path: _write_status(status_path, script_pid, "running", "Initializing...", progress_percent=0.0, outputs=discovered_outputs)
 
     try:
         # V2 Data Normalization: Sequences can be dict or list
@@ -825,7 +872,7 @@ def run(config_path, export_only=False, status_file_override=None):
 
             print(f"Total iterations: {total_iters}")
             if total_iters == 0:
-                if status_path: _write_status(status_path, script_pid, "completed", "Done", progress_percent=100.0)
+                if status_path: _write_status(status_path, script_pid, "completed", "Done", progress_percent=100.0, outputs=discovered_outputs)
                 return
 
             # Main Loop
@@ -850,8 +897,13 @@ def run(config_path, export_only=False, status_file_override=None):
                     vid_id = vid_conf.get("id", vid_key)
                     
                     start_id, end_id = vid_conf.get("start_keyframe_id", vid_conf.get("start_id")), vid_conf.get("end_keyframe_id", vid_conf.get("end_id"))
-                    ctype = "SE" if (start_id and end_id) else "OE" if end_id else "SO" if start_id else None
+                    base_ctype = "SE" if (start_id and end_id) else "OE" if end_id else "SO" if start_id else None
+                    ctype = apply_force_open(base_ctype, force_open_mode)
                     if not ctype: continue
+                    if ctype != base_ctype:
+                        dropped = "start" if ctype == "OE" else "end"
+                        print(f"[VID] {seq_id}/{vid_id}: force_open='{force_open_mode}' -> "
+                              f"{base_ctype} treated as {ctype} (ignoring {dropped} frame, join becomes a cut)")
 
                     iters = int(vid_conf.get("video_iterations_override", iters_def))
                     dur = float(vid_conf.get("duration_override_sec", dur_def_sec))
@@ -871,7 +923,7 @@ def run(config_path, export_only=False, status_file_override=None):
                         sub_task = f"Vid '{vid_id}' ({pos+1}) - Iter {it+1}"
                         if status_path:
                             prog = (completed_iters / total_iters) * 100 if total_iters > 0 else 0
-                            _write_status(status_path, script_pid, "running", seq_task, sub_task, progress_percent=prog, completed_count=completed_iters, total_count=total_iters)
+                            _write_status(status_path, script_pid, "running", seq_task, sub_task, progress_percent=prog, completed_count=completed_iters, total_count=total_iters, outputs=discovered_outputs)
 
                         vid_seed_override = vid_conf.get("seed_start")
                         effective_seed_start = int(vid_seed_override) if vid_seed_override is not None else seed_start
@@ -887,15 +939,15 @@ def run(config_path, export_only=False, status_file_override=None):
                         except Exception as e: print(f"[ERR] Workflow load failed: {e}"); break
 
                         vid_caps = wc.discover_video_capabilities(graph)
-                        if vid_caps.has_partner_node and not os.environ.get("THM_COMFY_API_KEY", "").strip():
-                            classes = ", ".join(vid_caps.partner_node_classes) or "unknown"
-                            print(
-                                f"[VIDEO] WARNING: workflow contains THM-PartnerNode ({classes}) "
-                                "but THM_COMFY_API_KEY is not set - the partner API call will likely fail. "
-                                "Set the environment variable before launching THM."
-                            )
+                        _warn_partner_key_missing(vid_caps)
                         need_start = vid_caps.supports_start_frame and ctype in ("SE", "SO")
                         need_end = vid_caps.supports_end_frame and ctype in ("SE", "OE")
+                        # An unfed guide branch still executes (ComfyUI ignores node mute),
+                        # so an open end/start has to leave the graph entirely.
+                        if not need_end:
+                            wc.deactivate_video_frame_branch(graph, "end")
+                        if not need_start:
+                            wc.deactivate_video_frame_branch(graph, "start")
                         if (need_start and not sp) or (need_end and not ep):
                             print(f"[WARN] Missing keyframe image for {vid_id}. Skipping.")
                             continue
@@ -948,7 +1000,7 @@ def run(config_path, export_only=False, status_file_override=None):
                             fg_blob = (seq.get("action_prompt", "") + " " + vid_conf.get("inbetween_prompt", ""))
                             fl: list[LoraSpec] = []
                             for spec in plora_specs:
-                                m = mults["fg"] if format_lora_tag(spec) in fg_blob else mults["bg"]
+                                m = mults["fg"] if has_lora_named(fg_blob, spec.name) else mults["bg"]
                                 fl.append(scale_lora_spec(spec, m))
                             normalized_loras = list(reversed(fl))
 
@@ -967,11 +1019,14 @@ def run(config_path, export_only=False, status_file_override=None):
                                 print(f"[ERR] Wiring failed: {e}")
                                 continue
 
-                        if normalized_loras:
-                            if vid_caps.lora_mode == "dual":
-                                inject_prompt_loras(graph, normalized_loras)
-                            elif vid_caps.lora_mode == "single":
-                                wc.inject_loras(graph, normalized_loras)
+                        # Single-path markers are THM-owned: always run injection so a marker's
+                        # baked LoRA is neutralised even when no LoRAs are selected (WORKFLOWS.md
+                        # "THM owns that input fully"). Dual mode anchors on the UNet loaders and
+                        # has nothing baked to clear, so it still needs a non-empty list.
+                        if vid_caps.lora_mode == "single":
+                            wc.inject_loras(graph, normalized_loras)
+                        elif vid_caps.lora_mode == "dual" and normalized_loras:
+                            inject_prompt_loras(graph, normalized_loras)
 
                         inj_ctx = wc.VideoInjectionContext(
                             positive_prompt=pclean,
@@ -1012,10 +1067,11 @@ def run(config_path, export_only=False, status_file_override=None):
                             print(f"[DEBUG] Saved workflow to: {debug_path}")
                             
                             job_label = f"{seq_id}|{vid_id}" if seq_id and seq_id != vid_id else vid_id
-                            pid = post_prompt(api_base, graph, project_name=project_name, label=job_label)
+                            pid = post_prompt(api_base, graph, project_name=project_name, label=job_label, output_root=out_root)
                             print("[PID]", pid)
                             print(f"[DEBUG] Posted prompt {pid}, waiting with timeout={timeout_s}s")
-                            wait_result = wait_history_done(api_base, pid, timeout_s)
+                            entry = fetch_history_entry(api_base, pid, timeout_s)
+                            wait_result = entry is not None
                             print(f"[DEBUG] wait_history_done returned: {wait_result}")
                             if wait_result:
                                 completed_iters += 1
@@ -1045,11 +1101,18 @@ def run(config_path, export_only=False, status_file_override=None):
                                 #     "generation": {"seed": seed, "steps": t_steps, "fps": project_fps},
                                 #     "meta": {"timestamp": datetime.now().isoformat()}
                                 # }
-                                cands = list_videos_with_prefix(vid_folder, base_name)
-                                if cands:
-                                    cands.sort(key=lambda f: os.path.getmtime(f), reverse=True)
-                                    final_path = cands[0] 
-                                    inject_metadata_mp4(cands[0], snap)
+                                # Prefer the exact file ComfyUI reported for this prompt; fall back to mtime.
+                                found = comfy_history.extract_history_outputs(entry, out_root, prompt_id=pid, label=job_label)
+                                discovered_outputs.extend(found)
+                                final_path = _history_video_hit(found, vid_folder, base_name)
+                                if final_path is None:
+                                    print(f"[WARN] history reported no single video output in {vid_folder}; falling back to newest file by mtime")
+                                    cands = list_videos_with_prefix(vid_folder, base_name)
+                                    if cands:
+                                        cands.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+                                        final_path = cands[0]
+                                if final_path:
+                                    inject_metadata_mp4(final_path, snap)
                                     print(f"RESULT: {final_path}")
                                     
                                     # Create lossless video from temp frames with matching name
@@ -1071,7 +1134,7 @@ def run(config_path, export_only=False, status_file_override=None):
 
                         except Exception as e: print(f"[ERR] Gen failed: {e}")
 
-            if status_path: _write_status(status_path, script_pid, "completed", "Done", progress_percent=100.0, completed_count=completed_iters, total_count=total_iters)
+            if status_path: _write_status(status_path, script_pid, "completed", "Done", progress_percent=100.0, completed_count=completed_iters, total_count=total_iters, outputs=discovered_outputs)
 
         else:
             # Export Only Logic
@@ -1089,6 +1152,7 @@ def run(config_path, export_only=False, status_file_override=None):
                     vid_id = vid_conf.get("id", vid_key)
                     start_id, end_id = vid_conf.get("start_keyframe_id", vid_conf.get("start_id")), vid_conf.get("end_keyframe_id", vid_conf.get("end_id"))
                     ctype = "SE" if (start_id and end_id) else "OE" if end_id else "SO" if start_id else None
+                    ctype = apply_force_open(ctype, force_open_mode)
                     if not ctype: continue
 
                     dur_sec = float(vid_conf.get("duration_override_sec", dur_def_sec))
@@ -1118,13 +1182,255 @@ def run(config_path, export_only=False, status_file_override=None):
 
     except Exception as e:
         print(f"[FATAL] {e}")
-        if status_path: _write_status(status_path, script_pid, "failed", error=str(e))
+        if status_path: _write_status(status_path, script_pid, "failed", error=str(e), outputs=discovered_outputs)
         sys.exit(1)
 
-if __name__ == "__main__":
+# ================= THM ENTRY MODE =================
+
+def _inject_legacy_wan_frames(graph, vid_caps, clip_type, sp, ep, width=None, height=None) -> bool:
+    """Untagged WAN first/last-frame graphs (no THM-StartFrame / THM-EndFrame): the 1.x wiring.
+
+    ``apply_video_injection`` only writes anchors into tagged loaders, so a legacy
+    graph such as ``i2v_base.json`` would be posted with its loaders still at
+    ``example.png``. Mirror the 1.x batch path: take the first two LoadImage
+    nodes (creating them if needed), write the paths, and route them through the
+    ``StartImage`` / ``EndImage`` scalers into the generator. Scaler size comes
+    from the params, else the generator's own width and height.
+    """
+    if vid_caps.has_start_frame or vid_caps.has_end_frame or not vid_caps.has_legacy_wan_generator:
+        return False
+    l1, l2 = ensure_two_loaders(graph)
+    if sp:
+        set_loader_path(graph[l1], sp)
+    if ep:
+        set_loader_path(graph[l2], ep)
+    _, wan = first_node_by_title(graph, "WanFirstLastFrameToVideo")
+    wan_inputs = (wan or {}).get("inputs") or {}
+    w = width or wan_inputs.get("width") or 512
+    h = height or wan_inputs.get("height") or 512
+    wire_half_to_wan(graph, clip_type, l1, l2, w, h)
+    print(f"[VIDEO] legacy WAN anchors: start={l1 if sp else '<none>'} end={l2 if ep else '<none>'} scale={w}x{h}")
+    return True
+
+
+def _set_legacy_wan_length(graph, vid_caps, frames) -> bool:
+    """``set_frame_count`` only writes tagged nodes; a legacy WAN generator keeps its baked ``length``.
+
+    The spec's ``length_s`` is the shot's LENGTH, so honour it on the generator itself.
+    """
+    if not frames or not vid_caps.has_legacy_wan_generator:
+        return False
+    if wc.find_control_nodes(graph, wc.FRAME_COUNT) or wc.find_control_nodes(graph, wc.VIDEO_GENERATOR):
+        return False
+    _, wan = first_node_by_title(graph, "WanFirstLastFrameToVideo")
+    inputs = (wan or {}).get("inputs")
+    if not isinstance(inputs, dict) or "length" not in inputs:
+        return False
+    inputs["length"] = int(frames)
+    print(f"[VIDEO] legacy WAN length={int(frames)}")
+    return True
+
+
+def run_generation(spec_path, status_file_override=None):
+    """THM entry mode: run one video workflow from a generation spec.
+
+    The spec (see ``generation_spec.py``) carries the submitted prompt and
+    negative, prelude lines, paths by slot (``start`` / ``end`` anchors, image
+    slot node ids, THM-VideoReference node ids), params (seed, length_s, fps,
+    width, height, steps), and structured LoRAs. No 1.x project payload is read.
+
+    Not applied in this mode, since they are 1.x project flags: the legacy
+    express sampler triple, the FILM upscaler, the temp-frame saver, and the
+    lossless stitch. Outputs come from ComfyUI history and are written into the
+    status file; each is printed as ``RESULT: <path>``.
+    """
+    spec = generation_spec.load_generation_spec(spec_path)
+    script_pid = os.getpid()
+    comfy = spec["comfy"]
+    api_base = comfy["api_base"]
+    out_root = comfy["output_root"]
+    timeout_s = float(comfy.get("timeout_seconds", 3600))
+    output_dir = os.path.abspath(spec["output_dir"])
+    prefix = str(spec["filename_prefix"])
+    label = str(spec.get("label") or spec.get("id") or prefix)
+    params = spec.get("params") or {}
+    paths_by_slot = generation_spec.paths_by_slot_from_spec(spec)
+    status_path = generation_spec.generation_status_path(spec, status_file_override)
+    outputs: list = []
+    ids: dict = {}  # {"prompt_id": ...} once posted; kept on the final write so a late pickup can find the entry
+    _write_status(status_path, script_pid, "running", "Preparing graph", progress_percent=0.0, outputs=outputs)
+
+    try:
+        generation_spec.output_dir_relative_to_root(output_dir, out_root)
+        wf_name = str(spec["workflow"])
+        wf_path = wf_name if os.path.isabs(wf_name) else str(_WORKFLOWS_DIR / wf_name)
+        if not os.path.isfile(wf_path):
+            raise FileNotFoundError(f"Workflow not found: {wf_path}")
+        graph = jload(wf_path)
+        vid_caps = wc.discover_video_capabilities(graph)
+        _warn_partner_key_missing(vid_caps)
+
+        # Anchors: an unfed guide branch still executes, so an absent side leaves the graph.
+        sp, ep = paths_by_slot.get("start"), paths_by_slot.get("end")
+        need_start = bool(vid_caps.supports_start_frame and sp)
+        need_end = bool(vid_caps.supports_end_frame and ep)
+        if not need_end:
+            wc.deactivate_video_frame_branch(graph, "end")
+        if not need_start:
+            wc.deactivate_video_frame_branch(graph, "start")
+        ctype = "SE" if (need_start and need_end) else "SO" if need_start else "OE" if need_end else None
+
+        # Canvas: the project's width/height from the spec. ``params.quarter`` (a per-generation
+        # draft toggle, the 2.0 form of 1.x's project-wide quarter_size_video) halves both sides,
+        # a quarter of the pixels. Plain integer halves, no rounding: any multiple-of-N rule is
+        # the workflow's own business, as it is for whatever canvas the project sets.
+        width = int(params["width"]) if params.get("width") else None
+        height = int(params["height"]) if params.get("height") else None
+        quarter = bool(params.get("quarter")) and width is not None and height is not None
+        if quarter:
+            width, height = width // 2, height // 2
+        if ctype:
+            _inject_legacy_wan_frames(graph, vid_caps, ctype, sp if need_start else None, ep if need_end else None, width, height)
+
+        # Reference slots: image loaders by node id, video loaders by node id.
+        slots = wc.discover_image_reference_slots(graph)
+        wc.clear_tagged_reference_nodes(graph)
+        wc.clear_tagged_video_reference_nodes(graph)
+        if slots:
+            wc.inject_reference_slot_paths(graph, slots, paths_by_slot)
+        wc.inject_video_reference_slot_paths(graph, wc.discover_video_reference_slots(graph), paths_by_slot)
+        wc.deactivate_empty_reference_loaders(graph)
+
+        fps = float(params["fps"]) if params.get("fps") else _resolve_project_fps({}, wf_path)
+        length_s = params.get("length_s")
+        frames = int(round(float(length_s) * fps)) + 1 if length_s else 0
+
+        t_steps = 0
+        if params.get("steps"):
+            steps = int(params["steps"])
+            if vid_caps.has_thm_ksampler_passes or vid_caps.has_thm_slowmo_primer:
+                t_steps = wc.apply_video_sampler_passes(graph, total_steps=steps, express=False, primer_steps=PRIMER_STEPS)
+            elif vid_caps.has_thm_steps:
+                wc.set_steps(graph, steps)
+                t_steps = steps
+
+        # LoRAs ride in the prompt text as <lora:name:strength[:strength_b]> tags (or the 1.x
+        # __lora:...__ form); they come out before the text reaches the encoder.
+        raw_text = generation_spec.prompt_text_from_spec(spec)
+        lora_specs = generation_spec.lora_specs_from_spec(spec, raw_text)
+        text = strip_lora_tags(raw_text)
+        negative = str(spec.get("negative") or "")
+        if wc.workflow_uses_ltx_text_encoder(graph):
+            text = wc.sanitize_prompt_for_ltx(text)
+            negative = wc.sanitize_prompt_for_ltx(negative)
+        if lora_specs:
+            print("[LORAS] " + ", ".join(format_lora_tag(s) for s in lora_specs))
+
+        seed = int(params["seed"]) if params.get("seed") is not None else random.randint(0, 2**31 - 1)
+
+        inj_ctx = wc.VideoInjectionContext(
+            positive_prompt=text,
+            negative_prompt=negative,
+            seed=seed,
+            fps=fps,
+            frame_count=frames,
+            width=width,
+            height=height,
+            save_video_prefix=os.path.join(output_dir, prefix),
+            frame_clip_type=ctype,
+            start_frame_path=sp if need_start else None,
+            end_frame_path=ep if need_end else None,
+            lora_specs=lora_specs or None,
+        )
+        wc.apply_video_injection(graph, inj_ctx)
+        _set_legacy_wan_length(graph, vid_caps, frames)
+        _log_video_caps(vid_caps, fps, frames, clip_type=ctype)
+        os.makedirs(output_dir, exist_ok=True)
+
+        print(f"[VID] workflow={wf_path}")
+        print(f"[VID] type={ctype} length_s={length_s} fps={fps} frames={frames} steps={t_steps} seed={seed}")
+        if quarter:
+            print(f"[VID] quarter size: {width}x{height}")
+        print(f"[VID] out_prefix={os.path.join(output_dir, prefix)}")
+        print("\n[PROMPT]\n" + text)
+        print("\n[NEGATIVE]\n" + negative)
+
+        _write_status(status_path, script_pid, "running", "queued", progress_percent=None, outputs=outputs)
+
+        def on_progress(fields):
+            _write_status(status_path, script_pid, "running", fields.get("task"), progress_percent=fields.get("progress_percent"), outputs=outputs, extra=fields)
+
+        with comfy_progress.PromptTracker(api_base, graph, on_progress) as tracker:
+            pid = post_prompt(api_base, graph, project_name=spec.get("project"), label=label, output_root=out_root, client_id=tracker.client_id)
+            print("[PID]", pid)
+            ids["prompt_id"] = str(pid)
+            entry = tracker.wait(pid, timeout_s)
+        if entry is None:
+            raise RuntimeError(f"prompt {pid} {tracker.gave_up or 'gave up'}")
+        # what the render itself took, queue wait excluded: ComfyUI's own clock from the history
+        # entry, else the tracker's execution_start to now
+        exec_s = comfy_history.history_exec_seconds(entry)
+        if exec_s is None and tracker.exec_started_at is not None:
+            exec_s = round(time.time() - tracker.exec_started_at, 1)
+        if exec_s is not None:
+            ids["exec_seconds"] = exec_s
+            print(f"[TIMING] comfy execution {exec_s:.1f}s")
+        err = comfy_history.history_error_detail(entry)
+        if err:
+            raise RuntimeError(f"ComfyUI prompt {pid} failed: {err}")
+
+        found = comfy_history.extract_history_outputs(entry, out_root, prompt_id=pid, label=label)
+        if not found:
+            print(f"[WARN] history reported no outputs for {pid}; falling back to newest file by mtime")
+            cands = list_videos_with_prefix(output_dir, prefix)
+            if cands:
+                cands.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+                found = [{"path": cands[0], "node_id": "", "prompt_id": str(pid), "label": label}]
+        outputs.extend(found)
+
+        snap = {
+            "thm": {
+                "generation": spec.get("id"),
+                "project": spec.get("project"),
+                "workflow": os.path.basename(wf_path),
+                "prompt": text,
+                "negative": negative,
+                "seed": seed,
+                "params": params,
+                "fps": fps,
+                "frames": frames,
+                "steps": t_steps,
+                "clip_type": ctype,
+                "loras": spec.get("loras") or [],
+                "paths_by_slot": paths_by_slot,
+            },
+            "meta": {"timestamp": datetime.now().isoformat()},
+        }
+        for o in found:
+            path = o["path"]
+            if path.lower().endswith(VIDEO_OUTPUT_EXTS):
+                inject_metadata_mp4(path, snap)
+            print(f"RESULT: {path}")
+        _write_status(status_path, script_pid, "completed", "Done", progress_percent=100.0, outputs=outputs, extra=ids)
+    except Exception as e:
+        print(f"[FATAL] {e}")
+        _write_status(status_path, script_pid, "failed", error=str(e), outputs=outputs, extra=ids)
+        sys.exit(1)
+
+
+def build_arg_parser():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True)
-    ap.add_argument("--export-only", action="store_true")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--config", help="1.x project payload with sequences")
+    mode.add_argument("--generation", help="THM generation spec JSON (see generation_spec.py)")
+    ap.add_argument("--export-only", action="store_true", help="FCPXML export (with --config)")
     ap.add_argument("--status-file", required=False)
-    args = ap.parse_args()
-    run(args.config, export_only=args.export_only, status_file_override=args.status_file)
+    return ap
+
+
+if __name__ == "__main__":
+    args = build_arg_parser().parse_args()
+    if args.generation:
+        run_generation(args.generation, status_file_override=args.status_file)
+    else:
+        run(args.config, export_only=args.export_only, status_file_override=args.status_file)

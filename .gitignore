@@ -1,14 +1,23 @@
 config.toml
-the-machine-ui-venv/
-.aws-sam/
-draft.json
-__pycache__/
-*.py[cod]
 venv/
 .venv/
-__temp_project_video.json
-workspace_settings.json
+the-machine-ui-venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.vscode/
 _backups/
-__temp_seq_batch_*
-__temp_export_*
 
+# user projects live here; the folder ships empty
+projects/*
+!projects/.gitkeep
+
+# web client: dependencies are not tracked, the built dist/ is
+web/node_modules/
+
+# agent CLI session state
+thm-agent/.state/
+
+# Comfy API key for partner nodes (secret, never commit)
+.comfy_api_key
+projects/**/.comfy_api_key

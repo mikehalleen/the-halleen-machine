@@ -22,19 +22,24 @@ from PIL.PngImagePlugin import PngInfo
 import re
 import random
 import workflow_controls as wc
-from lora_tags import LoraSpec, find_lora_tags, format_lora_tag, scale_lora_spec, strip_lora_tags
+import comfy_history
+import comfy_progress
+import generation_spec
+from lora_tags import LoraSpec, find_lora_tags, format_lora_tag, has_lora_named, scale_lora_spec, strip_lora_tags
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 WORKFLOWS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workflows"))
-_SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-from helpers import (
+# Launched as ``python scripts/run_images.py``, which puts scripts/ on sys.path but not
+# the repo root, so the thm_core package has to be made importable here.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from thm_core.runner_helpers import (
     inject_the_machine_snapshot,
     project_controls_kf_sampler_settings,
     wait_for_file_stable,
 )
-from workflow_capabilities import scan_workflow_file, runtime_injection_flags
+from thm_core.workflow_capabilities import scan_workflow_file, runtime_injection_flags
 from image_prompt import (
     DEFAULT_IMAGE_TEMPLATE,
     DEFAULT_IMAGE_TEMPLATE_2CHAR,
@@ -124,7 +129,7 @@ def _is_pid_running(pid: int) -> bool:
     except OSError: return False
     else: return True
 
-def _write_status(status_path, pid: int, status: str, current_task: str = None, sub_task: str = None, error: str = None, progress_percent: float = None):
+def _write_status(status_path, pid: int, status: str, current_task: str = None, sub_task: str = None, error: str = None, progress_percent: float = None, outputs: list = None, extra: dict = None):
     try:
         status_data = {
             "pid": pid,
@@ -135,6 +140,12 @@ def _write_status(status_path, pid: int, status: str, current_task: str = None, 
             "progress_percent": f"{progress_percent:.1f}" if progress_percent is not None else None,
             "last_update": datetime.now().isoformat()
         }
+        if extra:
+            # live ComfyUI progress (comfy_progress.PromptTracker): phase, step/steps, pass_no/passes, queue_ahead...
+            status_data.update({k: v for k, v in extra.items() if k not in status_data})
+        if outputs is not None:
+            # Files ComfyUI reported for this run: [{"path", "node_id", "prompt_id", "label"}]
+            status_data["outputs"] = list(outputs)
         temp_path = str(status_path) + ".tmp"
         with open(temp_path, 'w', encoding='utf-8') as f: json.dump(status_data, f, indent=2)
         os.replace(temp_path, status_path)
@@ -443,7 +454,7 @@ def run_preview_only(config_path: str, image_path: str, status_file_override: st
     
     # Queue workflow
     try:
-        prompt_id = post_prompt(api_base, graph, project_name=project_name, label="id_pose_preview")
+        prompt_id = post_prompt(api_base, graph, project_name=project_name, label="id_pose_preview", output_root=out_root)
         if not prompt_id:
             print("[FATAL] Failed to queue preview workflow")
             sys.exit(1)
@@ -486,8 +497,9 @@ def run_preview_only(config_path: str, image_path: str, status_file_override: st
             _write_status(status_path, script_pid, "failed", error=str(e))
         sys.exit(1)
 
-def post_prompt(api_base, graph, project_name=None, label=None):
+def post_prompt(api_base, graph, project_name=None, label=None, output_root=None, client_id=None):
     wc.strip_prompt_metadata(graph)
+    wc.annotate_comfy_image_inputs(graph, output_root=output_root or "", api_base=api_base)
     extra_data = {}
     if project_name:
         extra_data["machine_ui_project"] = project_name
@@ -496,7 +508,7 @@ def post_prompt(api_base, graph, project_name=None, label=None):
     comfy_api_key = os.environ.get("THM_COMFY_API_KEY", "").strip()
     if comfy_api_key:
         extra_data["api_key_comfy_org"] = comfy_api_key
-    r = requests.post(api_base.rstrip("/") + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4()), "extra_data": extra_data}, timeout=60)
+    r = requests.post(api_base.rstrip("/") + "/prompt", json={"prompt": graph, "client_id": client_id or str(uuid.uuid4()), "extra_data": extra_data}, timeout=60)
     if not r.ok:
         print(f"[COMFY] POST /prompt failed: {r.status_code}")
         try:
@@ -506,19 +518,25 @@ def post_prompt(api_base, graph, project_name=None, label=None):
     r.raise_for_status()
     return r.json().get("prompt_id")
 
+def fetch_history_entry(api_base, prompt_id, timeout_s=300):
+    """The ComfyUI history entry for ``prompt_id`` once it exists, or None on timeout.
+
+    Keeps a brief settle so SaveImage can flush before we read/re-write outputs (Windows).
+    """
+    return comfy_history.poll_history_entry(api_base, prompt_id, timeout_s, settle_s=0.5)
+
 def wait_history_done(api_base, prompt_id, timeout_s=300):
-    url = api_base.rstrip("/") + f"/history/{prompt_id}"
-    t0 = time.time()
-    while True:
-        try:
-            r = requests.get(url, timeout=30)
-            if r.status_code == 200 and prompt_id in r.json():
-                # Brief settle so SaveImage can flush before we read/re-write outputs (Windows).
-                time.sleep(0.5)
-                return True
-        except: pass
-        if time.time() - t0 > timeout_s: return False
-        time.sleep(1.0)
+    return fetch_history_entry(api_base, prompt_id, timeout_s) is not None
+
+def _newest_by_prefix(folder, prefix, exts):
+    """Newest file in ``folder`` whose name starts with ``prefix`` (mtime fallback)."""
+    if not folder or not os.path.isdir(folder):
+        return None
+    cands = [os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(prefix) and f.lower().endswith(exts)]
+    if not cands:
+        return None
+    cands.sort(key=os.path.getmtime, reverse=True)
+    return cands[0]
 
 def set_text_on_titles(graph, title, text):
     wc.set_text_on_title(graph, title, text)
@@ -544,6 +562,7 @@ def run(config_path, status_file_override=None):
     cfg = jload(config_path)
     config_dir = os.path.dirname(os.path.abspath(config_path))
     script_pid = os.getpid()
+    discovered_outputs: list = []  # history-reported files, mirrored into the status file
 
     project = cfg["project"]
     sequences = cfg["sequences"] # V2: Can be dict or list
@@ -586,7 +605,7 @@ def run(config_path, status_file_override=None):
         status_path = Path(out_root) / project_name / "_images_status.json"
         (Path(out_root) / project_name).mkdir(parents=True, exist_ok=True)
         
-    if status_path: _write_status(status_path, script_pid, "running", "Initializing...", progress_percent=0.0)
+    if status_path: _write_status(status_path, script_pid, "running", "Initializing...", progress_percent=0.0, outputs=discovered_outputs)
 
     try:
         # --- V2 DATA NORMALIZATION ---
@@ -612,7 +631,7 @@ def run(config_path, status_file_override=None):
             seq_task_str = f"Processing sequence '{seq_id}' ({seq_idx + 1}/{num_sequences})"
             print(f"\n=== {seq_task_str} ===")
             seq_progress_base = (seq_idx / num_sequences) * 100
-            if status_path: _write_status(status_path, script_pid, "running", seq_task_str, "Scanning keyframes...", progress_percent=seq_progress_base)
+            if status_path: _write_status(status_path, script_pid, "running", seq_task_str, "Scanning keyframes...", progress_percent=seq_progress_base, outputs=discovered_outputs)
 
             # --- V2 Keyframe Access ---
             # V2: "keyframes" dict. V1: "i2v_base_images" dict.
@@ -647,7 +666,7 @@ def run(config_path, status_file_override=None):
                 kf_sub_task_str = f"Generating '{id_name}' ({kf_idx + 1}/{num_keyframes})"
                 print(f"\n--- {kf_sub_task_str} ---")
                 kf_progress_base = seq_progress_base + ((kf_idx / num_keyframes) / num_sequences) * 100
-                if status_path: _write_status(status_path, script_pid, "running", seq_task_str, kf_sub_task_str, progress_percent=kf_progress_base)
+                if status_path: _write_status(status_path, script_pid, "running", seq_task_str, kf_sub_task_str, progress_percent=kf_progress_base, outputs=discovered_outputs)
 
                 try:
                     n_images = int(id_conf.get("image_iterations_override", default_n))
@@ -782,7 +801,7 @@ def run(config_path, status_file_override=None):
                     if lora_by_name:
                         fg_blob = " ".join(fg_src)
                         for spec in lora_by_name.values():
-                            mult = fg_mult if format_lora_tag(spec) in fg_blob else bg_mult
+                            mult = fg_mult if has_lora_named(fg_blob, spec.name) else bg_mult
                             final_loras.append(scale_lora_spec(spec, mult))
                     injected_count = 0
                     if inj.use_lora and final_loras:
@@ -983,9 +1002,14 @@ def run(config_path, status_file_override=None):
                             print(f"[DEBUG] Graph content saved for inspection: {debug_file}")
 
                             job_label = f"{seq_id}|{id_name}" if seq_id and seq_id != id_name else id_name
-                            pid = post_prompt(api_base, graph, project_name=project_name, label=job_label)
+                            pid = post_prompt(api_base, graph, project_name=project_name, label=job_label, output_root=out_root)
                             print("[PID]",pid)
-                            ok = wait_history_done(api_base, pid, timeout_s=timeout_s)
+                            entry = fetch_history_entry(api_base, pid, timeout_s=timeout_s)
+                            ok = entry is not None
+                            history_error = comfy_history.history_error_detail(entry) if ok else None
+                            if history_error:
+                                print(f"[ERR] ComfyUI prompt {pid} failed: {history_error}")
+                                ok = False
 
                             if ok:
 
@@ -1038,44 +1062,204 @@ def run(config_path, status_file_override=None):
 
 
 
-                                # Inject metadata into newest file
-                                if os.path.isdir(out_folder):
-                                    cands = [os.path.join(out_folder, f) for f in os.listdir(out_folder) if f.startswith(base_filename) and f.lower().endswith(IMAGE_EXTS)]
-                                    if cands:
-                                        cands.sort(key=os.path.getmtime, reverse=True)
-                                        final_path = cands[0]
-                                        if wait_for_file_stable(final_path, timeout_s=45.0):
-                                            inject_metadata_png(final_path, snapshot)
-                                            print(f"RESULT: {final_path}")
-                                        else:
-                                            print(
-                                                f"[WARN] Output file not stable, skipping metadata inject: {final_path}"
-                                            )
-                                            print(f"RESULT: {final_path}")
+                                # Prefer the exact file ComfyUI reported for this prompt; fall back to mtime.
+                                found = comfy_history.extract_history_outputs(entry, out_root, prompt_id=pid, label=job_label)
+                                discovered_outputs.extend(found)
+                                hits = comfy_history.outputs_in_folder(found, out_folder, IMAGE_EXTS)
+                                final_path = hits[0] if len(hits) == 1 else None
+                                if final_path is None:
+                                    print(f"[WARN] history reported {len(hits)} image output(s) in {out_folder}; falling back to newest file by mtime")
+                                    final_path = _newest_by_prefix(out_folder, base_filename, IMAGE_EXTS)
+                                if final_path:
+                                    if wait_for_file_stable(final_path, timeout_s=45.0):
+                                        inject_metadata_png(final_path, snapshot)
+                                        print(f"RESULT: {final_path}")
+                                    else:
+                                        print(
+                                            f"[WARN] Output file not stable, skipping metadata inject: {final_path}"
+                                        )
+                                        print(f"RESULT: {final_path}")
 
                         except Exception as e: print(f"[ERR][a] {seq_id}/{id_name} i={i}: {e}")
 
                 except Exception as e:
                     print(f"[ERR] {seq_id}/{id_name}: {e}")
 
-        if status_path: _write_status(status_path, script_pid, "completed", "All sequences processed.", progress_percent=100.0)
+        if status_path: _write_status(status_path, script_pid, "completed", "All sequences processed.", progress_percent=100.0, outputs=discovered_outputs)
 
     except Exception as e:
         print(f"[FATAL] {e}")
-        if status_path: _write_status(status_path, script_pid, "failed", error=str(e))
+        if status_path: _write_status(status_path, script_pid, "failed", error=str(e), outputs=discovered_outputs)
         sys.exit(1)
 
 
 
-if __name__ == "__main__":
+# ================= THM ENTRY MODE =================
+
+def run_generation(spec_path, status_file_override=None):
+    """THM entry mode: run one image workflow from a generation spec.
+
+    The spec (see ``generation_spec.py``) is written by the THM server from a
+    Generation record: submitted prompt and negative, prelude lines, paths by
+    slot node id (or ``start`` / ``end``), params, and structured LoRAs. No 1.x
+    project payload is read. Outputs come from ComfyUI history and are written
+    into the status file; each is printed as ``RESULT: <path>``.
+    """
+    spec = generation_spec.load_generation_spec(spec_path)
+    script_pid = os.getpid()
+    comfy = spec["comfy"]
+    api_base = comfy["api_base"]
+    out_root = comfy["output_root"]
+    timeout_s = float(comfy.get("timeout_seconds", 3600))
+    output_dir = os.path.abspath(spec["output_dir"])
+    prefix = str(spec["filename_prefix"])
+    label = str(spec.get("label") or spec.get("id") or prefix)
+    params = spec.get("params") or {}
+    paths_by_slot = generation_spec.paths_by_slot_from_spec(spec)
+    status_path = generation_spec.generation_status_path(spec, status_file_override)
+    outputs: list = []
+    ids: dict = {}  # {"prompt_id": ...} once posted; kept on the final write so a late pickup can find the entry
+    _write_status(status_path, script_pid, "running", "Preparing graph", progress_percent=0.0, outputs=outputs)
+
+    try:
+        rel_dir = generation_spec.output_dir_relative_to_root(output_dir, out_root)
+        wf_path = resolve_image_workflow_path({"workflow_json": spec["workflow"]}, {}, "")
+        graph = jload(wf_path)
+
+        # References: tagged image slots keyed by node id, then frame anchors and video slots.
+        slots = wc.discover_image_reference_slots(graph)
+        wc.clear_tagged_reference_nodes(graph)
+        wc.clear_tagged_video_reference_nodes(graph)
+        if slots:
+            wc.inject_reference_slot_paths(graph, slots, paths_by_slot)
+        discovery = wc.discover_reference_wiring_order(graph)
+        if slots:
+            wc.patch_discovery_roles_from_slots(discovery, slots)
+        active = wc.build_reference_active_by_role(
+            pose_path=None, character_paths={}, location_path="",
+            slots=slots or None, paths_by_slot=paths_by_slot or None,
+        )
+        wc.mute_inactive_reference_slots(graph, discovery, active, slots)
+        if discovery.tier == "linear_ref_stack":
+            wc.apply_reference_branch_activation(graph, discovery, active, slots)
+        wc.set_video_frame_loaders(graph, paths_by_slot.get("start"), paths_by_slot.get("end"))
+        wc.inject_video_reference_slot_paths(graph, wc.discover_video_reference_slots(graph), paths_by_slot)
+        # image slots are muted above by their own rules; an empty video loader has to leave the graph
+        wc.deactivate_empty_reference_loaders(graph, controls=(wc.VIDEO_REFERENCE,))
+
+        # LoRAs ride in the prompt text as <lora:name:strength> tags (or the 1.x __lora:...__
+        # form); they come out before the text reaches the encoder and go in as loader nodes.
+        raw_text = generation_spec.prompt_text_from_spec(spec)
+        lora_specs = generation_spec.lora_specs_from_spec(spec, raw_text)
+        text = strip_lora_tags(raw_text)
+        negative = str(spec.get("negative") or "")
+        wc.set_prompt(graph, text)
+        wc.set_negative_prompt(graph, negative)
+
+        if lora_specs:
+            print("[LORAS] " + ", ".join(format_lora_tag(s) for s in lora_specs))
+        # Always run: a tagged marker is THM-owned, so its baked LoRA is neutralised even
+        # when nothing is selected.
+        wc.inject_loras(graph, lora_specs)
+
+        seed = int(params["seed"]) if params.get("seed") is not None else random.randint(0, 2**31 - 1)
+        wc.set_generation_settings(
+            graph,
+            seed=seed,
+            cfg=params.get("cfg"),
+            sampler_name=params.get("sampler"),
+            scheduler=params.get("scheduler"),
+            steps=int(params["steps"]) if params.get("steps") is not None else None,
+        )
+        if params.get("width") and params.get("height"):
+            wc.set_dimensions(graph, int(params["width"]), int(params["height"]))
+
+        wc.set_save_image_prefix(graph, os.path.join(rel_dir, prefix) if rel_dir else prefix)
+        os.makedirs(output_dir, exist_ok=True)
+
+        print(f"[GEN] workflow={wf_path}")
+        print(f"[GEN] seed={seed} label={label} out={output_dir}")
+        print("[PROMPT]\n" + text)
+        if negative:
+            print("[NEGATIVE]\n" + negative)
+        _write_status(status_path, script_pid, "running", "queued", progress_percent=None, outputs=outputs)
+
+        def on_progress(fields):
+            _write_status(status_path, script_pid, "running", fields.get("task"), progress_percent=fields.get("progress_percent"), outputs=outputs, extra=fields)
+
+        with comfy_progress.PromptTracker(api_base, graph, on_progress) as tracker:
+            pid = post_prompt(api_base, graph, project_name=spec.get("project"), label=label, output_root=out_root, client_id=tracker.client_id)
+            print("[PID]", pid)
+            ids["prompt_id"] = str(pid)
+            entry = tracker.wait(pid, timeout_s, settle_s=0.5)
+        if entry is None:
+            raise RuntimeError(f"prompt {pid} {tracker.gave_up or 'gave up'}")
+        # what the render itself took, queue wait excluded: ComfyUI's own clock from the history
+        # entry, else the tracker's execution_start to now
+        exec_s = comfy_history.history_exec_seconds(entry)
+        if exec_s is None and tracker.exec_started_at is not None:
+            exec_s = round(time.time() - tracker.exec_started_at, 1)
+        if exec_s is not None:
+            ids["exec_seconds"] = exec_s
+            print(f"[TIMING] comfy execution {exec_s:.1f}s")
+        err = comfy_history.history_error_detail(entry)
+        if err:
+            raise RuntimeError(f"ComfyUI prompt {pid} failed: {err}")
+
+        found = comfy_history.extract_history_outputs(entry, out_root, prompt_id=pid, label=label)
+        if not found:
+            print(f"[WARN] history reported no outputs for {pid}; falling back to newest file by mtime")
+            newest = _newest_by_prefix(output_dir, prefix, IMAGE_EXTS)
+            if newest:
+                found = [{"path": newest, "node_id": "", "prompt_id": str(pid), "label": label}]
+        outputs.extend(found)
+
+        snapshot = {
+            "thm": {
+                "generation": spec.get("id"),
+                "project": spec.get("project"),
+                "workflow": os.path.basename(wf_path),
+                "prompt": text,
+                "negative": negative,
+                "seed": seed,
+                "params": params,
+                "loras": spec.get("loras") or [],
+                "paths_by_slot": paths_by_slot,
+            },
+            "meta": {"timestamp": datetime.now().isoformat()},
+        }
+        for o in found:
+            path = o["path"]
+            if path.lower().endswith(IMAGE_EXTS):
+                if wait_for_file_stable(path, timeout_s=45.0):
+                    inject_metadata_png(path, snapshot)
+                else:
+                    print(f"[WARN] Output file not stable, skipping metadata inject: {path}")
+            print(f"RESULT: {path}")
+        _write_status(status_path, script_pid, "completed", "Done", progress_percent=100.0, outputs=outputs, extra=ids)
+    except Exception as e:
+        print(f"[FATAL] {e}")
+        _write_status(status_path, script_pid, "failed", error=str(e), outputs=outputs, extra=ids)
+        sys.exit(1)
+
+
+def build_arg_parser():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True)
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--config", help="1.x project payload with sequences")
+    mode.add_argument("--generation", help="THM generation spec JSON (see generation_spec.py)")
     ap.add_argument("--status-file", required=False)
-    ap.add_argument("--preview-only", action="store_true", help="Extract controlnet previews from existing image")
+    ap.add_argument("--preview-only", action="store_true", help="Extract controlnet previews from existing image (with --config)")
     ap.add_argument("--image", required=False, help="Image path for --preview-only mode")
-    args = ap.parse_args()
-    
-    if args.preview_only:
+    return ap
+
+
+if __name__ == "__main__":
+    args = build_arg_parser().parse_args()
+
+    if args.generation:
+        run_generation(args.generation, status_file_override=args.status_file)
+    elif args.preview_only:
         if not args.image:
             print("[FATAL] --preview-only requires --image <path>")
             sys.exit(1)

@@ -1,7 +1,0 @@
-# Media/log mirrors copied here for in-repo agent Read access only —
-# canonical copies live in ComfyUI's output_root (D:/ComfyUI/output); safe to delete.
-# Scripts, project notes (*.md), and JSON (archives/manifests) are real project
-# files and stay tracked.
-*.png
-*.mp4
-*.log

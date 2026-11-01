@@ -105,7 +105,7 @@ Merged from `project.negatives.global` + `project.negatives.keyframes_all` + **a
 |---|---|---|
 | Preferred tag | Legacy titles | Class | What gets injected |
 |---|---|---|
-| `THM-ImageReference` | _(none)_ | `LoadImage` | **Custom family:** up to four duplicate bare tags; semantics via `reference_bindings` keyed by Comfy **node id**. **Default family pose:** use legacy `MainImageAndMask` (not a THM tag). |
+| `THM-ImageReference` | `THM-ReferenceImage` (transposed spelling, accepted but not preferred) | `LoadImage` | **Custom family:** up to four duplicate bare tags; semantics via `reference_bindings` keyed by Comfy **node id**. **Default family pose:** use legacy `MainImageAndMask` (not a THM tag). |
 
 Deprecated THM reference tags (`THM-PoseReference`, `THM-CharacterReference`, `THM-LocationReference`, `THM-SettingReference`, `THM-StyleReference`) are no longer recognized — use duplicate bare `THM-ImageReference` only.
 
@@ -374,6 +374,7 @@ Bundled legacy workflow [`workflows/i2v_base.json`](workflows/i2v_base.json) sta
 | Save video | `THM-SaveVideo` | `SaveVideo` / `VHS_VideoCombine` class | `filename_prefix` only |
 | Start keyframe | `THM-StartFrame` (alias `THM-StartImage`) | — | `LoadImage.image` |
 | End keyframe | `THM-EndFrame` (alias `THM-EndImage`) | — | `LoadImage.image` |
+| Video reference | `THM-VideoReference` | `THM-ReferenceVideo` (transposed spelling, accepted) | clip path on the loader (`video` / `file` / `filename` / `path`); duplicate bare titles, one per slot, ordered by node id. THM only; the 1.x app ignores it |
 
 Workflows may export **both** frame loaders wired into `THM-VideoGenerator`. At run time THM configures open vs closed use:
 
@@ -384,6 +385,18 @@ Workflows may export **both** frame loaders wired into `THM-VideoGenerator`. At 
 | **OE** (open start) | disconnected + cleared | wired + path set |
 
 Export both entry points from ComfyUI; THM adjusts the graph per clip — no separate workflow files needed.
+
+### Reference slots vs anchor slots
+
+Two kinds of media input behave nothing alike (see `docs/dev/multi-reference-video-ui-requirements.md`, section 2):
+
+| | Anchor slot | Reference slot |
+|---|---|---|
+| Declared by | `THM-StartFrame` / `THM-EndFrame` | `THM-ImageReference` / `THM-VideoReference` |
+| Prompt | Not mentioned; the frame is baked into the flow | Must be mentioned; it gets a positional token (`image1`, `<Picture 1>`, `<Video 1>` depending on the model) and an unmentioned reference is largely wasted |
+| Result | Frame-exact: output frame 1 *is* that image | Influence only; the model approximates |
+
+The workflow decides how many slots of each kind exist; the user cannot add slots. `THM-VideoReference` goes on a video loader node (`LoadVideo`, `VHS_LoadVideo`, or a provider node that takes a clip path); use duplicate bare titles, one per slot. Slots are ordered by node id. The 1.x Gradio app does not consume video reference slots; THM binds them from a shot's references and derives the prompt token from the workflow.
 
 ### Frame input support vs sequence clip type
 
@@ -530,6 +543,7 @@ THM-Prompt
 THM-NegativePrompt
 THM-StartFrame              LoadImage — start keyframe
 THM-EndFrame                LoadImage — end keyframe
+THM-VideoReference          LoadVideo — reference clip slot (duplicate bare titles; optional; THM)
 THM-VideoGenerator          generator — width + height (and length if not split)
 THM-FrameCount              int constant → wire to generator length   (optional split layout)
 THM-FrameRate               float constant → wire to THM-SaveVideo frame_rate

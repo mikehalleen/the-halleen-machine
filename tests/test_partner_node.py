@@ -147,8 +147,8 @@ def test_derive_partner_metadata_none_without_partner_node():
 def test_suggested_image_size_for_video():
     import sys
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-    from workflow_capabilities import suggested_image_size_for_video
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from thm_core.workflow_capabilities import suggested_image_size_for_video
 
     # Nearest ~1MP /64 bucket by aspect ratio (model-safe for SDXL and Flux)
     assert suggested_image_size_for_video(1920, 1080) == (1344, 768)

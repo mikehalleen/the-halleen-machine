@@ -1,0 +1,3356 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--page-bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* UA defaults survive theming: fields, popups, carets */
+input,
+select,
+textarea {
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--ink);
+  caret-color: var(--accent);
+}
+
+option {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+::placeholder {
+  color: var(--muted);
+}
+
+img,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+/* ---- shell ---------------------------------------------------------------- */
+
+.shell {
+  /* the visual viewport's height while the phone keyboard is up (layout/viewport.ts), else the page */
+  height: var(--app-height, 100%);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.shell-body {
+  position: relative; /* the session push anchors here, under the strip */
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.canvas {
+  position: relative; /* the library slide-over anchors here, so the sidebar/rail stay clear */
+  /* with the rail open the space splits 2:1 after the canvas's own padding and column gap
+     (14 + 14 + 12 = 40px), so the session column comes out the width of a shot column;
+     without a rail the canvas simply takes everything */
+  flex: 2 1 40px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.canvas-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
+}
+
+/* The agent rail at 1120 and up: a push column, not an overlay, so the canvas stays usable
+   while you answer the agent. Always mounted while a session exists; open and closed are a
+   width, so the toggle animates both ways. */
+.rail {
+  flex: none;
+  width: 0;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+  background: var(--sb-panel);
+  transition: width 180ms ease-out;
+}
+
+.rail.is-open {
+  width: var(--w-rail);
+  border-left: 1px solid var(--sb-line);
+}
+
+.rail-inner {
+  width: var(--w-rail);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Below 1120 the session covers sidebar and canvas, never the bar. */
+.panel-push {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: var(--sb-panel);
+  display: flex;
+  flex-direction: column;
+  animation: push-in 180ms ease-out;
+}
+
+@keyframes push-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* ---- system bar ---------------------------------------------------------------- */
+
+/* The machine's bar, on every screen at every width. Reports renders and queue depth even
+   with no agent installed; the agent is a tenant in it. Fixed dark in every theme. */
+.bar {
+  position: relative;
+  flex: none;
+  height: var(--h-bar);
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 12px;
+  overflow: hidden;
+  background: var(--sb-bar);
+  color: var(--sb-control);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.bar > * {
+  position: relative; /* above the wash */
+}
+
+/* a render in progress is the bar itself: a wash and a 2px edge as wide as the progress */
+.bar-wash,
+.bar-edge {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  transition: width 400ms linear;
+}
+
+.bar-wash {
+  top: 0;
+  background: var(--sb-cyan-wash);
+}
+
+.bar-edge {
+  height: 2px;
+  background: var(--sb-cyan);
+}
+
+/* a render in another project, at half strength */
+.bar.is-remote .bar-wash {
+  background: var(--sb-cyan-wash-remote);
+}
+
+.bar.is-remote .bar-edge {
+  background: var(--sb-cyan-edge-remote);
+}
+
+/* the brand mark: the favicon's H, the only orange-family thing in the product */
+.bar-home {
+  flex: none;
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.bar-home img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* the tenant line: one tenant at a time */
+.bar-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
+.bar-line > * {
+  flex: none;
+}
+
+.bar-idle {
+  font-family: var(--font-mono);
+  color: var(--sb-dim);
+}
+
+/* status dots: 8px; filled = working, ring = live but idle; cyan pulses only for a render */
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: none;
+}
+
+.dot.is-working {
+  background: var(--sb-green);
+}
+
+.dot.is-standby {
+  border: 1.5px solid var(--sb-green);
+}
+
+.dot.is-render {
+  background: var(--sb-cyan);
+  animation: softpulse 1.6s ease-in-out infinite;
+}
+
+.dot.is-render-remote {
+  background: var(--sb-cyan-edge-remote);
+}
+
+.dot.is-pending {
+  background: var(--sb-amber);
+}
+
+.dot.is-ended {
+  background: var(--sb-ended);
+}
+
+.dot.is-live {
+  background: var(--green);
+}
+
+.bar-word {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--sb-control);
+}
+
+.bar.is-remote .bar-word {
+  color: var(--sb-secondary);
+}
+
+.bar-step {
+  font-family: var(--font-mono);
+  color: var(--sb-cyan);
+}
+
+.bar-sep {
+  color: var(--sb-faint);
+}
+
+.bar-bin {
+  color: var(--sb-secondary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+}
+
+.bar-project {
+  font-weight: 600;
+  color: var(--sb-control);
+}
+
+.bar-remote-bin {
+  font-family: var(--font-mono);
+  color: var(--sb-muted);
+}
+
+.bar-queued,
+.bar-phrase,
+.bar-elsewhere,
+.bar-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--sb-muted);
+}
+
+.bar-phrase {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--sb-dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+
+/* attribution: queued by agent / queued by you */
+.bar-attrib {
+  border: 1px solid var(--sb-line-control);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--sb-label);
+}
+
+.bar-ended {
+  color: var(--sb-label);
+}
+
+/* after a session ends: the count that opens the transcript */
+.bar-link {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--sb-muted);
+  border-bottom: 1px solid var(--sb-line-em);
+  padding-bottom: 1px;
+  cursor: pointer;
+}
+
+/* the right group: every other project's sessions, then the agent control */
+.bar-elsewhere {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--sb-dim);
+  white-space: nowrap;
+}
+
+.bar-elsewhere .bar-sep {
+  color: var(--sb-line-em);
+}
+
+.bar-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bar-count .dot {
+  width: 7px;
+  height: 7px;
+}
+
+/* the agent collapsed to a chip while a render has the line: 7px dot + mode word */
+.bar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--sb-dim);
+}
+
+.bar-chip .dot {
+  width: 7px;
+  height: 7px;
+}
+
+/* the front door: a pill with no session, a toggle with one, the same slot in every state */
+.bar-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--sb-line-bright);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sb-control);
+  white-space: nowrap;
+}
+
+.bar-pill:disabled {
+  opacity: 0.6;
+}
+
+.bar-pill-go {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  color: var(--sb-muted);
+}
+
+/* no agent CLI on the machine: nothing animates, tapping explains */
+.bar-pill.is-absent {
+  border-color: var(--sb-line-control);
+  padding: 4px 11px;
+  font-weight: 500;
+  color: var(--sb-label);
+  gap: 6px;
+}
+
+.bar-pill.is-absent .dot {
+  width: 7px;
+  height: 7px;
+  background: var(--sb-line-bright);
+}
+
+.bar-toggle {
+  border-color: var(--sb-line-em);
+  padding: 4px 11px;
+}
+
+/* while the panel is open the border says which state the click leaves you in */
+.bar-toggle.is-open {
+  border-color: var(--sb-cyan);
+}
+
+/* pending approvals + open questions: the whole blocker signal in the bar */
+.badge-amber {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--sb-amber);
+  color: var(--sb-amber-ink);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.badge-amber.is-small {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+}
+
+/* the no-agent explainer, under the pill */
+.bar-explainer {
+  position: fixed;
+  top: calc(var(--h-bar) + 6px);
+  right: 10px;
+  z-index: 45;
+  width: min(340px, calc(100vw - 20px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--sb-raised);
+  border: 1px solid var(--sb-line-card);
+  border-radius: 10px;
+  padding: 14px;
+  font-family: var(--font-ui);
+  color: var(--sb-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.bar-explainer b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sb-title);
+}
+
+.bar-explainer code {
+  font-family: var(--font-mono);
+  color: var(--sb-secondary);
+}
+
+/* the bar sheds words before it sheds slots */
+@media (max-width: 759px) {
+  .bar {
+    gap: 9px;
+    padding: 0 10px;
+  }
+
+  .bar-home {
+    width: 24px;
+    height: 24px;
+  }
+
+  .bar-line {
+    gap: 7px;
+    font-size: 11px;
+  }
+
+  .bar-phrase,
+  .bar-attrib,
+  .bar-elsewhere,
+  .bar-word,
+  .bar-chip {
+    display: none;
+  }
+
+  .bar-toggle {
+    padding: 5px 10px;
+  }
+}
+
+/* the mode pill: a control, since mode changes often; in the bar and the panel header */
+.mode-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--sb-line-em);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--sb-secondary);
+  white-space: nowrap;
+}
+
+.mode-pill.is-header {
+  padding: 3px 10px;
+}
+
+.mode-menu {
+  position: fixed;
+  z-index: 46;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--sb-raised);
+  border: 1px solid var(--sb-line-card);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--sb-body);
+}
+
+.mode-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--sb-body);
+}
+
+.mode-option:hover {
+  background: var(--sb-tile);
+}
+
+.mode-option.is-on {
+  color: var(--sb-title);
+}
+
+.mode-option-check {
+  width: 10px;
+  color: var(--sb-secondary);
+}
+
+/* ---- agent session ----------------------------------------------------------- */
+
+.agent-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--sb-panel);
+  color: var(--sb-body);
+  font-family: var(--font-ui);
+}
+
+/* one line at any width: dot · title · end session · spacer · mode pill · ✕ */
+.agent-head {
+  flex: none;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--sb-line);
+}
+
+.agent-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sb-title);
+  white-space: nowrap;
+}
+
+/* a worded pill beside the title, at the far end of the header from ✕ and nowhere near Send */
+.agent-end {
+  flex: none;
+  border: 1px solid var(--sb-line-control);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--sb-muted);
+  white-space: nowrap;
+}
+
+/* the two-step: the first click arms it, the second ends */
+.agent-end.is-armed {
+  border-color: var(--sb-amber-border);
+  background: var(--sb-amber-fill);
+  color: var(--sb-title);
+}
+
+/* close only, never end: a bare glyph in the corner */
+.agent-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--sb-muted);
+}
+
+.agent-close:hover {
+  background: var(--sb-tile);
+}
+
+@media (max-width: 759px) {
+  .agent-head {
+    padding: 0 14px;
+    gap: 10px;
+  }
+
+  .agent-title {
+    font-size: 14px;
+  }
+}
+
+/* every text entry: multi-line, grows with content, the button submits */
+.autogrow {
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+}
+
+.spinner.spinner-dark {
+  border-color: var(--line-soft);
+  border-top-color: var(--ink);
+}
+
+/* the feed: chronological, newest at the bottom, scroll pinned by column-reverse.
+   Nothing in it is cyan: cyan keeps meaning generating / selected, elsewhere. */
+.agent-feed {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 14px;
+  padding: 16px;
+}
+
+.agent-feed .link {
+  color: var(--sb-muted);
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 7px 11px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.bubble-agent {
+  align-self: flex-start;
+  border: 1px solid var(--sb-line-card);
+  border-radius: 10px 10px 10px 3px;
+  background: var(--sb-raised);
+  color: var(--sb-body);
+}
+
+.bubble-agent.is-blocker {
+  border-color: var(--sb-amber-border);
+  background: var(--sb-amber-ground);
+}
+
+.bubble-kind {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--sb-amber);
+  margin-bottom: 3px;
+}
+
+.bubble-user {
+  align-self: flex-end;
+  border: 1px solid var(--sb-line-control);
+  border-radius: 10px 10px 3px 10px;
+  background: var(--sb-tile);
+  color: var(--sb-title);
+}
+
+.bubble-meta {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--sb-label);
+}
+
+.bubble-sys {
+  align-self: center;
+  max-width: 90%;
+  font-size: 12px;
+  color: var(--sb-muted);
+  text-align: center;
+}
+
+/* a session boundary: centered mono, rules filling each side */
+.feed-divider {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--sb-faint);
+  white-space: nowrap;
+}
+
+.feed-divider::before,
+.feed-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--sb-line);
+}
+
+/* your own UI edits, digested: a left-ruled lane, clearly not a message, expandable */
+.edits-digest {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-left: 2px solid var(--sb-line-control);
+  padding: 5px 0 5px 12px;
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+
+.edits-digest-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.edits-digest-you {
+  font-family: var(--font-mono);
+  color: var(--sb-label);
+}
+
+.edits-digest-show {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--sb-dim);
+  white-space: nowrap;
+}
+
+.edits-digest-line {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--sb-muted);
+  line-height: 1.5;
+}
+
+.edits-digest-line .edits-digest-you {
+  flex: none;
+}
+
+/* the agent's run: same lane, the hand named in the same mono label */
+.edits-digest.is-agent {
+  border-left-color: var(--sb-line-em);
+}
+
+.edits-digest-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.edits-digest-reason {
+  color: var(--sb-dim);
+}
+
+.edits-digest-thumb {
+  flex: none;
+}
+
+/* the newest action of a run: replaced in place as the batch streams, each one fading in
+   so the eye can catch it going by */
+.edits-digest-latest {
+  animation: digest-in 0.35s ease-out;
+}
+
+@keyframes digest-in {
+  from {
+    opacity: 0.2;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* change cards */
+.change-card {
+  align-self: flex-start;
+  width: 88%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid var(--sb-line-card);
+  border-radius: 10px;
+  background: var(--sb-raised);
+  color: var(--sb-body);
+}
+
+/* a decision owed is the needs-you role, never cyan */
+.change-card.is-pending,
+.change-card.is-proposed {
+  border-color: var(--sb-amber-border);
+  background: var(--sb-amber-ground);
+}
+
+.change-head {
+  gap: 6px;
+}
+
+.change-status {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.is-pending .change-status,
+.is-proposed .change-status {
+  color: var(--sb-amber);
+}
+
+.is-approved .change-status {
+  color: var(--green-text);
+}
+
+.link {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.change-edit {
+  align-self: flex-start;
+}
+
+/* The whole frame, letterboxed on the neutral ground -- a 90px strip with object-fit:cover
+   showed a chin and no face, which is useless for judging a render. */
+.change-preview {
+  position: relative;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  background: var(--empty-fg);
+}
+
+.change-preview img {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+}
+
+.change-preview-name,
+.change-preview-qc {
+  position: absolute;
+  bottom: 6px;
+  background: var(--surface);
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.change-preview-name {
+  left: 6px;
+}
+
+.change-preview-qc {
+  right: 6px;
+  color: var(--destructive);
+}
+
+.change-desc {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.change-reason {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted-2);
+  white-space: pre-wrap;
+}
+
+.change-note {
+  border: var(--b-thin) solid var(--line-soft);
+  border-radius: var(--r-card);
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+/* the shots card: the batch's items as numbered rows, each a chip to keep or drop and the
+   one-liner to rewrite while the card is open; after the decision the rows read as the record */
+.shots-card {
+  width: 94%;
+}
+
+.shots-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sb-muted);
+}
+
+.change-close {
+  margin-left: 4px;
+}
+
+.shot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shot-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.shot-row.is-dropped .shot-body {
+  opacity: 0.45;
+}
+
+.shot-row.is-dropped .shot-name,
+.shot-row.is-dropped .shot-desc-text {
+  text-decoration: line-through;
+}
+
+.shot-toggle {
+  flex: none;
+  min-width: 28px;
+  justify-content: center;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+/* kept reads as emphasis, not selection: the feed keeps cyan for generating / selected */
+.shots-card .shot-toggle.is-on {
+  background: transparent;
+  border-color: var(--sb-line-em);
+  color: var(--sb-body);
+}
+
+.shot-toggle:disabled {
+  opacity: 0.7;
+}
+
+.shot-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shot-head {
+  gap: 6px;
+  align-items: center;
+}
+
+.shot-name {
+  font-size: 13px;
+}
+
+.shot-meta {
+  font-size: 11px;
+  color: var(--sb-muted);
+  white-space: nowrap;
+}
+
+.shot-refs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.shot-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--sb-muted);
+}
+
+.shot-desc {
+  border: var(--b-thin) solid var(--line-soft);
+  border-radius: var(--r-card);
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.shot-desc:disabled {
+  opacity: 0.6;
+}
+
+.shot-desc-text {
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.shot-outcome {
+  gap: 8px;
+  font-size: 11px;
+}
+
+.shot-flag {
+  font-size: 11px;
+  color: var(--sb-muted);
+}
+
+.shot-flag.is-error {
+  color: var(--destructive);
+}
+
+.shot-tools {
+  gap: 10px;
+  font-size: 11px;
+}
+
+.shot-kept {
+  color: var(--sb-muted);
+}
+
+/* the batch: card on top, its renders as one digest row under it */
+.batch {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.batch-digest.is-owed {
+  border-left-color: var(--sb-amber-border);
+}
+
+.batch-owed {
+  color: var(--sb-amber);
+}
+
+.batch-children {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.agent-doing-close {
+  margin-left: 6px;
+}
+
+.change-sent {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted-3);
+  background: var(--note-bg);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.change-actions {
+  gap: 6px;
+}
+
+/* approve: a full row, neutral emphasis outline; on a phone a 44px target */
+.btn-approve {
+  flex: 1;
+  padding: 8px 0;
+  border-radius: 8px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--sb-line-em);
+  background: transparent;
+  color: var(--sb-control);
+}
+
+/* the activity row: what the agent is doing, above the composer */
+.agent-doing {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--sb-line);
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+
+.agent-doing-who {
+  font-family: var(--font-mono);
+  color: var(--sb-label);
+}
+
+.agent-doing-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* what a note from here is about: the bin on screen and its lead take, beside the phrase */
+.agent-doing-about {
+  margin-left: 8px;
+  color: var(--muted-2);
+  font-weight: 600;
+}
+
+.agent-doing-spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 999px;
+  border: 1.5px solid var(--sb-line-control);
+  border-top-color: var(--sb-muted);
+  animation: spin 0.9s linear infinite;
+}
+
+/* composer: the last element in the panel, nothing below it -- attached media chips above
+   the row of + · note · Send */
+.composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.composer-attach {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--sb-line-em);
+  border-radius: 8px;
+  font-family: var(--font-ui);
+  font-size: 18px;
+  line-height: 1;
+  color: var(--sb-control);
+  background: transparent;
+}
+
+.composer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.composer-chip {
+  position: relative;
+  display: inline-flex;
+}
+
+.composer-chip-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--sb-line-em);
+  background: var(--sb-panel);
+  color: var(--sb-body);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* files held over the panel: the whole panel is the drop target */
+.agent-panel.is-dropping {
+  outline: 2px dashed var(--sb-control);
+  outline-offset: -6px;
+}
+
+.composer-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--sb-line-control);
+  border-radius: 8px;
+  padding: 11px 13px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--sb-raised);
+  color: var(--sb-body);
+}
+
+.composer-input::placeholder {
+  color: var(--sb-dim);
+}
+
+.composer-send {
+  flex: none;
+  border: 1px solid var(--sb-line-em);
+  border-radius: 8px;
+  padding: 11px 18px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sb-control);
+  background: transparent;
+}
+
+@media (max-width: 759px) {
+  .agent-feed {
+    padding: 14px;
+    gap: 13px;
+  }
+
+  .agent-doing {
+    padding: 10px 14px;
+  }
+
+  .composer {
+    padding: 10px 14px;
+  }
+
+  .composer-row {
+    gap: 9px;
+  }
+
+  /* 44px targets */
+  .composer-input,
+  .composer-send {
+    padding: 13px;
+    font-size: 13px;
+  }
+
+  .composer-send {
+    padding: 13px 17px;
+  }
+
+  .composer-attach {
+    width: 44px;
+    height: 44px;
+  }
+
+  .btn-approve {
+    padding: 13px 0;
+  }
+}
+
+/* every media tile is tappable */
+.is-tappable {
+  cursor: pointer;
+}
+
+.thumb.is-tappable:focus-visible,
+.change-preview.is-tappable:focus-visible {
+  outline: var(--b-selected) solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* full-screen media preview, above every panel, below the toast */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  background: var(--inverse-bg);
+  color: var(--on-ink);
+}
+
+.viewer-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  background: var(--inverse-bg);
+  font-size: 14px;
+}
+
+.viewer-back {
+  color: var(--on-ink);
+}
+
+.viewer-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the viewer runs dark, so its recall reads as an outlined pill rather than a dark chip */
+.viewer-recall {
+  flex: none;
+  margin-left: 10px;
+  padding: 4px 10px;
+  border: var(--b-thin) solid var(--on-ink);
+  border-radius: var(--r-pill);
+  color: var(--on-ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.viewer-meta {
+  flex: none;
+  font-size: 12px;
+  color: var(--line-softer);
+}
+
+.viewer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  touch-action: pinch-zoom; /* native pinch on a phone */
+}
+
+.viewer-body img,
+.viewer-body video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.viewer-body img {
+  cursor: zoom-in;
+}
+
+.viewer.is-zoomed .viewer-body {
+  display: block;
+  overflow: auto;
+}
+
+.viewer.is-zoomed .viewer-body img {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+
+.viewer-hint {
+  color: var(--line-softer);
+}
+
+.viewer-foot {
+  flex: none;
+  padding: 6px 12px;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom));
+  font-size: 12px;
+  text-align: center;
+  color: var(--line-softer);
+  background: var(--inverse-bg);
+}
+
+/* ---- project setup: entry points, chip row, the form --------------------------- */
+
+.screen-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* a name that edits in place: the text is the control, the field takes its font and place */
+.editable-title {
+  cursor: text;
+  border-bottom: var(--b-thin) solid transparent;
+}
+
+.editable-title:hover,
+.editable-title:focus-visible {
+  border-bottom-color: var(--line-soft);
+  outline: none;
+}
+
+.editable-title-input {
+  font: inherit;
+  font-weight: inherit;
+  color: inherit;
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  border-bottom: var(--b-thin) solid var(--accent);
+  border-radius: 0;
+  background: transparent;
+  outline: none;
+}
+
+.lib-tile-name.editable-title,
+.lib-tile-name.editable-title-input {
+  display: block;
+  text-align: center;
+  width: 100%;
+}
+
+.gear {
+  font-size: 18px;
+  color: var(--muted-3);
+  flex: none;
+}
+
+.sidebar-tools {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sidebar-tools .gear {
+  font-size: 13px;
+}
+
+.agent-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.blank-project {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 26px 20px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.btn-dashed-block {
+  display: block;
+  border: var(--b-strong) dashed var(--accent);
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.canvas-empty .btn-dashed-block {
+  margin-top: 14px;
+  min-width: 220px;
+}
+
+.form-body {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.field-input {
+  width: 100%;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 9px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+  background: var(--surface);
+}
+
+input.field-input {
+  font-weight: 600;
+}
+
+.field-input.is-negative {
+  border-color: var(--muted);
+  color: var(--muted-3);
+}
+
+.preset-chip {
+  border: var(--b-thin) solid var(--line-soft);
+  border-radius: var(--r-pill);
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted-3);
+  background: var(--surface);
+}
+
+.preset-chip.is-on {
+  border-color: var(--sel-line);
+  background: var(--sel-bg);
+  color: var(--sel-fg);
+}
+
+/* the canvas typed out: width × height, any whole number */
+.size-row {
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.size-input {
+  width: 5.2em;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 9px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  outline: none;
+  background: var(--surface);
+}
+
+.size-x {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* the canvas to scale: a box the shape sits in, the shape itself, its size written inside */
+.canvas-shape-box {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.canvas-shape {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: var(--b-strong) solid var(--line);
+  border-radius: 6px;
+  background: var(--accent-tint);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  transition: width 120ms ease, height 120ms ease;
+}
+
+.canvas-shape-sub {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.wf-row {
+  gap: 8px;
+}
+
+.wf-label {
+  width: 48px;
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.field-select {
+  flex: 1;
+  min-width: 0;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 9px;
+  padding: 7px 6px;
+  font: inherit;
+  font-size: 14px;
+  background: var(--surface);
+}
+
+.glob {
+  border: var(--b-thin) solid var(--divider);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.glob-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  background: var(--rail-bg);
+  text-align: left;
+}
+
+.glob-caret {
+  font-size: 15px;
+  color: var(--muted-3);
+}
+
+.glob-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 10px 11px 12px;
+}
+
+.amber-card {
+  background: var(--amber-bg);
+  border: var(--b-thin) solid var(--amber);
+  border-radius: 9px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.agent-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: var(--b-strong) solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--rail-bg);
+}
+
+.agent-block b {
+  font-size: 15px;
+}
+
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.or-divider > span:first-child,
+.or-divider > span:last-child {
+  flex: 1;
+  height: var(--b-thin);
+  background: var(--divider);
+}
+
+.btn-block {
+  width: 100%;
+  justify-content: center;
+}
+
+.btn-primary.is-muted {
+  background: var(--line-softer);
+}
+
+.btn-outline {
+  flex: 1;
+  min-width: 0;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 8px 10px;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap; /* a pill never breaks its label; the labels are kept short for the phone */
+}
+
+.btn-outline.is-accent {
+  border-width: var(--b-strong);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* a footer button that mints something new — the pill form of the "+" add tile */
+.btn-outline.is-add {
+  border-width: var(--b-strong);
+  border-style: dashed;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-wide {
+  flex: 2;
+  justify-content: center;
+}
+
+.form-foot {
+  gap: 8px;
+}
+
+/* ---- sidebar ---------------------------------------------------------------- */
+
+.sidebar {
+  width: var(--w-sidebar);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: var(--b-strong) solid var(--line);
+  background: var(--surface);
+  min-height: 0;
+}
+
+.sidebar-head {
+  padding: 12px 12px 10px;
+  border-bottom: var(--b-thin) solid var(--divider);
+}
+
+.sidebar-select {
+  width: 100%;
+  margin-top: 4px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-card);
+  padding: 6px 8px;
+  font: inherit;
+  font-weight: 700;
+  background: var(--surface);
+}
+
+/* the explorer's filter row sits between the head and the list */
+.sidebar-filters {
+  padding: 8px 10px 4px;
+  border-bottom: var(--b-thin) solid var(--divider);
+}
+
+/* a bin's tags on its explorer row: small and muted, one line */
+.sidebar-row-kind {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: lowercase;
+}
+
+/* the bin screen's tag editor: chips with a corner remove, and an inline input for a new one */
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tag-remove {
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.8;
+}
+
+.tag-input {
+  width: 9em;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface);
+  outline: none;
+}
+
+.sidebar-list {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: var(--b-thin) solid transparent;
+  border-radius: var(--r-card);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sidebar-row .thumb {
+  border-radius: 6px;
+}
+
+.sidebar-row.is-active {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+
+/* name over tags: the name wraps to two lines before it ellipsizes, the tags sit under it */
+.sidebar-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar-row-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.sidebar-row-kind {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.sidebar-foot {
+  padding: 10px;
+  border-top: var(--b-thin) solid var(--divider);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-foot-row {
+  display: flex;
+  gap: 6px;
+}
+
+/* the library entry point: solid outline, distinct from the dashed create buttons */
+.btn-library {
+  display: block;
+  text-align: center;
+  border: var(--b-strong) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 7px 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ---- screens ---------------------------------------------------------------- */
+
+.screen {
+  position: relative; /* the toast anchors to the screen */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.screen-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: var(--b-strong) solid var(--line);
+  font-size: 17px;
+}
+
+.screen-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.screen-foot {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: var(--b-strong) solid var(--line);
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+}
+
+.screen-foot.is-right {
+  justify-content: flex-end;
+}
+
+/* the phase readout is desk furniture: on a phone the pending tile's counter says enough */
+@media (max-width: 759px) {
+  .screen-foot .job-status {
+    display: none;
+  }
+
+  .screen-foot .btn-primary {
+    padding-inline: 16px;
+  }
+}
+
+/* the gallery's "Generate ▸": it only opens the recipe, so it is an outline like its neighbours;
+   the blue button is reserved for the one that actually starts a generation */
+.btn-open-recipe {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 22px;
+}
+
+/* the ¼ (quarter size) and ◷ (save for later) toggles beside Generate: icon pills, lit while on */
+.btn-quarter,
+.btn-later {
+  flex: none;
+  min-width: 42px;
+  padding: 8px 12px;
+  color: var(--muted-2);
+}
+
+.btn-quarter.is-on,
+.btn-later.is-on {
+  border-width: var(--b-strong);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* what the live generation is doing, left of cancel/Generate; ellipsizes before the buttons shrink */
+.job-status {
+  align-self: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--muted-3);
+  margin-right: 4px;
+}
+
+/* Prototype: 13px spinner inside the Generate button while rendering. */
+.spinner {
+  width: 15px;
+  height: 15px;
+  border: 2.5px solid var(--spinner-track);
+  border-top-color: var(--on-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* Prototype: single-slot toast, self-clearing after 2400 ms, above every panel (z 40). */
+.toast-fixed {
+  position: fixed;
+  left: 50%;
+  /* 14px above the bottom of the shell, which sits above the keyboard when --app-height is set */
+  bottom: calc(100% - var(--app-height, 100%) + 14px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  background: var(--inverse-bg);
+  color: var(--on-ink);
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: var(--r-pill);
+  padding: 6px 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 40;
+}
+
+.back {
+  font-size: 24px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+.tag {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.hint {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.hint.is-center {
+  text-align: center;
+}
+
+.meta {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.chevron {
+  font-size: 20px;
+  color: var(--muted);
+}
+
+/* ---- cards, chips, buttons ---------------------------------------------------- */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 11px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  flex: none;
+}
+
+.card-strong {
+  border-width: var(--b-strong);
+}
+
+.card-title {
+  font-size: 17px;
+}
+
+.card-label {
+  font-size: 14px;
+}
+
+.value {
+  font-weight: 700;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px 11px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--surface);
+  white-space: nowrap;
+}
+
+.chip.is-on {
+  background: var(--sel-bg);
+  border-color: var(--sel-line);
+  color: var(--sel-fg);
+}
+
+.chip.is-dashed {
+  border-style: dashed;
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+.chip-kind {
+  border-color: var(--line-soft);
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+}
+
+.chips {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* the free-entry length: a chip that holds a small field, lit like a preset when it is the value */
+.len-chip {
+  gap: 2px;
+  padding-left: 8px;
+  cursor: text;
+}
+
+.len-input {
+  width: 3.4em;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  text-align: right;
+  background: transparent;
+  color: inherit;
+  outline: none;
+}
+
+.len-input::placeholder {
+  color: var(--muted);
+}
+
+.len-chip.is-on .len-input::placeholder {
+  color: var(--sel-fg);
+}
+
+.btn-dashed {
+  flex: 1;
+  border: var(--b-strong) dashed var(--accent);
+  border-radius: var(--r-pill);
+  color: var(--accent);
+  padding: 7px 0;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: var(--r-pill);
+  padding: 8px 22px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+/* ---- media ------------------------------------------------------------------ */
+
+.thumb {
+  position: relative;
+  flex: none;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--empty-fg);
+}
+
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* crop from the bottom, not the middle: a portrait keeps the face rather than the torso */
+  object-position: top center;
+}
+
+.thumb.is-selected {
+  border: var(--b-selected) solid var(--accent);
+}
+
+.thumb.is-empty {
+  border-style: dashed;
+  border-color: var(--line-softer);
+  background: var(--surface);
+}
+
+/* a landed take nobody has looked at: an accent dot at the top of the tile, clear of the
+   corner controls, until the hero or the viewer shows it */
+.thumb-new {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--surface);
+  pointer-events: none;
+}
+
+/* a render in flight: a tile-shaped placeholder at the new end of the strip, shimmering
+   until the take lands in its place */
+.thumb.is-pending {
+  position: relative;
+  overflow: hidden;
+  border: var(--b-thin) dashed var(--accent);
+  border-radius: var(--r-card);
+  background: var(--accent-tint);
+}
+
+/* a generation saved for later: the recipe is frozen, nothing is running; the tile waits */
+.thumb.is-held {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--b-thin) dashed var(--muted-2);
+  border-radius: var(--r-card);
+  color: var(--muted-2);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.take-num.is-held {
+  color: var(--muted-2);
+}
+
+.thumb-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 25%, var(--accent) 50%, transparent 75%);
+  background-size: 250% 100%;
+  opacity: 0.35;
+  animation: thm-shimmer 1.6s linear infinite;
+}
+
+@keyframes thm-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+
+.take-num.is-pending {
+  color: var(--accent);
+}
+
+.tag.is-live,
+.tag.is-new {
+  color: var(--accent);
+}
+
+.tag.is-held {
+  color: var(--muted-2);
+}
+
+/* explorer rows: a pulsing dot while a bin renders, a count of takes not yet looked at */
+.row-live {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.row-new {
+  flex: none;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+}
+
+/* explorer rows: how many of the bin's generations are saved for later */
+.row-held {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+
+/* the video marker: a corner pill with a camera glyph and the length, never a play button */
+.badge-video {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border-radius: var(--r-pill);
+  background: var(--badge-bg);
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  pointer-events: none;
+}
+
+.badge-video svg {
+  display: block;
+  flex: none;
+}
+
+.thumbs-row {
+  gap: 6px;
+}
+
+.thumb-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+/* the takes strip: one row that scrolls sideways, newest at the left, instead of wrapping.
+   The padding keeps a selected tile's outline from being clipped by the scroll box. */
+.takes-strip {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* room above and to the sides for a tile's corner badges (recall top-left, delete top-right),
+     which sit outside its box; the wider gap keeps neighbours' badges from touching */
+  gap: 24px;
+  padding: 10px 0 6px 10px;
+  margin: -10px 0 0 -10px;
+  scroll-snap-type: x proximity;
+  /* snapping and scrollIntoView align to the scrollport, not the padding: without this the
+     leftmost tile lands flush with the box's edge and its recall badge is clipped */
+  scroll-padding-left: 10px;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.takes-strip .thumb-col {
+  position: relative;
+  flex: none;
+  scroll-snap-align: start;
+}
+
+/* trailing room in the scroll box for the last tile's corner delete */
+.takes-strip::after {
+  content: "";
+  flex: none;
+  width: 10px;
+}
+
+/* the take's number, overlaid in the tile's bottom-left corner, the way the video marker sits bottom-right */
+.take-num {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 2px 6px;
+  border-radius: var(--r-pill);
+  background: var(--badge-bg);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* delete on a take: on the tile's top-right corner, half outside it like a reference's */
+/* recall, top-left of a generated take: the viewer's ⟳ Recall without the trip */
+.take-recall {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: var(--b-thin) solid var(--line);
+  background: var(--badge-bg);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.take-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: var(--b-thin) solid var(--line);
+  background: var(--badge-bg);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.thumb-caption {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Sizes itself to the media it holds, so nothing is ever letterboxed: the width is whichever
+   cap binds first — the column's width, or `--preview-cap` converted back through the media's
+   aspect ratio in `--ar` (set by the screen; 16/9 if it never arrives). A full-width box with
+   only a max-height is what put black bars either side of a square take: the box kept the full
+   width while the cap took its height, leaving object-fit to pillarbox the difference. */
+.preview {
+  position: relative;
+  align-self: center;
+  margin-inline: auto;
+  width: min(100%, calc(var(--preview-cap, 42vh) * var(--ar, 1.7778)));
+  aspect-ratio: var(--ar, 1.7778);
+  border: var(--b-strong) solid var(--line);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  background: var(--empty-fg);
+}
+
+.preview img,
+.preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--inverse-bg);
+}
+
+.preview-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  background: var(--surface);
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.preview-empty {
+  height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--b-strong) dashed var(--muted);
+  border-radius: var(--r-card);
+  color: var(--muted);
+  font-size: 15px;
+}
+
+/* ---- home / project ----------------------------------------------------------- */
+
+/* Project rows carry no state at all: the bar is the only status surface on Home. */
+.home-body {
+  gap: 14px;
+}
+
+.project-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  border: 1px solid var(--sb-line-card);
+  border-radius: 10px;
+  padding: 15px;
+  background: var(--sb-canvas);
+  font-family: var(--font-ui);
+}
+
+.project-row .thumb {
+  border-radius: 6px;
+  border-color: var(--sb-line-card);
+  background: var(--sb-tile);
+}
+
+.project-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.project-row-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--sb-title);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-row-meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--sb-label);
+}
+
+.project-row-chevron {
+  flex: none;
+  font-size: 16px;
+  color: var(--sb-faint);
+}
+
+.shot-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  border-radius: 10px;
+}
+
+.shot-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shot-row-name {
+  font-size: 16px;
+}
+
+/* ---- bin (the .shot-* names predate the bin; same screen) -------------------- */
+
+.shot-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shot-left,
+.shot-right {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.shot-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* on the phone the recipe is one scrolling column: the prompt scrolls inside itself past
+   about half the screen, so References stay one short swipe away instead of forty rows down
+   (the wide layout replaces this with a measured cap, --prompt-max, below) */
+.prompt-text {
+  max-height: 45vh;
+  color: var(--accent);
+  font-size: 15px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.negative-text {
+  color: var(--muted-3);
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
+.refs-row {
+  gap: 14px 12px; /* room for the corner delete, which sits half outside its tile */
+}
+
+/* the tile is as wide as its picture (a 16:9 clip is wider than a portrait still); the label
+   under it ellipsizes to that width */
+.ref-tile {
+  width: auto;
+  min-width: 54px;
+  max-width: 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.ref-label {
+  font-size: 12px;
+  font-weight: 700;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ref-sub {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.ref-tile.is-missing .ref-label {
+  color: var(--muted);
+}
+
+/* ---- drag to reorder ----------------------------------------------------------- */
+
+/* The grip is the only part of a shot row a finger can drag by; the rest still scrolls.
+   A reference tile is small enough to be its own grip. */
+.drag-grip {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 6px 0 4px; /* a finger-wide target; the glyph itself is narrow */
+  color: var(--muted);
+  font-size: 15px;
+  letter-spacing: -3px;
+  line-height: 1;
+  cursor: grab;
+  /* a finger scrolls until it has held 200ms; then the drag takes over (no double-tap zoom either) */
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.ref-tile {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.sidebar-row,
+.shot-row {
+  /* the whole row drags: a finger scrolls until it has held 200ms, then the drag takes over;
+     no link preview on the hold, no text selection while moving, no double-tap zoom */
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+
+.sidebar-row .row-delete,
+.shot-row .row-delete {
+  cursor: pointer;
+}
+
+.sidebar-row.is-dragging,
+.shot-row.is-dragging,
+.ref-tile.is-dragging {
+  opacity: 0.55;
+  outline: var(--b-strong) dashed var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-card);
+}
+
+.sidebar-row.is-dragging,
+.shot-row.is-dragging,
+.ref-tile.is-dragging,
+.sidebar-row.is-dragging *,
+.shot-row.is-dragging *,
+.ref-tile.is-dragging * {
+  cursor: grabbing;
+}
+
+/* ---- library picker, explorer ------------------------------------------------ */
+
+/* Full screen below 760; a 320px slide-over over the canvas at 760 and up (phase 6). */
+.library-slideover {
+  position: absolute;
+  inset: 0;
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.lib-filters {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lib-search {
+  margin-left: auto;
+  width: 9em;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface);
+  outline: none;
+}
+
+.lib-item-select {
+  margin-left: auto;
+  max-width: 130px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px 8px;
+  font-size: 12px;
+  background: var(--surface);
+}
+
+.lib-empty {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 18px 10px;
+}
+
+.lib-empty-sub {
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.lib-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+/* square and full-width: three per row that grow with the pane, rather than a fixed pixel
+   thumb sitting in the middle of a much wider cell */
+.lib-tile .thumb {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+/* media tiles (the picker) take their own shape at one height and wrap into rows; the item
+   tiles above stay square, since an item stands for several media */
+.lib-grid.is-media {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.lib-grid.is-media .lib-tile {
+  width: auto;
+}
+
+.lib-grid.is-media .lib-tile .thumb {
+  width: auto;
+  aspect-ratio: auto;
+}
+
+.lib-tile-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-2);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the upload sheet: a bottom sheet over the picker, dismissed by tapping the scrim */
+.upload-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-end;
+}
+
+.upload-sheet {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border-top: var(--b-strong) solid var(--line);
+  border-radius: 18px 18px 0 0;
+  padding: 10px 14px calc(18px + env(safe-area-inset-bottom));
+}
+
+.upload-grabber {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-soft);
+  align-self: center;
+}
+
+/* the destructive confirm: the same bottom sheet as the upload one, so the button that finishes
+   a delete is always at the far end of the screen from the X that started it */
+.confirm-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 28;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-end;
+}
+
+.confirm-sheet {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border-top: var(--b-strong) solid var(--destructive);
+  border-radius: 18px 18px 0 0;
+  padding: 10px 14px calc(18px + env(safe-area-inset-bottom));
+}
+
+.confirm-title {
+  font-size: 16px;
+}
+
+.confirm-detail {
+  font-size: 13px;
+  color: var(--muted-2);
+  line-height: 1.5;
+}
+
+.confirm-actions {
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* the settings screen's delete: its own row at the foot of the form, red outline, never an
+   icon that could pass for close; the confirm sheet's solid red button does the deed */
+.danger-zone {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: var(--b-thin) solid var(--divider);
+}
+
+.btn-outline-danger {
+  flex: none;
+  padding-inline: 16px;
+  border-color: var(--destructive);
+  color: var(--destructive);
+}
+
+.btn-danger {
+  flex: 1;
+  border-radius: var(--r-pill);
+  padding: 9px 0;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+  background: var(--destructive);
+  color: var(--on-ink);
+}
+
+.upload-item-chip {
+  border: var(--b-thin) solid var(--line-soft);
+  border-radius: var(--r-pill);
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+.upload-item-chip.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--sel-fg);
+}
+
+/* full size from a picker tile: the tile's tap binds, so the look lives in its top-right
+   corner, half outside it like a take's delete */
+.lib-tile-view {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--badge-bg);
+  border: var(--b-thin) solid var(--line);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* delete lives on the card, not inside the item: red so it never reads as the neutral X that
+   only unbinds a reference */
+/* the "+" add tile shared by the shot's references card and the creator's */
+.tile-add {
+  width: 68px;
+  height: 68px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--b-strong) dashed var(--accent);
+  border-radius: var(--r-card);
+  color: var(--accent);
+  font-size: 24px;
+}
+
+.ref-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: var(--b-thin) solid var(--line);
+  background: var(--surface);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ref-tile {
+  position: relative;
+}
+
+/* ---- clipper ------------------------------------------------------------------ */
+
+/* The clipper's source is a working preview now, not a thumbnail strip — it takes .preview's
+   sizing and only lowers the cap, since the timeline and sliders below it need the room. */
+.clip-source {
+  --preview-cap: 34vh;
+}
+
+/* a real control where the decorative .badge-play used to sit */
+.clip-play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 40px;
+  height: 40px;
+  border: var(--b-strong) solid var(--line);
+  border-radius: 50%;
+  background: var(--badge-bg);
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.clip-timeline {
+  position: relative;
+  height: 30px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 6px;
+  background: var(--timeline-bg);
+}
+
+.clip-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent-fill);
+  border-left: var(--b-selected) solid var(--accent);
+  border-right: var(--b-selected) solid var(--accent);
+}
+
+.clip-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+}
+
+.clip-timeline + label input[type="range"],
+.card input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.clip-slider-label {
+  width: 34px;
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.clip-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ---- breakpoints (literals; see tokens.css --bp-wide / --bp-xwide) ------------ */
+
+@media (min-width: 760px) {
+  .shot-body.is-wide {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  /* the picture is the point: the preview column grows with the pane, as on the phone, and
+     the prompt and references sit beside it at a readable width */
+  .shot-body.is-wide .shot-left,
+  .shot-body.is-wide .shot-right {
+    flex: 1 1 0;
+    min-width: 300px;
+  }
+
+  /* workflow and length share a row once the column is wide enough for both */
+  .shot-body.is-wide .shot-controls {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  .shot-body.is-wide .shot-controls > .card {
+    flex: 1 1 200px;
+    min-width: 0;
+  }
+
+  .shot-body.is-wide .shot-controls .field-select {
+    flex: none;
+    width: 100%;
+  }
+
+  .shot-body.is-wide .preview {
+    --preview-cap: 62vh;
+  }
+
+  /* the gallery is the bin's front door: nothing beside the picture, so it takes more height */
+  .shot-body.is-wide.is-gallery .preview {
+    --preview-cap: 70vh;
+  }
+
+  /* a long prompt scrolls inside its box rather than pushing References below the fold: the
+     cap leaves room for the chrome above and the references card below (their heights, plus
+     the gaps), measured at the wide layout; the textarea's own resizer honours it */
+  .shot-body.is-wide .prompt-text {
+    max-height: var(--prompt-max, none);
+  }
+
+  .screen-body {
+    padding: 14px;
+  }
+
+  /* the project list at wide: a readable column centred in the canvas, not stretched across it */
+  .home-body {
+    width: 100%;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 26px;
+  }
+
+  /* the library at wide: item tiles at a fixed size, as many per row as fit, rather than three
+     stretched across the whole canvas */
+  .lib-grid:not(.is-media) {
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+    max-width: 900px;
+  }
+
+  .library-slideover {
+    left: auto;
+    width: var(--w-slideover);
+    border-left: var(--b-strong) solid var(--line);
+    box-shadow: -6px 0 14px var(--shadow-2);
+  }
+}
+
+/* the LoRA chip row: chips are the <lora:...> tags in the prompt; tapping one opens its editor */
+.lora-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lora-edit {
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.lora-edit-name {
+  flex: 1 1 100%;
+  font-size: 13px;
+  color: var(--muted-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lora-strength {
+  width: 64px;
+  padding: 5px 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.lora-sheet {
+  max-height: 70%;
+}
+
+.lora-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.lora-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: var(--b-thin) solid var(--line-soft);
+  border-radius: 9px;
+  font-size: 14px;
+  background: var(--surface);
+}
+
+.lora-option.is-taken {
+  opacity: 0.45;
+}
+
+.lora-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* delete on a shot row and on the settings header: the neutral small X that opens the confirm sheet */
+.row-delete {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--surface);
+  border: var(--b-thin) solid var(--line);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+  /* dim until the row (or the button) is hovered or focused; touch has no hover, so it stays full there */
+  opacity: 0.35;
+  transition: opacity 120ms;
+}
+
+.row-delete:hover,
+.row-delete:focus-visible,
+.sidebar-row:hover .row-delete,
+.shot-row:hover .row-delete {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .row-delete {
+    opacity: 1;
+  }
+}
+
+/* the cancel beside a live Generate: outline, never red — stopping a render is cheap to undo */
+.btn-cancel {
+  flex: none;
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+/* -- prompt enhancer ---------------------------------------------------------- */
+
+/* the ✦ pill beside a prompt label: the agent's diamond, but this one rewrites text */
+.enhance-pill.is-on {
+  background: var(--sel-bg);
+  border-color: var(--sel-line);
+  color: var(--sel-fg);
+}
+
+/* lives beside undo for as long as undo does: the rewrite landed */
+.enhance-done {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.enhance-undo {
+  font-size: 12px;
+  padding: 2px 9px;
+}
+
+.enhance-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 11px;
+  border: var(--b-thin) dashed var(--line);
+  border-radius: var(--r-card);
+}
+
+.enhance-actions {
+  justify-content: flex-end;
+}
+
+.enhance-actions .btn-outline {
+  flex: none;
+  padding: 8px 18px;
+}
+
+.enhance-actions .btn-primary {
+  padding: 8px 18px;
+  font-size: 15px;
+}
+
+/* an upload's provenance under the preview, when the uploader said what it did */
+.take-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.take-note-label {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.take-note-text {
+  flex-basis: 100%;
+  white-space: pre-wrap;
+}
+
+/* -- private project: the veil over its pictures (layout/veil.tsx) ---------------------------
+   The shell carries .is-veiled while the project is private and nothing has lifted it. A still
+   keeps its tile (the frame, the marker, the tap) but its picture is transparent: on a desktop
+   it shows under the mouse. A video has no poster and no preloaded frame, and its frame is
+   transparent too except under the mouse or while it plays (.is-playing, set by the host from
+   the play/pause events): paused and left, it hides again. On a phone (.is-phone) there is no
+   mouse, so every still and video is hidden until the bar's `reveal` pill, which drops the
+   class for that page; a video started blind still shows while it plays. */
+.shell.is-veiled .thumb img,
+.shell.is-veiled .preview img,
+.shell.is-veiled .change-preview img,
+.shell.is-veiled .viewer-body img,
+.shell.is-veiled .preview video,
+.shell.is-veiled .viewer-body video {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.shell.is-veiled .preview.is-playing video,
+.shell.is-veiled .viewer-body.is-playing video {
+  opacity: 1;
+}
+
+/* a plain gray ground says "hidden", not "missing": the empty tile keeps its dashed border */
+.shell.is-veiled .thumb:not(.is-empty),
+.shell.is-veiled .preview,
+.shell.is-veiled .change-preview {
+  background: var(--empty-fg);
+}
+
+@media (hover: hover) {
+  .shell.is-veiled:not(.is-phone) .thumb:hover img,
+  .shell.is-veiled:not(.is-phone) .preview:hover img,
+  .shell.is-veiled:not(.is-phone) .change-preview:hover img,
+  .shell.is-veiled:not(.is-phone) .viewer-body:hover img,
+  .shell.is-veiled:not(.is-phone) .preview:hover video,
+  .shell.is-veiled:not(.is-phone) .viewer-body:hover video,
+  /* the clipper scrubs a paused video from the sliders under it: the mouse on that card
+     counts as on the video; off both, the frame hides */
+  .shell.is-veiled:not(.is-phone) .screen-body:has(.clip-scrub:hover) .clip-source video {
+    opacity: 1;
+  }
+}
+
+/* the private project's padlock on the phone bar: locked = pictures hidden, tap to unlock for
+   this page. Grey in both states, no highlight -- the open shackle is the whole signal. */
+.bar-veil {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--sb-label);
+}
+
+.bar-veil.is-open {
+  color: var(--sb-muted);
+}
+
+/* the words too: a private project's prompt and negative (the bin's, and the project's global
+   ones) read as blank until the cursor is inside the box; the placeholder still shows on an
+   empty one, and the caret stays visible so the box does not look dead */
+.shell.is-veiled .veil-text:not(:focus) {
+  color: transparent;
+  caret-color: var(--ink);
+  background: var(--empty-fg);
+}

@@ -1,1045 +1,823 @@
-#!/usr/bin/env python3
-"""CLI for thm-agent — project JSON + ComfyUI generation client. Run from repo root."""
+"""THM agent CLI: drive a project through the server's command API, one call per invocation.
+
+    python thm-agent/cli.py wait                         # block until a brief is waiting
+    python thm-agent/cli.py --project rail-dawn-promo connect --harness claude-code
+    python thm-agent/cli.py --project rail-dawn-promo inbox
+    python thm-agent/cli.py --project rail-dawn-promo cmd set_bin_field --payload '{"bin":"b_1","field":"length_s","value":8}'
+    python thm-agent/cli.py --project rail-dawn-promo generate --bin b_1 --wait
+    python thm-agent/cli.py --project rail-dawn-promo thumb m_1 --out take.webp
+
+The inbox cursor and session id persist per project in ``thm-agent/.state/``
+(agent-side, git-ignored) so a fresh process picks up where the last one left
+off. ``--json`` prints the server's JSON for the harness to parse. Output is
+ASCII only.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from dataclasses import asdict
 from pathlib import Path
 
-_AGENT_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _AGENT_DIR.parent
-if str(_AGENT_DIR) not in sys.path:
-    sys.path.insert(0, str(_AGENT_DIR))
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
-import builder  # noqa: E402
-import pipeline  # noqa: E402
-from client import discover, runner, selection  # noqa: E402
-from client.config_helpers import resolve_agent_python  # noqa: E402
-from client.workspace import (
-    attach_workspace_paths,
-    add_preview_image,
-    build_preview_gallery,
-    clear_preview_dir,
-    open_gallery_in_browser,
-    open_with_default_app,
-    preview_dir_for_project,
-    reveal_in_explorer,
-    set_gallery_timer_state,
-    update_gallery_session,
-    group_key_from_filename,
-)
+from thm_client import PARAM_KEYS, ThmClient, ThmError, check_tokens, unknown_params  # noqa: E402
+
+STATE_DIR = HERE / ".state"
+DEFAULT_SERVER = "http://127.0.0.1:8010"
+
+# Every command the server accepts and its payload, kept here so ``commands`` can answer offline
+# and the skill's table has one source. tests/test_thm_client.py diffs it against
+# thm_core.commands.COMMANDS, so a command added there without a line here fails the build.
+# Every command also takes ``reason``, ``requested``, ``quiet`` and ``card``.
+SETTABLE_FIELDS = ("name", "workflow", "length_s", "prompt", "negative", "loras", "selected", "description", "tags")
+
+# What each subcommand says it is doing, sent as a header on every call so the app's strip can
+# show the user the agent is on it. ``status`` sets a phrase of the agent's own for longer steps.
+DOING = {
+    "inbox": "reading your messages", "watch": "waiting for you", "project": "reading the project", "bin": "reading a bin",
+    "history": "reading the take history", "recipe": "reading a recipe", "check": "checking the prompt's handles",
+    "guide": "reading the workflow's prompt guide", "generate": "queuing a render", "jobs": "checking renders",
+    "thumb": "looking at a take", "frames": "looking at a clip", "post": "writing to you", "blocker": "writing to you",
+    "propose-shots": "proposing shots",
+    "enhance-requests": "picking up an enhance request", "enhance-reply": "answering an enhance request",
+    "upload": "uploading a file", "end": "wrapping up", "connect": "connecting",
+}
+DOING_CMD = {
+    "generate": "queuing a render", "propose_shots": "proposing shots", "mark_take": "marking a take", "set_bin_field": "editing a bin", "create_bin": "making a bin",
+    "bind_reference": "binding a reference", "rebind_reference": "binding a reference", "unbind_reference": "unbinding a reference",
+    "post_message": "writing to you", "set_project_settings": "configuring the project", "delete_bin": "deleting a bin",
+}
+COMMAND_TABLE: dict[str, tuple[tuple[str, str], ...]] = {
+    "create_bin": (("bin_name", "default bin-n"), ("workflow", "default: the project's image workflow"), ("length_s", "video only"), ("tags", "list")),
+    "duplicate_bin": (("bin", ""), ("with_media", "copy the gallery too; default false")),
+    "set_bin_field": (("bin", ""), ("field", "one of " + " ".join(SETTABLE_FIELDS)), ("value", "")),
+    "bind_reference": (("bin", ""), ("media", ""), ("position", "1-based; start frame is 1, end frame 2 on video workflows that support them")),
+    "unbind_reference": (("bin", ""), ("reference", "")),
+    "rebind_reference": (("bin", ""), ("reference", ""), ("media", "same handle, different picture")),
+    "reorder_references": (("bin", ""), ("order", "every reference id")),
+    "recall_generation": (("bin", ""), ("from_media", ""), ("workflow", ""), ("prompt", ""), ("negative", ""), ("references", "[{media, handle}]"), ("loras", "")),
+    "generate": (("bin", ""), ("params", "see params.md; {\"quarter\": true} for a draft video")),
+    "propose_shots": (
+        ("title", "the batch, in a few words"),
+        ("items", "[{name | bin, description, prompt?, negative?, workflow?, references [media ids], length_s?, quarter, params, tags}]; the propose-shots verb reads them from a file"),
+    ),
+    "mark_take": (("media", ""), ("status", "pass | fail | in_progress"), ("note", "what changed, what it fixed, what it broke, what is open")),
+    "add_media_to_bin": (("bin", ""), ("media", "the arrival becomes selected")),
+    "remove_media_from_bin": (("bin", ""), ("media", "the record stays")),
+    "delete_media": (("media", "everywhere, cascading"),),
+    "delete_bin": (("bin", "its media go too, unless another bin holds or references them"),),
+    "set_project_settings": (("project_name", ""), ("brief", "the revised brief a plan session proposes"), ("width", ""), ("height", ""), ("image_workflow", ""), ("video_workflow", ""), ("video_length_s", ""), ("image_prompt", ""), ("video_prompt", ""), ("image_negative", ""), ("video_negative", ""), ("private", "true | false; no cover on the project list, and the agent cannot see the project")),
+    "post_message": (("text", ""), ("attachments", "media ids"), ("kind", "agent | blocker"), ("context", "user only: the bin/media the note is about")),
+    "start_session": (("notes", ""), ("refs_bin", ""), ("mode", "auto | manual | image_review | video_review | plan; user only")),
+    "set_session_mode": (("mode", "auto | manual | image_review | video_review | plan"),),
+    "connect_session": (("harness", ""),),
+    "end_session": (),
+}
 
 
-def _print_json(obj) -> None:
-    text = json.dumps(obj, indent=2, ensure_ascii=False)
+class UsageError(Exception):
+    """A bad invocation: printed to stderr, exit code 2."""
+
+
+# -- state ----------------------------------------------------------------------
+
+
+def state_path(slug: str) -> Path:
+    return STATE_DIR / f"{slug}.json"
+
+
+def load_state(slug: str) -> dict:
     try:
-        print(text)
-    except UnicodeEncodeError:
-        print(json.dumps(obj, indent=2, ensure_ascii=True))
+        return json.loads(state_path(slug).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
-def cmd_validate(path: Path, *, as_json: bool) -> int:
+def save_state(slug: str, **fields) -> None:
+    """Merge ``fields`` into the project's state file; passing None clears that field."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    data = load_state(slug)
+    data.update(fields)
+    state_path(slug).write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+# -- output ---------------------------------------------------------------------
+
+
+def emit(args, data, human: str | None = None) -> None:
+    if args.json:
+        print(json.dumps(data, indent=2, ensure_ascii=True))
+    elif human is not None:
+        print(human)
+    elif data is not None:
+        print(json.dumps(data, indent=2, ensure_ascii=True))
+
+
+def describe_messages(messages: list[dict]) -> str:
+    lines = []
+    for m in messages:
+        kind = m.get("kind", "?")
+        text = (m.get("text") or "").replace("\n", " ")
+        tail = ""
+        if m.get("attachments"):
+            tail += f" [attachments: {', '.join(m['attachments'])}]"
+        ctx = m.get("context")
+        if ctx and ctx.get("bin"):
+            # what the user was looking at: "this take" / "this video" in the text means these ids
+            about = f"bin {ctx['bin']}"
+            if ctx.get("bin_name"):
+                about += f' "{ctx["bin_name"]}"'
+            if ctx.get("media"):
+                about += f" - media {ctx['media']}"
+                if ctx.get("media_label"):
+                    about += f" ({ctx['media_label']})"
+            tail += f" [about: {about}]"
+        if m.get("change"):
+            tail += f" [change {m['change']}"
+            if m.get("status"):
+                tail += f" {m['status']}"
+            if m.get("note"):
+                tail += f": {m['note']}"
+            tail += "]"
+        lines.append(f"{m.get('ts', '')} {kind:8} {text}{tail}")
+    return "\n".join(lines) if lines else "(no messages)"
+
+
+def warn(text: str) -> None:
+    """Advisory lines go to stderr so ``--json`` stdout stays parseable."""
+    print(f"warning: {text}", file=sys.stderr)
+
+
+def describe_check(result: dict, references: list[dict]) -> str:
+    lines = []
+    for r in references:
+        media = r.get("media") or {}
+        lines.append(f"  .{r.get('handle')} ordinal={r.get('ordinal')} {r.get('sub_label') or '-'} media={media.get('id') or 'missing'} from={r.get('bin_name')}")
+    for h in result["unknown"]:
+        lines.append(f"  unknown .{h}: the prompt names it, nothing is bound to it")
+    for h in result["unused"]:
+        lines.append(f"  unused .{h}: bound, never mentioned in the prompt")
+    if not result["unknown"] and not result["unused"]:
+        lines.append(f"  ok: {len(result['used'])} handle(s) used, none unknown")
+    return "\n".join(lines) if lines else "  (no references)"
+
+
+def preflight(client, slug: str, bin_id: str, params: dict | None) -> dict | None:
+    """Before a render: the handle check and the param-key check, as warnings on stderr. Returns
+    the bin detail so the caller need not fetch it twice; None when the bin could not be read."""
     try:
-        data = builder.load_project(path)
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: cannot load {path}: {e}")
-        return 1
-
-    issues = builder.validate_project(data)
-    ok, save_msg = builder.validate_before_save(data, str(path))
-    if not ok:
-        issues.append(save_msg)
-
-    if as_json:
-        _print_json({"ok": not issues, "path": str(path), "issues": issues})
-        return 0 if not issues else 1
-
-    if issues:
-        print(f"INVALID: {path}")
-        for issue in issues:
-            print(f"  - {issue}")
-        return 1
-    print(f"OK: {path}")
-    return 0
+        detail = client.bin(slug, bin_id)
+    except ThmError:
+        return None
+    b = detail.get("bin") or {}
+    cap = detail.get("capacity") or {}
+    res = check_tokens(b.get("prompt", ""), b.get("negative", ""), detail.get("references") or [], bool(cap.get("addresses_by_token")))
+    for h in res["unknown"]:
+        warn(f"unknown_token .{h} matches no reference in this bin")
+    for h in res["unused"]:
+        warn(f"unused_handle .{h} appears nowhere in the prompt")
+    kind = detail.get("kind")
+    for k in unknown_params(kind, params):
+        warn(f"unknown param {k!r}: the {kind or 'image'} runner never reads it (it reads {', '.join(PARAM_KEYS.get(kind or 'image', ()))})")
+    return detail
 
 
-def cmd_summarize(path: Path) -> int:
-    try:
-        data = builder.load_project(path)
-    except Exception as e:
-        print(f"ERROR: cannot load {path}: {e}")
-        return 1
-    print(builder.summarize_project(data), end="")
-    return 0
-
-
-def cmd_comfy_status(*, as_json: bool, api_base: str | None) -> int:
-    result = discover.comfy_status(api_base)
-    if as_json:
-        _print_json(result)
-    else:
-        print(result["message"])
-    return 0 if result["online"] else 1
-
-
-def cmd_discover(kind: str, *, as_json: bool) -> int:
-    dispatch = {
-        "models": discover.list_checkpoints,
-        "loras": discover.list_loras,
-        "workflows": discover.list_workflows,
-        "projects": discover.list_projects,
-    }
-    items = dispatch[kind]()
-    if as_json:
-        _print_json({"kind": kind, "items": items})
-    else:
-        for item in items:
-            print(item)
-    return 0
-
-
-def cmd_images_list(path: Path, seq_id: str, kf_id: str, *, as_json: bool, previews: bool) -> int:
-    try:
-        data = builder.load_project(path)
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-    images = discover.list_keyframe_images(data, seq_id, kf_id, include_previews=previews)
-    if as_json:
-        _print_json({"seq_id": seq_id, "kf_id": kf_id, "images": images})
-    else:
-        for img in images:
-            print(img)
-    return 0
-
-
-def cmd_generate_keyframe(
-    path: Path,
-    seq_id: str,
-    kf_id: str,
-    *,
-    seed: int | None,
-    variants: int,
-    as_json: bool,
-) -> int:
-    try:
-        data = builder.load_project(path)
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-
-    project_name = data.get("project", {}).get("name", "project")
-    label = f"keyframes/{seq_id}/{kf_id}"
-    results = []
-    count = max(1, variants)
-    for i in range(count):
-        run_seed = seed + i if seed is not None and count > 1 else seed
-        result = runner.run_keyframe(data, seq_id, kf_id, seed=run_seed)
-        rd = asdict(result)
-        attach_workspace_paths(rd, project_name=project_name, label=label, seed=run_seed)
-        results.append(rd)
-
-    payload = {
-        "ok": any(r["success"] for r in results),
-        "variants": results,
-        "main_path": results[-1]["main_path"] if results else None,
-        "workspace_path": results[-1].get("workspace_path") if results else None,
-    }
-    if as_json:
-        _print_json(payload)
-    else:
-        for r in results:
-            print(f"success={r['success']} path={r['main_path']}")
-            if r.get("workspace_path"):
-                print(f"  workspace={r['workspace_path']}")
-            if not r["success"]:
-                print(r["log"][-2000:])
-    return 0 if payload["ok"] else 1
-
-
-def cmd_generate_video(
-    path: Path,
-    seq_id: str,
-    vid_id: str,
-    *,
-    seed: int | None,
-    as_json: bool,
-) -> int:
-    try:
-        data = builder.load_project(path)
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-
-    prereq = runner.validate_video_prerequisites(data, seq_id, vid_id)
-    if prereq:
-        if as_json:
-            _print_json({"ok": False, "error": "missing selected_image_path", "issues": prereq})
-        else:
-            print("ERROR: video generation requires selected keyframe images:")
-            for issue in prereq:
-                print(f"  - {issue}")
-        return 1
-
-    project_name = data.get("project", {}).get("name", "project")
-    result = runner.run_video(data, seq_id, vid_id, seed=seed)
-    payload = {"ok": result.success, **asdict(result)}
-    attach_workspace_paths(
-        payload, project_name=project_name, label=f"videos/{seq_id}/{vid_id}", seed=seed
-    )
-    if as_json:
-        _print_json(payload)
-    else:
-        print(f"success={result.success} path={result.main_path}")
-        if payload.get("workspace_path"):
-            print(f"  workspace={payload['workspace_path']}")
-        if not result.success:
-            print(result.log[-2000:])
-    return 0 if result.success else 1
-
-
-def cmd_generate_asset(
-    path: Path,
-    asset_type: str,
-    asset_id: str,
-    *,
-    seed: int | None,
-    workflow: str | None,
-    layout_override: str | None,
-    as_json: bool,
-) -> int:
-    try:
-        data = builder.load_project(path)
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-
-    project_name = data.get("project", {}).get("name", "project")
-    result = runner.run_asset(
-        data,
-        asset_type,
-        asset_id,
-        session_workflow=workflow,
-        seed=seed,
-        layout_override=layout_override,
-    )
-    payload = {"ok": result.success, **asdict(result)}
-    attach_workspace_paths(
-        payload,
-        project_name=project_name,
-        label=f"assets/{asset_type}/{asset_id}",
-        seed=seed,
-    )
-    if as_json:
-        _print_json(payload)
-    else:
-        print(f"success={result.success} path={result.main_path}")
-        if payload.get("workspace_path"):
-            print(f"  workspace={payload['workspace_path']}")
-        if not result.success:
-            print(result.log[-2000:])
-    return 0 if result.success else 1
-
-
-def cmd_open(path: Path, *, as_json: bool) -> int:
-    try:
-        opened = open_with_default_app(path)
-    except FileNotFoundError as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-    msg = {"ok": True, "path": opened}
-    if as_json:
-        _print_json(msg)
-    else:
-        print(f"OK: opened with default app: {opened}")
-    return 0
-
-
-def cmd_gallery(
-    project_name: str,
-    *,
-    open_browser: bool,
-    clear: bool,
-    src: Path | None,
-    name: str | None,
-    note: str | None,
-    status: str | None,
-    mode: str | None,
-    pending: str | None,
-    change: str | None,
-    context: str | None,
-    monitor_current: str | None,
-    monitor_next: str | None,
-    monitor_eta: str | None,
-    monitor_progress: str | None,
-    monitor_clip_done_at: str | None,
-    monitor_batch_done_at: str | None,
-    monitor_avg_sec: str | None,
-    monitor_big: str | None,
-    regen_add: str | None,
-    regen_remove: str | None,
-    group: str | None,
-    group_note: str | None,
-    group_pending: str | None,
-    work_state: str | None,
-    as_json: bool,
-) -> int:
-    try:
-        if clear:
-            clear_preview_dir(project_name)
-        if work_state is not None:
-            set_gallery_timer_state(project_name, work_state)
-        if src is not None:
-            if not name:
-                if as_json:
-                    _print_json({"ok": False, "error": "--name required with --src"})
-                else:
-                    print("ERROR: --name required with --src")
-                return 1
-            copied = add_preview_image(project_name, src, name, note=note, status=status)
-            if not copied:
-                if as_json:
-                    _print_json({"ok": False, "error": f"Source not found: {src}"})
-                else:
-                    print(f"ERROR: source not found: {src}")
-                return 1
-        elif name and (note is not None or status is not None):
-            # Status/note update on an existing item must not bump its recency,
-            # or the monitor hero slot would jump to an old item.
-            update_gallery_session(
-                project_name,
-                item_filename=name,
-                item_note=note,
-                item_status=status,
-                bump_item_recency=False,
-            )
-        effective_group = group
-        if effective_group is None and name and (
-            group_note is not None or group_pending is not None
-        ):
-            effective_group = group_key_from_filename(name)
-        index_path = build_preview_gallery(
-            project_name,
-            mode=mode,
-            pending=pending,
-            change=change,
-            context=context,
-            monitor_current=monitor_current,
-            monitor_next=monitor_next,
-            monitor_eta=monitor_eta,
-            monitor_progress=monitor_progress,
-            monitor_clip_done_at=monitor_clip_done_at,
-            monitor_batch_done_at=monitor_batch_done_at,
-            monitor_avg_sec=monitor_avg_sec,
-            monitor_big=monitor_big,
-            regen_add=regen_add,
-            regen_remove=regen_remove,
-            group=effective_group,
-            group_note=group_note,
-            group_pending=group_pending,
+def describe_project(detail: dict) -> str:
+    sess = detail.get("agent_session") or {}
+    lines = [f"{detail['name']} ({detail['slug']}) v{detail.get('version')}  pending: {detail.get('pending_changes', 0)}"]
+    lines.append(f"brief: {detail.get('brief') or '(none)'}")
+    d = detail.get("defaults") or {}
+    if detail.get("configured"):
+        prompts = sum(1 for k in ("image_prompt", "video_prompt", "image_negative", "video_negative") if (d.get(k) or "").strip())
+        lines.append(
+            f"settings: {d.get('width')}x{d.get('height')} image={d.get('image_workflow') or '-'} video={d.get('video_workflow') or '-'} "
+            f"video_length_s={d.get('video_length_s')} global_prompts={prompts}"
         )
-        preview_dir = preview_dir_for_project(project_name)
-        opened = None
-        if open_browser:
-            opened = open_gallery_in_browser(index_path, project_name=project_name)
-        msg = {
-            "ok": True,
-            "project": project_name,
-            "preview_dir": str(preview_dir.resolve()),
-            "index_path": index_path,
-            "opened_in_browser": opened,
-            "cleared": clear,
-        }
-        if src is not None:
-            msg["copied"] = copied
-        if as_json:
-            _print_json(msg)
-        else:
-            print(f"OK: gallery at {index_path}")
-            if src is not None:
-                print(f"  copied {name} -> {copied}")
-            if opened:
-                print(f"  opened in browser: {opened}")
-        return 0
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-
-
-def cmd_reveal(path: Path, *, select_file: bool, as_json: bool) -> int:
-    try:
-        opened = reveal_in_explorer(path, select_file=select_file)
-    except FileNotFoundError as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-    msg = {"ok": True, "path": opened, "select_file": select_file}
-    if as_json:
-        _print_json(msg)
     else:
-        print(f"OK: opened Explorer for {opened}")
-    return 0
-
-
-def cmd_clone_from_host(
-    source: Path,
-    name: str,
-    *,
-    dest: Path | None,
-    approve: bool,
-    as_json: bool,
-) -> int:
-    if not approve:
-        msg = "Refused: --approve required (user must opt in to clone from host project)."
-        if as_json:
-            _print_json({"ok": False, "error": msg})
-        else:
-            print(f"ERROR: {msg}")
-        return 1
-    if not source.is_file():
-        msg = f"Host project not found: {source}"
-        if as_json:
-            _print_json({"ok": False, "error": msg})
-        else:
-            print(f"ERROR: {msg}")
-        return 1
-    try:
-        _data, written = builder.clone_project_from_host(source, name, dest_path=dest)
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-    payload = {
-        "ok": True,
-        "source": str(source.resolve()),
-        "dest": str(written.resolve()),
-        "name": name,
-        "host_unmodified": True,
-    }
-    if as_json:
-        _print_json(payload)
-    else:
-        print(f"OK: cloned globals from {source} -> {written}")
-        print("Host project was not modified.")
-    return 0
-
-
-def cmd_pipeline_keyframes(
-    path: Path,
-    *,
-    variants: int,
-    force: bool,
-    as_json: bool,
-) -> int:
-    ok = pipeline.phase_keyframes_generate(path, max_variants=variants, force=force)
-    cp = pipeline.load_checkpoint(path)
-    payload = {"ok": ok, "checkpoint": cp.to_dict(), "log": str(pipeline.log_path(path))}
-    if as_json:
-        _print_json(payload)
-    else:
-        print(f"Keyframes phase: {'OK' if ok else 'FAILED'}")
-        print(f"Checkpoint: {pipeline.checkpoint_path(path)}")
-    return 0 if ok else 1
-
-
-def cmd_pipeline_record_qc(
-    path: Path,
-    seq_id: str,
-    kf_id: str,
-    image: str,
-    *,
-    rationale: str,
-    as_json: bool,
-) -> int:
-    beat = pipeline.record_vision_selection(
-        path, seq_id, kf_id, image, rationale=rationale,
-    )
-    payload = {
-        "ok": True,
-        "seq": seq_id,
-        "kf": kf_id,
-        "selected_path": beat.selected_path,
-        "qc_method": beat.qc_method,
-    }
-    if as_json:
-        _print_json(payload)
-    else:
-        print(f"OK: recorded vision QC for {seq_id}/{kf_id}")
-    return 0
-
-
-def cmd_pipeline_apply(path: Path, *, as_json: bool) -> int:
-    applied = pipeline.apply_checkpoint_selections(path)
-    payload = {"ok": True, "applied": applied}
-    if as_json:
-        _print_json(payload)
-    else:
-        print(f"OK: applied {len(applied)} selection(s)")
-    return 0
-
-
-def cmd_pipeline_status(path: Path, *, as_json: bool) -> int:
-    cp = pipeline.load_checkpoint(path)
-    data = pipeline.load_project_json(path)
-    kfs = pipeline.keyframe_list(data)
-    pending = []
-    for seq, kf, _ in kfs:
-        if not pipeline.keyframe_has_selection(data, seq, kf):
-            pending.append(f"{seq}/{kf}")
-    payload = {
-        "ok": True,
-        "checkpoint": cp.to_dict(),
-        "pending_keyframes": pending,
-        "all_selected": pipeline.all_beats_selected(path),
-        "log": str(pipeline.log_path(path)),
-    }
-    if as_json:
-        _print_json(payload)
-    else:
-        print(f"Phase: {cp.phase}")
-        print(f"Pending keyframes: {len(pending)}")
-        print(f"All selected: {payload['all_selected']}")
-    return 0
-
-
-def cmd_select_keyframe(path: Path, seq_id: str, kf_id: str, image_path: str, *, as_json: bool) -> int:
-    try:
-        selection.set_selected_keyframe_image(path, seq_id, kf_id, image_path)
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-    msg = {
-        "ok": True,
-        "path": str(path),
-        "seq_id": seq_id,
-        "kf_id": kf_id,
-        "selected_image_path": image_path,
-        "reload_browser": "Reload Gradio if open to avoid write clashes.",
-    }
-    if as_json:
-        _print_json(msg)
-    else:
-        print(f"OK: selected {image_path}")
-        print(msg["reload_browser"])
-    return 0
-
-
-def cmd_select_video(path: Path, seq_id: str, vid_id: str, video_path: str, *, as_json: bool) -> int:
-    try:
-        selection.set_selected_video(path, seq_id, vid_id, video_path)
-    except Exception as e:
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-    msg = {
-        "ok": True,
-        "path": str(path),
-        "seq_id": seq_id,
-        "vid_id": vid_id,
-        "selected_video_path": video_path,
-        "reload_browser": "Reload Gradio if open to avoid write clashes.",
-    }
-    if as_json:
-        _print_json(msg)
-    else:
-        print(f"OK: selected {video_path}")
-        print(msg["reload_browser"])
-    return 0
-
-
-def cmd_serve(project_name: str, *, host: str, port: int) -> int:
-    from server.gallery_server import serve_gallery
-
-    try:
-        serve_gallery(project_name, host=host, port=port)
-    except OSError as e:
-        print(f"ERROR: cannot bind {host}:{port}: {e}", file=sys.stderr)
-        return 1
-    return 0
-
-
-def cmd_export(path: Path, *, fmt: str, debug_labels: bool, as_json: bool) -> int:
-    """Stitch the project's selected clips into a single file via scripts/run_stitch.py.
-
-    Debug labels (seq:vid[:kf] burned into each clip) are ON by default — this is the
-    "final cut" the monitor features when a run completes. Partner-node clips that have no
-    lossless companion are handled by run_stitch's MP4 frame-extraction fallback.
-    """
-    import subprocess
-
-    stitch = _REPO_ROOT / "scripts" / "run_stitch.py"
-    cmd = [sys.executable, "-u", str(stitch), "--config", str(path), "--format", fmt]
-    if debug_labels:
-        cmd.append("--debug_labels")
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    except Exception as e:  # noqa: BLE001 — surface any launch failure to the caller
-        if as_json:
-            _print_json({"ok": False, "error": str(e)})
-        else:
-            print(f"ERROR: {e}")
-        return 1
-
-    log = (proc.stdout or "") + (proc.stderr or "")
-    lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
-    out_path = None
-    if any("Successfully created" in ln for ln in lines) and lines:
-        cand = lines[-1]  # run_stitch prints the created file path as the final line
-        if Path(cand).suffix.lower() in (".mp4", ".mov", ".webm", ".gif"):
-            out_path = cand
-    ok = bool(out_path) and Path(out_path).is_file()
-    payload = {"ok": ok, "output_path": out_path, "debug_labels": debug_labels, "format": fmt}
-    if not ok:
-        payload["log"] = log[-2000:]
-    if as_json:
-        _print_json(payload)
-    else:
-        if ok:
-            print(f"OK: exported {out_path}")
-        else:
-            print("ERROR: export produced no file")
-            print(log[-2000:])
-    return 0 if ok else 1
-
-
-def cmd_notes(project_name: str, action: str, *, as_json: bool) -> int:
-    from server.notes_handler import notes_log_for_project
-
-    log = notes_log_for_project(project_name)
-    if action == "check":
-        queue = log.load_queue()
-        payload = {"ok": True, "project": project_name, **queue}
-    elif action == "pop-urgent":
-        popped = log.pop_urgent()
-        payload = {"ok": True, "project": project_name, "urgent": popped}
-    else:  # clear-batch
-        popped = log.clear_batch()
-        payload = {"ok": True, "project": project_name, "batch": popped}
-
-    if as_json:
-        _print_json(payload)
-    else:
-        notes = [n for key in ("urgent", "batch") for n in payload.get(key, [])]
-        if not notes:
-            print("No notes.")
-        for n in notes:
-            tag = f" [{n['item_id']}]" if n.get("item_id") else ""
-            print(f"{n['priority'].upper()}{tag} {n['ts']}: {n['text']}")
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    try:
-        resolve_agent_python()
-    except RuntimeError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
-
-    parser = argparse.ArgumentParser(description="THM agent client — JSON + generation")
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--json", action="store_true", help="JSON output for agent parsing")
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_val = sub.add_parser("validate", parents=[common], help="Validate project JSON")
-    p_val.add_argument("path", type=Path)
-
-    p_sum = sub.add_parser("summarize", parents=[common], help="Storyboard summary")
-    p_sum.add_argument("path", type=Path)
-
-    sub.add_parser("comfy-status", parents=[common], help="Check ComfyUI API reachability")
-
-    p_disc = sub.add_parser("discover", parents=[common], help="List local resources")
-    p_disc.add_argument(
-        "kind",
-        choices=["models", "loras", "workflows", "projects"],
-    )
-
-    p_img = sub.add_parser("images", parents=[common], help="List keyframe images")
-    p_img_sub = p_img.add_subparsers(dest="images_cmd", required=True)
-    p_img_list = p_img_sub.add_parser("list", parents=[common])
-    p_img_list.add_argument("--project", type=Path, required=True)
-    p_img_list.add_argument("--seq", required=True)
-    p_img_list.add_argument("--kf", required=True)
-    p_img_list.add_argument("--previews", action="store_true")
-
-    p_gen = sub.add_parser("generate", parents=[common], help="Run generation")
-    p_gen_sub = p_gen.add_subparsers(dest="gen_cmd", required=True)
-
-    p_kf = p_gen_sub.add_parser("keyframe", parents=[common])
-    p_kf.add_argument("--project", type=Path, required=True)
-    p_kf.add_argument("--seq", required=True)
-    p_kf.add_argument("--kf", required=True)
-    p_kf.add_argument("--seed", type=int)
-    p_kf.add_argument("--variants", type=int, default=1)
-
-    p_vid = p_gen_sub.add_parser("video", parents=[common])
-    p_vid.add_argument("--project", type=Path, required=True)
-    p_vid.add_argument("--seq", required=True)
-    p_vid.add_argument("--vid", required=True)
-    p_vid.add_argument("--seed", type=int)
-
-    p_ast = p_gen_sub.add_parser("asset", parents=[common])
-    p_ast.add_argument("--project", type=Path, required=True)
-    p_ast.add_argument("--type", required=True, choices=["character", "setting", "style"])
-    p_ast.add_argument("--id", required=True, dest="asset_id")
-    p_ast.add_argument("--seed", type=int)
-    p_ast.add_argument("--workflow")
-    p_ast.add_argument(
-        "--layout-override",
-        dest="layout_override",
-        help="Override default asset-test layout (poses, shelf angles, etc.)",
-    )
-
-    p_open = sub.add_parser("open", parents=[common], help="Open file with default app (Photos, etc.)")
-    p_open.add_argument("path", type=Path, help="Image or video file to open")
-
-    p_reveal = sub.add_parser("reveal", parents=[common], help="Open folder in Explorer (Windows)")
-    p_reveal.add_argument("path", type=Path, help="File or directory to reveal")
-    p_reveal.add_argument(
-        "--select",
-        action="store_true",
-        help="Highlight file in Explorer (/select on Windows)",
-    )
-
-    p_gallery = sub.add_parser(
-        "gallery",
-        parents=[common],
-        help="Build {workspace}/{project}-files/previews/index.html and optionally open in browser",
-    )
-    p_gallery.add_argument("--project", required=True, help="Project name (not JSON path)")
-    p_gallery.add_argument(
-        "--open",
-        action="store_true",
-        help="Open index.html in the default browser after building",
-    )
-    p_gallery.add_argument(
-        "--clear",
-        action="store_true",
-        help="User-only: wipe preview media and session.json (agent must not use — galleries are additive)",
-    )
-    p_gallery.add_argument(
-        "--src",
-        type=Path,
-        help="Copy a file into the preview folder before rebuilding",
-    )
-    p_gallery.add_argument(
-        "--name",
-        help="Short destination filename for --src (e.g. creator-A.png)",
-    )
-    p_gallery.add_argument(
-        "--note",
-        help="Hint for this item (--with --src --name) or set via session flags",
-    )
-    p_gallery.add_argument(
-        "--pending",
-        help="Session-level: open decision the user should make",
-    )
-    p_gallery.add_argument(
-        "--change",
-        help="Session-level: what changed in the latest batch (memory aid)",
-    )
-    p_gallery.add_argument(
-        "--context",
-        help="Session-level: broader context for this review session",
-    )
-    p_gallery.add_argument(
-        "--group",
-        help="Group key prefix for --group-note / --group-pending (e.g. video, keyframe)",
-    )
-    p_gallery.add_argument(
-        "--group-note",
-        dest="group_note",
-        help="Note applying to all items in --group",
-    )
-    p_gallery.add_argument(
-        "--group-pending",
-        dest="group_pending",
-        help="Pending decision for the --group section",
-    )
-    p_gallery.add_argument(
-        "--mode",
-        choices=("review", "monitor"),
-        help="Gallery style: review = full compare, no refresh; monitor = auto-refreshing dashboard",
-    )
-    p_gallery.add_argument(
-        "--status",
-        choices=("in-progress", "pass", "fail"),
-        help="QC status for the --name item (works with or without --src)",
-    )
-    p_gallery.add_argument(
-        "--current",
-        dest="monitor_current",
-        help="Monitor: name of the item currently generating (empty string = idle)",
-    )
-    p_gallery.add_argument(
-        "--next",
-        dest="monitor_next",
-        help="Monitor: what generates after the current item",
-    )
-    p_gallery.add_argument(
-        "--eta",
-        dest="monitor_eta",
-        help="Monitor: ETA text for the current generation/batch",
-    )
-    p_gallery.add_argument(
-        "--progress",
-        dest="monitor_progress",
-        help='Monitor: "done/total" count across all planned generations (e.g. 18/25)',
-    )
-    p_gallery.add_argument(
-        "--clip-done-at",
-        dest="monitor_clip_done_at",
-        help="Monitor: epoch seconds when the current clip should finish (empty clears)",
-    )
-    p_gallery.add_argument(
-        "--batch-done-at",
-        dest="monitor_batch_done_at",
-        help="Monitor: epoch seconds when the batch should finish (empty clears)",
-    )
-    p_gallery.add_argument(
-        "--avg-sec",
-        dest="monitor_avg_sec",
-        help="Monitor: rolling average seconds per clip (used to cost queued regens)",
-    )
-    p_gallery.add_argument(
-        "--regen-add",
-        dest="regen_add",
-        help="Monitor: queue item(s) for regeneration (comma-separated); extends batch ETA immediately",
-    )
-    p_gallery.add_argument(
-        "--regen-remove",
-        dest="regen_remove",
-        help="Monitor: remove item(s) from the regen queue (comma-separated)",
-    )
-    p_gallery.add_argument(
-        "--big",
-        dest="monitor_big",
-        help='Monitor: big-picture lines, newline-separated "Label: text" (empty clears)',
-    )
-    p_gallery.add_argument(
-        "--work-state",
-        dest="work_state",
-        choices=("active", "paused"),
-        help="Toggle the elapsed-time counter; folds the finished span into the total",
-    )
-
-    p_sel = sub.add_parser("select", parents=[common], help="Persist selection")
-    p_sel_sub = p_sel.add_subparsers(dest="sel_cmd", required=True)
-    p_sel_kf = p_sel_sub.add_parser("keyframe", parents=[common])
-    p_sel_kf.add_argument("--project", type=Path, required=True)
-    p_sel_kf.add_argument("--seq", required=True)
-    p_sel_kf.add_argument("--kf", required=True)
-    p_sel_kf.add_argument("--image", required=True)
-    p_sel_vid = p_sel_sub.add_parser("video", parents=[common])
-    p_sel_vid.add_argument("--project", type=Path, required=True)
-    p_sel_vid.add_argument("--seq", required=True)
-    p_sel_vid.add_argument("--vid", required=True)
-    p_sel_vid.add_argument("--path", required=True, help="Approved video take path")
-
-    p_clone = sub.add_parser(
-        "clone-from-host",
-        parents=[common],
-        help="New project JSON with host globals; host file read-only",
-    )
-    p_clone.add_argument("--source", type=Path, required=True, help="Host project JSON (read-only)")
-    p_clone.add_argument("--name", required=True, help="New project name")
-    p_clone.add_argument("--dest", type=Path, help="Destination JSON path (default: workspace/{slug}.json)")
-    p_clone.add_argument(
-        "--approve",
-        action="store_true",
-        required=True,
-        help="Required: user opted in to clone from host",
-    )
-
-    p_serve = sub.add_parser(
-        "serve",
-        parents=[common],
-        help="Serve gallery + note intake over the home LAN (phone monitoring)",
-    )
-    p_serve.add_argument("--project", required=True, help="Project name (JSON filename stem)")
-    p_serve.add_argument("--port", type=int, default=8000)
-    p_serve.add_argument("--host", default="0.0.0.0")
-
-    p_export = sub.add_parser(
-        "export",
-        parents=[common],
-        help="Stitch selected clips into one file (debug labels on by default) — the run's final cut",
-    )
-    p_export.add_argument("--project", type=Path, required=True)
-    p_export.add_argument("--format", default="mp4", help="Output container (default mp4)")
-    p_export.add_argument(
-        "--no-debug-labels",
-        dest="debug_labels",
-        action="store_false",
-        help="Export without the seq:vid[:kf] debug overlays",
-    )
-    p_export.set_defaults(debug_labels=True)
-
-    p_notes = sub.add_parser(
-        "notes",
-        parents=[common],
-        help="Inspect or drain remote notes queued from the phone",
-    )
-    p_notes.add_argument("notes_cmd", choices=["check", "pop-urgent", "clear-batch"])
-    p_notes.add_argument("--project", required=True, help="Project name (JSON filename stem)")
-
-    p_pipe = sub.add_parser("pipeline", parents=[common], help="Long-run pipeline + checkpoints")
-    p_pipe_sub = p_pipe.add_subparsers(dest="pipe_cmd", required=True)
-
-    p_pkf = p_pipe_sub.add_parser("keyframes", parents=[common], help="Generate KF variants to checkpoint")
-    p_pkf.add_argument("--project", type=Path, required=True)
-    p_pkf.add_argument("--variants", type=int, default=5)
-    p_pkf.add_argument("--force", action="store_true", help="Regenerate even if already selected")
-
-    p_pqc = p_pipe_sub.add_parser("record-qc", parents=[common], help="Record vision QC selection")
-    p_pqc.add_argument("--project", type=Path, required=True)
-    p_pqc.add_argument("--seq", required=True)
-    p_pqc.add_argument("--kf", required=True)
-    p_pqc.add_argument("--image", required=True)
-    p_pqc.add_argument("--rationale", default="", help="Vision QC rationale for log")
-
-    p_papply = p_pipe_sub.add_parser("apply-selections", parents=[common])
-    p_papply.add_argument("--project", type=Path, required=True)
-
-    p_pstat = p_pipe_sub.add_parser("status", parents=[common])
-    p_pstat.add_argument("--project", type=Path, required=True)
-
-    args = parser.parse_args(argv)
-
-    if args.command == "validate":
-        return cmd_validate(args.path, as_json=args.json)
-    if args.command == "summarize":
-        return cmd_summarize(args.path)
-    if args.command == "comfy-status":
-        return cmd_comfy_status(as_json=args.json, api_base=getattr(args, "api_base", None))
-    if args.command == "discover":
-        return cmd_discover(args.kind, as_json=args.json)
-    if args.command == "images" and args.images_cmd == "list":
-        return cmd_images_list(
-            args.project, args.seq, args.kf, as_json=args.json, previews=args.previews
+        lines.append("settings: not configured (set canvas and default workflows with set_project_settings)")
+    if sess:
+        lines.append(f"session {sess.get('id')} {sess.get('status')} mode={sess.get('mode') or '-'} harness={sess.get('harness') or '-'}")
+    if detail.get("blocker"):
+        lines.append(f"open blocker: {detail['blocker'].get('text', '')}")
+    if detail.get("tags"):
+        lines.append(f"tags: {', '.join(detail['tags'])}")
+    for b in detail.get("bins", []):
+        sel = (b.get("selected_media") or {}).get("id") or "-"
+        tags = f" tags={','.join(b['tags'])}" if b.get("tags") else ""
+        lines.append(
+            f"  {b['id']}  {b['name']:14} {b.get('kind') or '-':5} workflow={b.get('workflow') or '-'} "
+            f"media={len(b.get('media') or [])} takes={b.get('take_count', 0)} selected={sel}{tags}"
         )
-    if args.command == "generate":
-        if args.gen_cmd == "keyframe":
-            return cmd_generate_keyframe(
-                args.project, args.seq, args.kf,
-                seed=args.seed, variants=args.variants, as_json=args.json,
-            )
-        if args.gen_cmd == "video":
-            return cmd_generate_video(
-                args.project, args.seq, args.vid, seed=args.seed, as_json=args.json,
-            )
-        if args.gen_cmd == "asset":
-            return cmd_generate_asset(
-                args.project,
-                args.type,
-                args.asset_id,
-                seed=args.seed,
-                workflow=args.workflow,
-                layout_override=args.layout_override,
-                as_json=args.json,
-            )
-    if args.command == "open":
-        return cmd_open(args.path, as_json=args.json)
-    if args.command == "reveal":
-        return cmd_reveal(args.path, select_file=args.select, as_json=args.json)
-    if args.command == "gallery":
-        return cmd_gallery(
-            args.project,
-            open_browser=args.open,
-            clear=args.clear,
-            src=args.src,
-            name=args.name,
-            note=args.note,
-            status=args.status,
-            mode=args.mode,
-            pending=args.pending,
-            change=args.change,
-            context=args.context,
-            monitor_current=args.monitor_current,
-            monitor_next=args.monitor_next,
-            monitor_eta=args.monitor_eta,
-            monitor_progress=args.monitor_progress,
-            monitor_clip_done_at=args.monitor_clip_done_at,
-            monitor_batch_done_at=args.monitor_batch_done_at,
-            monitor_avg_sec=args.monitor_avg_sec,
-            monitor_big=args.monitor_big,
-            regen_add=args.regen_add,
-            regen_remove=args.regen_remove,
-            group=args.group,
-            group_note=args.group_note,
-            group_pending=args.group_pending,
-            work_state=args.work_state,
-            as_json=args.json,
-        )
-    if args.command == "select" and args.sel_cmd == "keyframe":
-        return cmd_select_keyframe(
-            args.project, args.seq, args.kf, args.image, as_json=args.json,
-        )
-    if args.command == "select" and args.sel_cmd == "video":
-        return cmd_select_video(
-            args.project, args.seq, args.vid, args.path, as_json=args.json,
-        )
-    if args.command == "clone-from-host":
-        return cmd_clone_from_host(
-            args.source, args.name, dest=args.dest, approve=args.approve, as_json=args.json,
-        )
-    if args.command == "serve":
-        return cmd_serve(args.project, host=args.host, port=args.port)
-    if args.command == "export":
-        return cmd_export(
-            args.project, fmt=args.format, debug_labels=args.debug_labels, as_json=args.json,
-        )
-    if args.command == "notes":
-        return cmd_notes(args.project, args.notes_cmd, as_json=args.json)
-    if args.command == "pipeline":
-        if args.pipe_cmd == "keyframes":
-            return cmd_pipeline_keyframes(
-                args.project, variants=args.variants, force=args.force, as_json=args.json,
-            )
-        if args.pipe_cmd == "record-qc":
-            return cmd_pipeline_record_qc(
-                args.project, args.seq, args.kf, args.image,
-                rationale=args.rationale, as_json=args.json,
-            )
-        if args.pipe_cmd == "apply-selections":
-            return cmd_pipeline_apply(args.project, as_json=args.json)
-        if args.pipe_cmd == "status":
-            return cmd_pipeline_status(args.project, as_json=args.json)
-    return 2
+    return "\n".join(lines)
+
+
+def describe_result(result: dict) -> str:
+    lines = []
+    ch = result.get("change")
+    if ch:
+        dec = (ch.get("decision") or {}).get("status")
+        lines.append(f"change {ch['id']}: {ch.get('description')}" + (f" [{dec}]" if dec else ""))
+    gen = result.get("generation")
+    if gen:
+        lines.append(f"generation {gen['id']} {gen.get('status')} seed={gen.get('params', {}).get('seed')}")
+    for w in result.get("warnings") or []:
+        lines.append(f"warning: {w.get('kind')} {w.get('detail')}")
+    for m in result.get("messages") or []:
+        lines.append(f"message {m.get('kind')}: {m.get('text')}")
+    lines.append(f"project version {result.get('project_version')}")
+    return "\n".join(lines)
+
+
+# -- commands -------------------------------------------------------------------
+
+
+def need_project(args) -> str:
+    if not args.project:
+        raise UsageError("--project <slug> is required for this command")
+    return args.project
+
+
+def cmd_projects(client, args):
+    projects = client.projects()
+    emit(args, projects, "\n".join(f"{p['slug']:24} {p['name']}  bins={p.get('bin_count', 0)}" for p in projects) or "(no projects)")
+
+
+def cmd_create(client, args):
+    settings = None
+    if args.settings:
+        try:
+            settings = json.loads(args.settings)
+        except ValueError as exc:
+            raise UsageError(f"--settings is not JSON: {exc}") from None
+    detail = client.create_project(args.name, brief=args.brief, settings=settings)
+    emit(args, detail, f"created {detail['slug']}\n" + describe_project(detail) + "\nnext: the user starts a session in the app; run wait")
+
+
+def cmd_workflows(client, args):
+    wfs = client.workflows()
+    emit(args, wfs, "\n".join(f"{w['kind']:5} {w['name']}  slots={w.get('image_slots', 0)}i/{w.get('video_slots', 0)}v negative={w.get('has_negative')}" for w in wfs) or "(no workflows)")
+
+
+def cmd_wait(client, args):
+    detail = client.wait_for_session(args.project, poll_s=args.poll, timeout_s=args.timeout)
+    save_state(detail["slug"], session=(detail.get("agent_session") or {}).get("id"))
+    emit(args, detail, describe_project(detail))
+
+
+def cmd_connect(client, args):
+    slug = need_project(args)
+    result = client.connect(slug, args.harness)
+    save_state(slug, session=client.session)
+    emit(args, result, describe_result(result))
+
+
+def cmd_project(client, args):
+    detail = client.project(need_project(args))
+    emit(args, detail, describe_project(detail))
+
+
+def cmd_bin(client, args):
+    slug = need_project(args)
+    detail = client.bin(slug, args.bin)
+    b = detail["bin"]
+    lines = [
+        f"{b['name']} ({b['id']}) {detail.get('kind') or '-'} workflow={b.get('workflow') or '-'} length_s={b.get('length_s')}",
+        f"prompt: {b.get('prompt', '')}",
+        f"negative: {b.get('negative', '')}",
+        f"tags: {', '.join(b.get('tags') or []) or '-'}",
+        f"selected: {detail.get('selected') or '-'}",
+    ]
+    for m in detail.get("media", []):
+        origin = m.get("origin") or {}
+        take = f"take {m['take']}" if m.get("take") else origin.get("type", "media")
+        line = f"  media {m['id']} {m.get('type')} {take}"
+        if origin.get("generation"):
+            line += f" gen={origin['generation']}"
+        if origin.get("source"):
+            line += f" from={origin['source']}"
+        if origin.get("note"):
+            line += f" ({origin['note']})"
+        if m.get("id") == detail.get("selected"):
+            line += " *"
+        if m.get("qc"):
+            line += f" qc={m['qc']['status']}"
+            if m["qc"].get("note"):
+                line += f": {m['qc']['note']}"
+        lines.append(line)
+    for r in detail.get("references", []):
+        media = r.get("media") or {}
+        lines.append(f"  ref {r['id']} .{r['handle']} media={media.get('id') or 'missing'} from={r.get('bin_name')} {r.get('sub_label') or ''}".rstrip())
+    cap = detail.get("capacity") or {}
+    lines.append(f"capacity: image_slots={cap.get('image_slots')} video_slots={cap.get('video_slots')} start={cap.get('supports_start_frame')} end={cap.get('supports_end_frame')}")
+    for j in detail.get("active_jobs") or []:
+        lines.append(f"active job {j['job']} {j['status']} {j.get('progress')}% {j.get('task') or ''}")
+    if detail["bin"].get("unseen"):
+        lines.append(f"unseen: {' '.join(detail['bin']['unseen'])}")
+    emit(args, detail, "\n".join(lines))
+
+
+def cmd_inbox(client, args):
+    slug = need_project(args)
+    messages, cursor = client.inbox(slug)
+    save_state(slug, cursor=cursor)
+    emit(args, {"messages": messages, "cursor": cursor}, describe_messages(messages) + f"\ncursor {cursor}")
+
+
+def cmd_watch(client, args):
+    if args.project:
+        slug = args.project
+        cursor = load_state(slug).get("cursor")
+        messages = client.wait_for_inbox(slug, cursor=cursor, poll_s=args.poll, timeout_s=args.timeout)
+        emit(args, {"project": slug, "messages": messages}, describe_messages(messages) + "\nnext: run inbox to read these and move the cursor")
+        return
+    # no project: every project is yours; whichever needs you first wakes you
+    cursors = {}
+    if STATE_DIR.is_dir():
+        for path in STATE_DIR.glob("*.json"):
+            cursors[path.stem] = load_state(path.stem).get("cursor")
+    woke = client.wait_for_any(cursors, poll_s=args.poll, timeout_s=args.timeout)
+    human = f"project {woke['slug']}: {woke['why']}\n" + describe_messages(woke["messages"])
+    tail = "\nnext: connect" if woke["why"] == "session waiting" else f"\nnext: --project {woke['slug']} inbox"
+    emit(args, woke, human + tail)
+
+
+def cmd_sessions(client, args):
+    rows = client.sessions()
+    lines = []
+    for r in rows:
+        line = f"{r['slug']:24} {r['status']:8} mode={r.get('mode') or '-':7} harness={r.get('harness') or '-':12} pending={r['pending_changes']}"
+        if r.get("blocker"):
+            line += f"  BLOCKER: {r['blocker']}"
+        lines.append(line)
+    emit(args, rows, "\n".join(lines) or "(no projects)")
+
+
+def cmd_mode(client, args):
+    slug = need_project(args)
+    result = client.set_mode(slug, args.mode, requested=args.requested)
+    emit(args, result, describe_result(result))
+
+
+def cmd_history(client, args):
+    slug = need_project(args)
+    rows = client.history(slug, args.bin, limit=args.limit)
+    lines = []
+    for r in rows:
+        take = f"take {r['take']}" if r.get("take") else r["media_state"]
+        params = f"seed={r.get('seed')}"
+        if r.get("length_s") is not None:
+            params += f" length_s={r['length_s']}"
+        if r.get("quarter"):
+            params += " quarter"
+        qc = r.get("qc") or {}
+        head = f"{take:10} {r['generation']} {r.get('status') or '-':9} {params}  qc={qc.get('status') or '-'}"
+        if r.get("recovered"):
+            head += "  (recovered from file)"
+        lines.append(head)
+        if qc.get("note"):
+            lines.append(f"    note: {qc['note']}")
+        for w in r.get("warnings") or []:
+            lines.append(f"    warning: {w.get('kind')} {w.get('detail')}")
+        if r.get("prompt_diff"):
+            lines.append("    " + r["prompt_diff"].replace("\n", "\n    "))
+        elif r is rows[-1]:
+            lines.append("    prompt: " + (r.get("prompt_typed") or "").replace("\n", " ")[:400])
+        else:
+            lines.append("    prompt: unchanged")
+    emit(args, rows, "\n".join(lines) if lines else "(no generations in this bin)")
+
+
+def cmd_recipe(client, args):
+    slug = need_project(args)
+    rec = client.recipe(slug, args.media)
+    if not rec.get("found"):
+        emit(args, rec, f"no recipe: {args.media} was not generated (an upload, clip or still)")
+        return
+    lines = [
+        f"generation {rec.get('generation')} {rec.get('status') or ''} bin={rec.get('bin')} workflow={rec.get('workflow')}" + (" (workflow missing)" if rec.get("workflow_missing") else "") + (" (recovered from file)" if rec.get("recovered") else ""),
+        f"params: {json.dumps(rec.get('params') or {}, ensure_ascii=True)}",
+        f"prompt: {rec.get('prompt', '')}",
+        f"negative: {rec.get('negative', '')}",
+    ]
+    for media, handle in zip(rec.get("references") or [], rec.get("handles") or []):
+        lines.append(f"  ref .{handle} media={media}")
+    for media in rec.get("missing") or []:
+        lines.append(f"  missing reference media={media}")
+    if rec.get("loras"):
+        lines.append(f"loras: {', '.join(f'{l.get('name')}:{l.get('strength')}' for l in rec['loras'])}")
+    for w in rec.get("warnings") or []:
+        lines.append(f"warning: {w.get('kind')} {w.get('detail')}")
+    emit(args, rec, "\n".join(lines))
+
+
+def cmd_check(client, args):
+    slug = need_project(args)
+    detail = client.bin(slug, args.bin)
+    b = detail.get("bin") or {}
+    cap = detail.get("capacity") or {}
+    res = check_tokens(b.get("prompt", ""), b.get("negative", ""), detail.get("references") or [], bool(cap.get("addresses_by_token")))
+    emit(args, {"bin": args.bin, **res, "references": detail.get("references") or []}, f"{b.get('name')} ({args.bin})\n" + describe_check(res, detail.get("references") or []))
+
+
+def cmd_frames(client, args):
+    slug = need_project(args)
+    data = client.frames(slug, args.media, n=args.n, size=args.size)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    emit(args, {"media": args.media, "n": args.n, "size": args.size, "out": str(out), "bytes": len(data)}, f"wrote {len(data)} bytes to {out} ({args.n} frames, times stamped)")
+
+
+def cmd_guide(client, args):
+    info = client.workflow(args.workflow)
+    head = (
+        f"{info['name']} ({info['kind']}) slots={info.get('image_slots', 0)}i/{info.get('video_slots', 0)}v negative={info.get('has_negative')} "
+        f"lora={info.get('has_lora')} start={info.get('supports_start_frame')} end={info.get('supports_end_frame')} tokens={info.get('addresses_by_token')}"
+    )
+    emit(args, info, f"{head}\n-- prompt guide ({info.get('guide_source') or 'none'}) --\n{info.get('guide') or '(none)'}")
+
+
+def cmd_commands(client, args):
+    if args.name:
+        if args.name not in COMMAND_TABLE:
+            raise UsageError(f"unknown command {args.name}; run commands for the list")
+        fields = COMMAND_TABLE[args.name]
+        human = f"{args.name}\n" + "\n".join(f"  {k}{('  ' + note) if note else ''}" for k, note in fields) + "\n  (+ reason, requested, quiet, card)"
+        emit(args, {"name": args.name, "fields": [k for k, _ in fields]}, human)
+        return
+    lines = [f"{name:24} {', '.join(k for k, _ in fields) or '-'}" for name, fields in COMMAND_TABLE.items()]
+    emit(args, {name: [k for k, _ in fields] for name, fields in COMMAND_TABLE.items()}, "\n".join(lines) + "\nevery command also takes reason, requested, quiet, card")
+
+
+def cmd_upload(client, args):
+    slug = need_project(args)
+    result = client.upload(slug, args.file, bin=args.bin, bin_name=args.bin_name, source=args.source, note=args.note)
+    media = result.get("media") or {}
+    human = f"uploaded {media.get('id')} ({media.get('type')}) into {(result.get('bin') or {}).get('name')} ({(result.get('bin') or {}).get('id')})"
+    if result.get("change"):
+        human += "\n" + describe_result(result)
+    emit(args, result, human)
+
+
+def cmd_post(client, args, kind="agent"):
+    slug = need_project(args)
+    result = client.post_message(slug, args.text, kind=kind, attachments=args.attach or None)
+    emit(args, result, describe_result(result))
+
+
+def cmd_blocker(client, args):
+    cmd_post(client, args, kind="blocker")
+
+
+def cmd_enhance_requests(client, args):
+    slug = need_project(args)
+    reqs = client.enhance_requests(slug)
+    human = []
+    for r in reqs:
+        # listing them here means you are about to write: the user's button reads "rewriting"
+        try:
+            client.enhance_ack(slug, r["id"])
+        except ThmError:
+            pass
+        head = f"== {r['id']} ({r['kind']}, workflow {r.get('workflow') or 'default'})"
+        human.append(f"{head}\n-- system prompt --\n{r['system_prompt']}\n-- message --\n{r['message']}\n")
+    emit(args, {"requests": reqs}, "\n".join(human) if human else "(no pending enhance requests)")
+
+
+def cmd_status(client, args):
+    slug = need_project(args)
+    result = client.set_activity(slug, args.text)
+    emit(args, result, f"status: {result.get('doing')}")
+
+
+def cmd_enhance_reply(client, args):
+    slug = need_project(args)
+    text = args.text or ""
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8")
+    result = client.enhance_reply(slug, args.id, prompt=text, error=args.error or "")
+    emit(args, result, f"answered {args.id}")
+
+
+def cmd_cmd(client, args):
+    slug = need_project(args)
+    try:
+        payload = json.loads(args.payload) if args.payload else {}
+    except ValueError as exc:
+        raise UsageError(f"--payload is not JSON: {exc}") from None
+    if not isinstance(payload, dict):
+        raise UsageError("--payload must be a JSON object")
+    if args.requested:
+        payload["requested"] = True
+    if args.quiet:
+        payload["quiet"] = True
+    if args.card:
+        payload["card"] = True
+    if args.reason and not payload.get("reason"):
+        payload["reason"] = args.reason
+    if args.name == "generate":
+        preflight(client, slug, str(payload.get("bin") or ""), payload.get("params"))
+    result = client.command(slug, args.name, payload, propose=args.propose)
+    emit(args, result, describe_result(result))
+
+
+SHOT_KEYS = ("name", "bin", "description", "prompt", "negative", "workflow", "references", "length_s", "quarter", "params", "tags")
+
+
+def read_shots(args) -> tuple[str | None, list[dict]]:
+    """The batch from ``--file`` (``-`` for stdin) or ``--items``: a JSON list of items, or an
+    object ``{"title": ..., "items": [...]}``. Only the item keys the server knows pass through."""
+    if args.file and args.items:
+        raise UsageError("give --file or --items, not both")
+    if args.file:
+        text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text(encoding="utf-8")
+    elif args.items:
+        text = args.items
+    else:
+        raise UsageError("propose-shots needs --file <shots.json> (or - for stdin), --items '<json>', or --show <change id>")
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise UsageError(f"shots are not JSON: {exc}") from None
+    title = args.title
+    if isinstance(data, dict):
+        title = title or data.get("title")
+        data = data.get("items")
+    if not isinstance(data, list) or not data:
+        raise UsageError("shots must be a non-empty JSON list of items, or {title, items}")
+    items = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise UsageError(f"shot {i + 1} is not an object")
+        unknown = sorted(set(item) - set(SHOT_KEYS))
+        if unknown:
+            raise UsageError(f"shot {i + 1} has unknown key(s) {', '.join(unknown)}; the keys are {', '.join(SHOT_KEYS)}")
+        if not item.get("description"):
+            raise UsageError(f"shot {i + 1} needs a description (the one-liner the card shows)")
+        if not item.get("name") and not item.get("bin"):
+            raise UsageError(f"shot {i + 1} needs a name (a new bin) or a bin (an existing one)")
+        items.append(dict(item))
+    return title, items
+
+
+def describe_shots(change: dict) -> str:
+    """The card's outcome, one line per item, as the agent reads it after the decision."""
+    dec = change.get("decision") or {}
+    payload = change.get("payload") or {}
+    items = payload.get("items") or []
+    applied = any(i.get("bin_id") for i in items if isinstance(i, dict))
+    # a batch the user asked for out loud carries no decision: it landed done
+    status = dec.get("status") or ("done" if applied else "proposed")
+    lines = [f"change {change.get('id')}: {change.get('description')} [{status}]"]
+    if dec.get("note"):
+        lines.append(f"note: {dec['note']}")
+    if status == "proposed":
+        lines.append(f"{len(items)} shot(s) on the card; watch for the decision, then propose-shots --show {change.get('id')}")
+        return "\n".join(lines)
+    for i, item in enumerate(items):
+        name = item.get("name") or item.get("bin") or f"shot {i + 1}"
+        if status not in ("approved", "done"):
+            lines.append(f"  {i + 1}. {name}: {status}, nothing made")
+            continue
+        if item.get("dropped"):
+            lines.append(f"  {i + 1}. {name}: dropped")
+            continue
+        where = f"bin {item.get('bin_id') or '?'}"
+        if item.get("error"):
+            lines.append(f"  {i + 1}. {name}: {where}, render refused: {item['error']}")
+        elif item.get("edited") and item.get("prompt") is not None:
+            lines.append(f"  {i + 1}. {name}: edited to \"{item.get('description')}\" -- {where}, no render: rewrite the prompt and generate")
+        elif item.get("edited"):
+            lines.append(f"  {i + 1}. {name}: edited to \"{item.get('description')}\" -- {where}, render {item.get('change') or '?'}")
+        else:
+            lines.append(f"  {i + 1}. {name}: kept -- {where}, render {item.get('change') or '?'}")
+    return "\n".join(lines)
+
+
+def cmd_propose_shots(client, args):
+    slug = need_project(args)
+    if args.show:
+        change = client.change(slug, args.show)
+        emit(args, change, describe_shots(change))
+        return
+    title, items = read_shots(args)
+    result = client.propose_shots(slug, items, title=title, reason=args.reason, requested=args.requested)
+    # one card per shot: the first is ``change``, all of them are in ``changes``
+    seen: set = set()
+    cards = [
+        c for c in (result.get("change"), *(result.get("changes") or []))
+        if c and c.get("command") == "propose_shots" and c.get("id") not in seen and not seen.add(c.get("id"))
+    ]
+    if args.requested:
+        emit(args, result, "\n".join(describe_shots(c) for c in cards) + "\n" + describe_result({**result, "change": None, "changes": []}))
+        return
+    if args.wait and cards:
+        decided = [client.wait_change(slug, c["id"], poll_s=args.poll, timeout_s=args.timeout) for c in cards]
+        emit(args, {**result, "change": decided[0], "changes": decided}, "\n".join(describe_shots(c) for c in decided))
+        return
+    n = len(cards)
+    card_ids = ", ".join(c.get("id") or "?" for c in cards)
+    emit(args, result, f"proposed {n} shot{'s' if n != 1 else ''} as {n} card{'s' if n != 1 else ''} ({card_ids}); watch for the decisions, then propose-shots --show <card>")
+
+
+def cmd_generate(client, args):
+    slug = need_project(args)
+    try:
+        params = json.loads(args.params) if args.params else None
+    except ValueError as exc:
+        raise UsageError(f"--params is not JSON: {exc}") from None
+    preflight(client, slug, args.bin, params)
+    result = client.generate(slug, args.bin, propose=args.propose, params=params, requested=args.requested, card=args.card, reason=args.reason)
+    gen = result.get("generation")
+    if args.wait and gen:
+        gen = client.wait_generation(slug, gen["id"], poll_s=args.poll, timeout_s=args.timeout)
+        result = {**result, "generation": gen}
+        human = describe_result(result) + f"\noutputs: {gen.get('outputs')}"
+    else:
+        human = describe_result(result)
+    emit(args, result, human)
+
+
+def cmd_jobs(client, args):
+    jobs = client.jobs(need_project(args))
+    emit(args, jobs, "\n".join(f"{j['job']} {j['bin']} {j['status']:8} {j.get('progress') or 0}% takes={j.get('takes')} {j.get('error') or ''}".rstrip() for j in jobs) or "(no jobs)")
+
+
+def cmd_end(client, args):
+    slug = need_project(args)
+    posted = None
+    if args.summary:
+        # the wrap-up is the next session's opening context; it has to land before the session closes
+        posted = client.post_message(slug, args.summary, kind="agent", attachments=args.attach or None)
+    result = client.end(slug)
+    save_state(slug, session=None)
+    human = describe_result(result)
+    if posted:
+        human = "summary posted\n" + human
+    emit(args, {**result, "summary": posted}, human)
+
+
+def cmd_thumb(client, args):
+    slug = need_project(args)
+    data = client.thumb(slug, args.media, size=args.size) if args.size != "file" else client.media_file(slug, args.media)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    emit(args, {"media": args.media, "size": args.size, "out": str(out), "bytes": len(data)}, f"wrote {len(data)} bytes to {out}")
+
+
+HANDLERS = {
+    "projects": cmd_projects, "create": cmd_create, "workflows": cmd_workflows, "wait": cmd_wait, "connect": cmd_connect, "project": cmd_project, "bin": cmd_bin,
+    "inbox": cmd_inbox, "watch": cmd_watch, "post": cmd_post, "blocker": cmd_blocker, "cmd": cmd_cmd, "generate": cmd_generate,
+    "propose-shots": cmd_propose_shots,
+    "jobs": cmd_jobs, "end": cmd_end, "thumb": cmd_thumb,
+    "enhance-requests": cmd_enhance_requests, "enhance-reply": cmd_enhance_reply,
+    "sessions": cmd_sessions, "mode": cmd_mode, "history": cmd_history, "recipe": cmd_recipe, "check": cmd_check,
+    "frames": cmd_frames, "guide": cmd_guide, "commands": cmd_commands, "upload": cmd_upload, "status": cmd_status,
+}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description="THM agent client: commands over HTTP, no file access")
+    ap.add_argument("--server", default=os.environ.get("THM_SERVER") or DEFAULT_SERVER)
+    ap.add_argument("--project", help="project slug")
+    ap.add_argument("--json", action="store_true", help="print the server's JSON")
+    ap.add_argument("--cursor", type=int, help="override the saved inbox cursor")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("projects", help="list projects")
+    p = sub.add_parser("create", help="harness-first: create an empty project, optionally with the brief")
+    p.add_argument("--name", required=True)
+    p.add_argument("--brief", default=None, help="the brief the user gave you; otherwise they write it in the app")
+    p.add_argument("--settings", default=None, help='JSON: {"width","height","image_workflow","video_workflow","image_prompt",...}')
+    sub.add_parser("workflows", help="the workflows the server offers, with their kind")
+    p = sub.add_parser("wait", help="block until a project has a waiting session")
+    p.add_argument("--poll", type=float, default=5.0)
+    p.add_argument("--timeout", type=float, default=None)
+    p = sub.add_parser("connect", help="connect to the waiting session")
+    p.add_argument("--harness", default="claude-code")
+    sub.add_parser("project", help="project detail")
+    p = sub.add_parser("bin", help="bin detail: recipe, gallery, references with handles, capacity, active job")
+    p.add_argument("bin")
+    sub.add_parser("inbox", help="messages since the saved cursor; saves the new cursor")
+    p = sub.add_parser("watch", help="block until the user writes or decides (one project with --project, else whichever project needs you first); leaves the cursor for inbox to read")
+    p.add_argument("--poll", type=float, default=3.0)
+    p.add_argument("--timeout", type=float, default=None)
+    sub.add_parser("sessions", help="every project with its session status, mode, blocker and pending count")
+    p = sub.add_parser("mode", help="set the session mode: auto (loop; the finished candidate is the card), manual (every render proposed first), image_review (every take is a card), video_review (every video take is a card), plan (revise the brief)")
+    p.add_argument("mode", choices=["auto", "manual", "image_review", "video_review", "plan"])
+    p.add_argument("--requested", action="store_true", help="the user asked for the switch in the feed")
+    p = sub.add_parser("history", help="a bin's takes as an experiment log: params, QC marks, and the prompt diff between takes")
+    p.add_argument("--bin", required=True)
+    p.add_argument("--limit", type=int, default=None, help="newest N")
+    p = sub.add_parser("recipe", help="how a media was made: workflow, prompt, references, params")
+    p.add_argument("media")
+    p = sub.add_parser("check", help="the bin's .handles against its references: unknown tokens, unused handles, start/end positions")
+    p.add_argument("--bin", required=True)
+    p = sub.add_parser("frames", help="a contact sheet of a video's frames, times stamped, for QC")
+    p.add_argument("media")
+    p.add_argument("--out", required=True)
+    p.add_argument("--n", type=int, default=4, help="frames, 1-8")
+    p.add_argument("--size", type=int, default=1024, help="long edge per frame")
+    p = sub.add_parser("guide", help="a workflow's prompt guide: the rules the Enhance button rewrites by")
+    p.add_argument("workflow")
+    p = sub.add_parser("commands", help="every command and its payload fields; one name for its detail")
+    p.add_argument("name", nargs="?")
+    p = sub.add_parser("upload", help="put a local file into a bin, with where it came from when you made it from a take")
+    p.add_argument("file")
+    p.add_argument("--bin", default=None)
+    p.add_argument("--bin-name", dest="bin_name", default=None)
+    p.add_argument("--from", dest="source", default=None, help="the media this was made from")
+    p.add_argument("--note", default=None, help="what was done, e.g. 'audio removed, ffmpeg -an'")
+    p = sub.add_parser("post", help="post an agent message")
+    p.add_argument("text")
+    p.add_argument("--attach", action="append", help="media id to attach (repeatable)")
+    p = sub.add_parser("blocker", help="post a blocker: the user must act before you continue")
+    p.add_argument("text")
+    p.add_argument("--attach", action="append")
+    p = sub.add_parser("status", help="what you are doing right now, for the strip (no feed line): 'rewriting the prompt for Video 6'")
+    p.add_argument("text")
+    sub.add_parser("enhance-requests", help="prompt rewrites the app is waiting on you for (system prompt + message each)")
+    p = sub.add_parser("enhance-reply", help="answer an enhance request with the rewritten prompt")
+    p.add_argument("--id", required=True)
+    p.add_argument("--text", help="the rewritten prompt")
+    p.add_argument("--file", help="read the rewritten prompt from this file instead")
+    p.add_argument("--error", help="why no prompt could be produced")
+    p = sub.add_parser("cmd", help="run any command with a JSON payload")
+    p.add_argument("name")
+    p.add_argument("--payload", default="{}")
+    p.add_argument("--propose", action="store_true", help="ask before applying: the card lands and nothing runs until the user approves")
+    p.add_argument("--requested", action="store_true", help="the user asked for this in the feed: land it done, no approval card")
+    p.add_argument("--quiet", action="store_true", help="work in progress: record it but do not put a card in the feed")
+    p.add_argument("--card", action="store_true", help="ask anyway: this change owes a verdict and shows as a card")
+    p.add_argument("--reason", default=None, help="why, in full sentences; shown on the card or the feed line (same as a reason key in the payload)")
+    p = sub.add_parser("propose-shots", help="the pre-generation card: a batch of intended renders the user keeps, edits or drops; the approval makes the bins and queues the renders")
+    p.add_argument("--file", default=None, help="JSON: a list of items, or {title, items}; - reads stdin")
+    p.add_argument("--items", default=None, help="the same JSON inline")
+    p.add_argument("--title", default=None, help="the batch in a few words, shown on the card")
+    p.add_argument("--reason", default=None, help="why these, in full sentences; shown on the card")
+    p.add_argument("--requested", action="store_true", help="the user asked for the batch in the feed: no card, bins and renders land at once")
+    p.add_argument("--wait", action="store_true", help="block until the user decides, then print the outcome per item")
+    p.add_argument("--show", default=None, metavar="CHANGE", help="print the outcome of an earlier card by its change id")
+    p.add_argument("--poll", type=float, default=3.0)
+    p.add_argument("--timeout", type=float, default=None)
+    p = sub.add_parser("generate", help="queue a render of a bin's recipe (needs a current inbox cursor)")
+    p.add_argument("--bin", required=True)
+    p.add_argument("--params", default=None, help='JSON, e.g. {"seed": 7}; see params.md')
+    p.add_argument("--reason", default=None, help="why this render, what one thing changed, whether the seed is held; shown in the feed")
+    p.add_argument("--propose", action="store_true")
+    p.add_argument("--requested", action="store_true", help="the user asked for this in the feed: land it done, no approval card")
+    p.add_argument("--card", action="store_true", help="ask anyway: this render owes a verdict")
+    p.add_argument("--wait", action="store_true", help="poll until the generation is done or failed")
+    p.add_argument("--poll", type=float, default=2.0)
+    p.add_argument("--timeout", type=float, default=None)
+    sub.add_parser("jobs", help="render jobs known to this server process")
+    p = sub.add_parser("end", help="end the session, after posting the wrap-up the next session opens with")
+    p.add_argument("--summary", default=None, help="what worked, what is open, which takes are the picks")
+    p.add_argument("--attach", action="append", help="media id to attach to the summary (repeatable)")
+    p = sub.add_parser("thumb", help="download a thumbnail (or the file) for QC")
+    p.add_argument("media")
+    p.add_argument("--out", required=True)
+    p.add_argument("--size", default="grid", choices=["grid", "detail", "poster", "file"])
+    return ap
+
+
+def main(argv: list[str] | None = None, *, transport=None) -> int:
+    args = build_parser().parse_args(argv)
+    saved = load_state(args.project) if args.project else {}
+    cursor = args.cursor if args.cursor is not None else saved.get("cursor")
+    doing = DOING.get(args.command)
+    if args.command == "cmd":
+        doing = DOING_CMD.get(args.name) or args.name.replace("_", " ")
+    # always the agent: no flag puts this CLI in the user's seat, so the private-project gate cannot be talked around
+    client = ThmClient(args.server, session=saved.get("session"), cursor=cursor, transport=transport, doing=doing)
+    try:
+        HANDLERS[args.command](client, args)
+    except ThmError as exc:
+        print(f"ERROR {exc.status} {exc.code}: {exc.detail}", file=sys.stderr)
+        if exc.code == "inbox_behind":
+            msgs = exc.extra.get("messages") or []
+            print("unread items (run inbox, then retry):", file=sys.stderr)
+            print(describe_messages(msgs), file=sys.stderr)
+        elif exc.extra:
+            print(json.dumps(exc.extra, ensure_ascii=True), file=sys.stderr)
+        return 1
+    except UsageError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except TimeoutError as exc:
+        print(f"ERROR timeout: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ERROR cannot reach {args.server}: {exc}", file=sys.stderr)
+        return 3
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

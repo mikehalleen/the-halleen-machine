@@ -1,99 +1,42 @@
-# The Halleen Machine - Configuration File
-# 
-# SETUP INSTRUCTIONS:
-# 1. Copy this file and rename it to 'config.toml' (remove .example)
-# 2. Update all paths below to match your system
-# 3. Use forward slashes (/) even on Windows to avoid path errors
-#    ✓ Good: "C:/ComfyUI"
-#    ✗ Bad:  "C:\ComfyUI"
-
-#### has not been tested cross platform
-
+# The Halleen Machine 2.0 configuration
+#
+# Copy this file to config.toml and fill in the paths, or run `python setup.py`
+# to have it written for you. Paths use forward slashes on every platform.
+#
+# THM does not install models or workflows. Bring your own ComfyUI workflows,
+# tag them as WORKFLOWS.md describes, and put them in workflows_image/ or
+# workflows_video/; whatever models they load are yours to have in ComfyUI.
 
 [comfyui]
-# The base directory of your ComfyUI installation (REQUIRED)
-# Windows example: "D:/ComfyUI"
-# Linux/Mac example: "/home/username/ComfyUI"
-install_path = ""
-
-# The address where ComfyUI API server is running
-# Local only: "http://127.0.0.1:8188"
-# Network access (mobile, other devices): "http://192.168.1.100:8188"
+# ComfyUI's API address.
+#   Local:            "http://127.0.0.1:8188"
+#   Another machine:  "http://192.168.1.100:8188"
 api_base = "http://127.0.0.1:8188"
 
-# Timeout for ComfyUI API requests (in seconds)
-timeout_seconds = 3600
-
-# Where ComfyUI saves its generated images/videos (REQUIRED)
-# Usually: "<install_path>/output"
-# Windows example: "D:/ComfyUI/output"
-# Linux/Mac example: "/home/username/ComfyUI/output"
+# Where ComfyUI writes its renders (REQUIRED). THM reads every finished image
+# and video from here, so it must be the folder ComfyUI itself saves to.
+#   Windows:   "D:/ComfyUI/output"
+#   Linux/Mac: "/home/username/ComfyUI/output"
 output_root = ""
 
+# How long one prompt may execute in ComfyUI before THM gives up on it, in
+# seconds. Time spent waiting in the queue does not count. Video gets its own,
+# longer limit.
+timeout_seconds = 3600
+video_timeout_seconds = 14400
+
 [paths]
-# Path to your checkpoint models (REQUIRED)
-# Usually: "<install_path>/models/checkpoints"
-# Windows example: "D:/ComfyUI/models/checkpoints"
-# Linux/Mac example: "/home/username/ComfyUI/models/checkpoints"
-models = ""
-
-# Path to your LoRA files (REQUIRED)
-# Usually: "<install_path>/models/loras"
-# Windows example: "D:/ComfyUI/models/loras"
-# Linux/Mac example: "/home/username/ComfyUI/models/loras"
-loras = ""
-
-# Where this app will save your project files
-# Use relative path to keep projects with the app, or absolute path for elsewhere
-# Relative: "./projects"
-# Absolute: "D:/MyProjects" or "/home/username/machine-projects"
+# Where projects are stored. "./projects" keeps them inside the repo; an
+# absolute path keeps them anywhere else. `serve.py --projects-dir` overrides.
 workspace = "./projects"
 
+# ComfyUI's models/loras folder, listed by the LoRA picker. Optional.
+#   Windows:   "D:/ComfyUI/models/loras"
+#   Linux/Mac: "/home/username/ComfyUI/models/loras"
+loras = ""
 
 [backups]
-# How many backups to store for each project (the rest are deleted on the next backup)
+# Project files are backed up before each write, at most once per throttle
+# window; the oldest beyond retention are dropped.
 retention = 50
-
-# Minimum time in seconds between automatic backups
 throttle_seconds = 300
-
-# make sure you have all these models.  you can replace these with others if you prefer
-[models]
-
-# this can be your most preferred model
-default_project_model = "sdXL_v10VAEFix.safetensors"
-
-# this should be a basic model that is only used for making simple poses
-pose_model_fast = "sdXL_v10VAEFix.safetensors"
-
-# this should be a more expressive model, not photo realistic, for use in making more detailed poses
-pose_model_enhanced = "obsessionIllustrious_v21.safetensors"
-
-# controlnet model for use in keyframe generation based on generated poses
-controlnet_model = "diffusion_pytorch_model_promax.safetensors"
-
-# inpainting model used in the 2CHAR "heal" process
-inpainting_model = "juggernautxl-inpainting.safetensors"
-
-# model for upscaling
-upscale_model = "4x_NMKD-Siax_200k.pth"
-
-# model for interpolation
-interpolation_model = "xrife47.pth"
-
-[agent]
-# Python interpreter for thm-agent CLI and pipeline scripts (written by setup.py).
-# Agents must use this path — never system python.
-# Windows example: "./the-machine-ui-venv/Scripts/python.exe"
-# Linux/Mac example: "./the-machine-ui-venv/bin/python"
-python = ""
-
-[advanced]
-# Optional: Script to restart ComfyUI server when using the restart button
-# Leave empty ("") if you don't use this feature
-#
-# Windows PowerShell: "D:/ComfyUI/start.ps1"
-# Windows Batch: "D:/ComfyUI/restart.bat"
-# Linux/Mac Shell: "/home/username/comfyui/restart.sh"
-restart_script = ""
-

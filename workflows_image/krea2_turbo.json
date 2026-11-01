@@ -1,0 +1,295 @@
+{
+  "29": {
+    "inputs": {
+      "filename_prefix": "Krea2_turbo",
+      "images": [
+        "55",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "52": {
+    "inputs": {
+      "text": [
+        "71",
+        0
+      ],
+      "clip": [
+        "57",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "53": {
+    "inputs": {
+      "width": [
+        "72",
+        0
+      ],
+      "height": [
+        "73",
+        0
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "54": {
+    "inputs": {
+      "seed": 1125263632790231,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "67",
+        0
+      ],
+      "positive": [
+        "52",
+        0
+      ],
+      "negative": [
+        "59",
+        0
+      ],
+      "latent_image": [
+        "53",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "55": {
+    "inputs": {
+      "samples": [
+        "54",
+        0
+      ],
+      "vae": [
+        "58",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "56": {
+    "inputs": {
+      "unet_name": "krea2_turbo_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "57": {
+    "inputs": {
+      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "type": "krea2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "58": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "59": {
+    "inputs": {
+      "conditioning": [
+        "52",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "Conditioning Zero Out"
+    }
+  },
+  "60": {
+    "inputs": {
+      "lora_name": "krea2_darkbrush.safetensors",
+      "strength_model": 0.8,
+      "model": [
+        "56",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "62": {
+    "inputs": {
+      "string_a": "",
+      "string_b": [
+        "64",
+        0
+      ],
+      "delimiter": ""
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "Concatenate Text"
+    }
+  },
+  "64": {
+    "inputs": {
+      "value": "a nude woman with large breasts and a curvy figure, her nude breasts exposed, large and round, defined nipples and small aereola"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "THM-Prompt"
+    }
+  },
+  "65": {
+    "inputs": {
+      "source": [
+        "66",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "66": {
+    "inputs": {
+      "switch": [
+        "69",
+        0
+      ],
+      "on_false": [
+        "64",
+        0
+      ],
+      "on_true": [
+        "62",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch"
+    }
+  },
+  "67": {
+    "inputs": {
+      "switch": [
+        "68",
+        0
+      ],
+      "on_false": [
+        "56",
+        0
+      ],
+      "on_true": [
+        "60",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "Switch (Model)"
+    }
+  },
+  "68": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Boolean (Enable LoRA?)"
+    }
+  },
+  "69": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Boolean (Refine Prompt?)"
+    }
+  },
+  "70": {
+    "inputs": {
+      "string_a": [
+        "65",
+        0
+      ],
+      "string_b": "muted minimalist sketch style",
+      "delimiter": ", "
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "Concatenate Text (LoRA Trigger Word)"
+    }
+  },
+  "71": {
+    "inputs": {
+      "switch": [
+        "68",
+        0
+      ],
+      "on_false": [
+        "65",
+        0
+      ],
+      "on_true": [
+        "70",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch"
+    }
+  },
+  "72": {
+    "inputs": {
+      "int": 1280
+    },
+    "class_type": "Primitive integer [Crystools]",
+    "_meta": {
+      "title": "THM-Width"
+    }
+  },
+  "73": {
+    "inputs": {
+      "int": 720
+    },
+    "class_type": "Primitive integer [Crystools]",
+    "_meta": {
+      "title": "THM-Height"
+    }
+  }
+}
