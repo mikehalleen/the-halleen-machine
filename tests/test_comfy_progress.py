@@ -245,3 +245,14 @@ def test_heartbeat_refreshes_an_unchanged_snapshot(monkeypatch):
     beats = [when for when, _ in lines]
     assert len(beats) >= 4 and all(59 <= b - a <= 62 for a, b in zip(beats[1:], beats[2:]))
     assert all(s["prompt_id"] == "pid" for _, s in seen)
+
+
+def test_stop_hook_ends_the_wait_as_cancelled(monkeypatch):
+    """A caller that has told ComfyUI to drop the prompt stops the wait through ``stop``; the
+    history entry, had it come, is not waited for."""
+    clock = _Clock()
+    running = {"queue_running": [[0, "pid", {}, {}, []]], "queue_pending": []}
+    get = _comfy([(0, running)], history_after=1500)
+    t = cp.PromptTracker("http://comfy:8188", {"1": {"class_type": "KSampler"}})
+    assert _run_wait(t, clock, get, monkeypatch, stop=lambda: clock.now >= 1005) is None
+    assert t.gave_up == "cancelled" and clock.now < 1010

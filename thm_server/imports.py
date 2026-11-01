@@ -46,10 +46,12 @@ def find_or_create_bin(
     env: Env,
     bin_id: str | None,
     bin_name: str | None,
+    tags: list[str] | None = None,
 ) -> tuple[Bin, list[Message]]:
     """An explicit bin id, an existing bin matched by name (case-insensitive), or a freshly
-    minted one: named as given, else the next ``bin-n``. A bin minted here takes no workflow:
-    it exists to hold files, and gets one when someone wants to generate into it."""
+    minted one: named as given, else the next ``bin-n``, carrying ``tags`` when given. A bin
+    minted here takes no workflow: it exists to hold files, and gets one when someone wants to
+    generate into it."""
     if bin_id:
         b = project.bins_by_id.get(bin_id)
         if b is None:
@@ -59,6 +61,6 @@ def find_or_create_bin(
     for b in project.bins_by_id.values():
         if name and b.name.strip().lower() == name.lower():
             return b, []
-    cmd = CreateBin(bin_name=name or None, workflow="")
+    cmd = CreateBin(bin_name=name or None, workflow="", tags=list(tags or []))
     result = execute(store, project, cmd, ctx, env=env)
     return project.bins_by_id[cmd._created], list(result.messages)

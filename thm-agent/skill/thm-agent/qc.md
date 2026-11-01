@@ -90,6 +90,22 @@ Do not raise frame count by habit. Four for routine, eight for risk.
 10. **Check the start reference before blaming the video model.** A clip that
     carries a defect is often faithfully following a still that already had
     it. Diff the still first; a still-level defect is fixed in the still's bin.
+11. **Geography and anatomy before faces, on every keyframe and every
+    sampled frame.** In this order: which side of the set's line each person
+    is on (a bar counter is the line: the camera on the bartender's side, the
+    customers behind the counter, nobody on the camera's side); left/right
+    against the established line; heads; hands per person (two each, count
+    them in every frame, not once); props that must be single (one phone, one
+    basket). A diagonal or off-axis angle is where "which side of the counter"
+    goes wrong silently: find the near edge of the counter and check the
+    person is behind it. On online-gaming the user caught a person on the
+    wrong side of the bar, a third hand that was already in the keyframe, and
+    an extra stranger, all after my pass; each was visible in the still.
+12. **Continuity against the established takes, item by item.** Wardrobe
+    pieces (long sleeves, cap), accessories that must not appear (a watch),
+    prop variants (whose phone has which case), what is on the bar. A new
+    keyframe that "looks right" grew a wristwatch and swapped Dev's red phone
+    case for black.
 
 ## Failure modes
 
@@ -115,16 +131,68 @@ Look for each of these on every take. Name the one you found in the note.
 - **Off-frame wardrobe migration**: a garment named in the prompt but out of
   frame on the plate gets pulled into frame or onto the wrong person. Leave
   out-of-frame garments undescribed.
+- **Set additions**: something the set never had appears mid-clip (a TV on
+  a wall, a colored wash flooding the frame). Compare the walls and the light
+  in the last frame to the first.
+- **Impossible props**: a phone whose back shows a screen or video, a second
+  phone, food that changes basket. A phone has one screen, on its front.
+- **Beat reversal**: the action resolves the opposite way (the hand that
+  should be stopped escapes with the wing). The beat is an axis; a clean clip
+  that tells the wrong joke fails.
 - **Stale output**: a done generation whose take is identical to the previous
   take. A reroll that changed nothing is a failed generation, not a pass;
   check the seed in `history` and say so in the note.
 
+## Audio QC
+
+You cannot hear, but you can measure, and the note says what was measured. The
+`audio` tool (`tools`, read `thm-tools/audio/GUIDE.md` once) replaces the old
+"audio not checked (I cannot hear)" line. On a dialogue take, in this order:
+
+1. **The words.** `tool audio transcribe <media> --expect "<the line>"`, with the
+   line taken from the take's own recipe (`recipe <media>`), never from the bin's
+   current prompt. `wer == 0` is "line correct"; a contraction or filler difference
+   under 0.15 is still the line, say so. A run of `extra` words is the model
+   speaking direction text or gibberish; `missing` words are a dropped line. A
+   `low_confidence` word that "matches" is not proof: run `--model medium` as the
+   second opinion before failing or passing on the words alone.
+2. **The voice.** `tool audio voice <media> --ref <the character's reference take>
+   --window s0:s1` with the line's `start_s:end_s` from step 1 (a two-shot has both
+   voices in it). The reference is the take the user approved for that character,
+   spoken, not shouted, recorded as a project rule (`add_project_rule
+   kind=continuity "Tommy's voice: m_5ee6436e"`) the first time. Same voice >= 0.75;
+   another render of the character 0.50-0.75 (the drift the user hears as an
+   inconsistent accent or timbre: report the number, compare the bin's takes
+   against each other); another voice < 0.45. The margin to the other character
+   names the speaker: the words can be right and the speaker wrong.
+3. **The stress**, when the prompt marks one in CAPS (`filmmaking.md`):
+   `tool audio emphasis <media> --expect "you know what YOU can do"`. Trust it only
+   on a take whose words matched in step 1. `stress_matches` with a margin over
+   0.8 is clear; under 0.5 say "stress shared between X and Y".
+4. **The levels.** `tool audio levels <media>`: clicks and pops with their times,
+   stray bursts at the head or tail, a hot peak. No flags and a voice P90 in the
+   project's usual band is "levels fine".
+
+The note states what was measured and the correction, in one line each:
+
+```
+audio:   line correct (WER 0); voice matches Tommy 0.81 (Dev 0.42); stress landed on
+         "what", not "YOU" (margin 0.9): re-render with the stress cue moved; levels fine
+```
+
+What remains a **please listen** judgment, named as such in the note: sarcasm,
+warmth, naturalness, whether the pause is right, lip sync, and whether the
+accent is the one the user wants. A take whose words, voice and stress measure
+right and whose read you cannot vouch for is `in_progress` with "please listen:
+delivery" open, not a pass. A clip with no dialogue still gets `levels`.
+
 ## Honest limits
 
-- You cannot hear audio and cannot judge lip sync. On any audio-bearing clip
-  the note says so in words: "visual framing and motion OK; audio and lip sync
-  not verified by me." Do not auto-pass a clip whose primary output is
-  dialogue; hand it to the user with the limit stated.
+- You cannot hear. The audio tool tells you the words, the speaker, the stressed
+  word and the levels (above); it cannot tell you whether the read is good or
+  the lips match. On any audio-bearing clip the note carries the measurements
+  and names what is left for the user's ear. Do not auto-pass a clip whose
+  primary output is dialogue on picture alone.
 - Do not re-read the same image on uncertainty. A second and third read of
   one still has never resolved a question the user could answer in one line.
   Ask what to look for instead.
@@ -141,7 +209,8 @@ nothing else. Template, one line each:
 changed: <what changed since the previous take: prompt clause, seed, reference, framing>
 fixed:   <what that change repaired>
 broke:   <what it regressed, or none>
-open:    <what is still wrong or unverified, including audio when applicable>
+open:    <what is still wrong or unverified, including "please listen" items>
+audio:   <words / voice / stress / levels as measured, and the correction, when the take has sound>
 ```
 
 The first line is the important one. History diffs the prompt for you, but it

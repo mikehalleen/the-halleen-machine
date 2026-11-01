@@ -52,11 +52,15 @@ from thm_core import (
     runner_script,
     thumb_cache_dir,
 )
+from thm_core.commands import close_render_card
 from thm_core.config import REPO_ROOT
 from thm_core.ids import utc_now
+from thm_core.models import Message
+from thm_core import ids as core_ids
 from scripts import comfy_history  # the runners' /history reader: outputs and error detail of an entry
 
-from .comfy import LateState, cancel_prompts, kill_runner, late_prompt_state
+from .comfy import LateState, cancel_prompts, kill_runner, late_prompt_state, restart_comfy as spawn_comfy_restart
+from .derive import feed_entry
 from .events import EventBus
 from .registry import ProjectRegistry
 from .schemas import JobOut, JobStatus
@@ -69,8 +73,19 @@ LIVE: tuple[JobStatus, ...] = ("queued", "running")
 # Failure details after which ComfyUI may still finish the prompt on its own (the runner's
 # execution timeout, a lost status file after a restart, a runner that died mid-wait).
 LATE_COLLECTABLE = ("timed out", "gave up", "restarted", "went stale", "exited with code")
+# the failures that mean ComfyUI or the machine went away under the render, not that it was bad:
+# the resume summary lists these so a reconnecting agent can re-run them
+INTERRUPTED_MARKS = ("restarted", "rebooted", "went stale", "exited with code", "gave up", "could not start runner")
+# the failures that mean ComfyUI (or the machine, or this server) went away under a render that
+# was fine: once ComfyUI answers again and has no trace of the prompt, the render is queued
+# again by itself, once, so nothing has to be re-queued by hand after a restart
+REQUEUE_MARKS = ("dropped by ComfyUI", "server restarted", "rebooted", "ComfyUI restarted")
 LATE_HORIZON_S = 24 * 3600.0  # how long a late collector keeps asking after the failure
 LATE_LOOKBACK_S = 24 * 3600.0  # how far back ``reconcile`` looks for failures worth a late pass
+# a running render whose progress has not moved for this long is stalled: the app gets an alert
+# line in the project feed and the job carries ``stalled`` so the bar and the agent's watch see it
+STALL_AFTER_S = 10 * 60.0
+ALERT_PREFIX = "alert: "  # a server-posted system line the agent's watch wakes on
 _PID_LINE = re.compile(r"^\[PID\]\s*(\S+)\s*$", re.MULTILINE)
 
 
@@ -86,6 +101,24 @@ def boot_time() -> datetime | None:
             return datetime.now() - timedelta(seconds=float(f.read().split()[0]))
     except Exception:
         return None
+
+
+def comfy_reachable(api_base: str, timeout: float = 3.0) -> bool:
+    """Whether ComfyUI answers at ``api_base`` right now (its /system_stats)."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(api_base.rstrip("/") + "/system_stats", timeout=timeout) as r:
+            return 200 <= r.status < 300
+    except Exception:
+        return False
+
+
+# how often a render waiting for ComfyUI to come back asks again
+COMFY_WAIT_POLL_S = 10.0
+# after a restart this server started: how long a render waits to see ComfyUI go down before
+# it takes an answering ComfyUI as the new instance anyway
+RESTART_DOWN_GRACE_S = 90.0
 
 
 def default_launch(cmd: list[str], cwd: Path, log_path: Path):
@@ -121,10 +154,18 @@ class Job:
     exec_seconds: float | None = None  # ComfyUI's execution time, queue wait excluded; known once it lands
     stale_after: float = 3600.0
     prompt_id: str | None = None  # from the status file (or the log), for a late pickup
+    api_base: str = ""  # the ComfyUI it renders on: a launch waits while that is unreachable
     proc: Any | None = None
     watcher: asyncio.Task | None = None
     collector: asyncio.Task | None = None  # the late pass, after a failure that left the prompt with ComfyUI
     watch_started: float = field(default_factory=time.monotonic)
+    # stall watch: what the progress last read and when it last changed (monotonic)
+    progress_mark: Any = None
+    progress_at: float = field(default_factory=time.monotonic)
+    stalled: bool = False
+    # the late pass may queue this render again when ComfyUI has lost it; once only
+    requeue: bool = False
+    retried: bool = False
 
     @property
     def live(self) -> bool:
@@ -139,6 +180,7 @@ def to_out(job: Job) -> JobOut:
         phase=live.phase, step=live.step, steps=live.steps, pass_no=live.pass_no, passes=live.passes,
         queue_ahead=live.queue_ahead, queue_ahead_ours=live.queue_ahead_ours,
         bin_name=job.bin_name, queued_by=job.queued_by if job.queued_by in ("user", "agent") else None,
+        stalled=bool(job.stalled and job.status == "running"), retried=job.retried,
     )
 
 
@@ -190,6 +232,9 @@ class JobManager:
         late_lookup: LateLookup = late_prompt_state,
         late_poll_interval: float = 30.0,
         no_status_grace: float = 30.0,
+        comfy_up: Callable[[str], bool] | None = None,
+        stall_after: float = STALL_AFTER_S,
+        comfy_restart: Callable[[str, str, Path], Any] | None = None,
     ):
         self.store = store
         self.registry = registry
@@ -205,7 +250,16 @@ class JobManager:
         # a re-attached job whose status file is missing gets this long before it is given up:
         # the file is replaced whole on every progress line, and a read can land mid-replace
         self.no_status_grace = no_status_grace
+        # a render queued while ComfyUI is down (a restart, a reboot) waits for it rather than
+        # failing; real runners ask the real ComfyUI, an injected launcher has no ComfyUI to ask
+        self.comfy_up_fn = comfy_up or (comfy_reachable if launch is default_launch else (lambda _base: True))
+        self.stall_after = stall_after
+        self.comfy_restart_fn = comfy_restart or spawn_comfy_restart
         self._jobs: dict[str, Job] = {}
+        # projects told that ComfyUI is unreachable, so the outage is one line per project, not
+        # one per render; cleared (with a line) when it answers again
+        self._outage_told: set[str] = set()
+        self.comfy_restarted_at: str | None = None  # the last restart this server started (utc)
 
     # -- lookups --------------------------------------------------------------
 
@@ -250,12 +304,100 @@ class JobManager:
         self.store.append_generation(project, gen.model_copy(update={"status": "running"}))
         job = Job(
             id=gen.id, slug=slug, kind=kind, paths=paths, bin=gen.bin, bin_name=self._bin_name(project, gen),
-            queued_by=queued_by, stale_after=float(comfy.timeout_for(kind)),
+            queued_by=queued_by, stale_after=float(comfy.timeout_for(kind)), api_base=comfy.api_base,
         )
         self._jobs[gen.id] = job
         return job
 
-    def launch(self, job: Job) -> Job:
+    def launch(self, job: Job, *, after_restart: bool = False) -> Job:
+        """``after_restart``: the render waits for ComfyUI to go down and come back (a restart
+        this server just started), rather than posting to the instance about to be killed."""
+        if job.api_base and (after_restart or not self.comfy_up_fn(job.api_base)):
+            # ComfyUI is down: the render waits for it, queued, and starts when it answers
+            job.task = "waiting for ComfyUI to restart" if after_restart else "waiting for ComfyUI to come back"
+            self._publish(job)
+            job.watcher = asyncio.create_task(self._launch_when_up(job, require_down=after_restart))
+            return job
+        return self._start(job)
+
+    async def _launch_when_up(self, job: Job, *, require_down: bool = False) -> None:
+        """``require_down``: ComfyUI must be seen down once before an answer counts as back
+        (the old instance may still answer for a moment after a restart is started); after
+        ``RESTART_DOWN_GRACE_S`` with no outage seen, an answering ComfyUI is taken as the new one."""
+        told = False
+        seen_down = not require_down
+        t0 = time.monotonic()
+        while job.status == "queued":
+            if not told:
+                # one line per project while it lasts, not one per render; the first poll gets
+                # it, so a restart the server itself started says so before anything waits
+                await self._tell_outage(job)
+                told = True
+            await asyncio.sleep(COMFY_WAIT_POLL_S)
+            if job.status != "queued":
+                return  # cancelled while it waited
+            up = await asyncio.to_thread(self.comfy_up_fn, job.api_base)
+            if not up:
+                seen_down = True
+                continue
+            if not seen_down and time.monotonic() - t0 < RESTART_DOWN_GRACE_S:
+                continue  # still the instance about to go down
+            job.task = None
+            await self._tell_back(job)
+            self._start(job)
+            return
+
+    # -- alerts: the server's own lines in a project's feed --------------------------
+
+    async def _alert(self, slug: str, text: str) -> None:
+        """A system line in the project feed, prefixed so the agent's watch wakes on it. The
+        app shows it like any system line; the user reads it in the feed and on their phone."""
+        async with self.registry.lock(slug):
+            try:
+                project = self.registry.get(slug)
+                sess = project.agent_session
+                msg = Message(
+                    id=core_ids.new_id(core_ids.MESSAGE), ts=utc_now(), kind="system", text=ALERT_PREFIX + text,
+                    session=sess.id if sess is not None and sess.status in ("waiting", "live") else None,
+                )
+                self.store.append_message(project, msg)
+                version = self.registry.touch(slug)
+            except ProjectNotFound:
+                return
+        try:
+            self.bus.publish_event(slug, "message", feed_entry(project, msg, None, None, None).model_dump(mode="json"))
+        except Exception:
+            pass
+        self.bus.publish(slug, version)
+
+    async def _tell_outage(self, job: Job) -> None:
+        if job.slug in self._outage_told:
+            return
+        self._outage_told.add(job.slug)
+        waiting = [j for j in self._jobs.values() if j.slug == job.slug and j.status == "queued" and j.task]
+        n = len(waiting) or 1
+        await self._alert(
+            job.slug,
+            f"ComfyUI is not reachable at {job.api_base}; {n} render{'s' if n != 1 else ''} ({', '.join(j.bin_name or j.id for j in waiting) or job.bin_name or job.id}) "
+            "wait for it and start by themselves when it answers. Restart ComfyUI, or wait",
+        )
+
+    async def _tell_back(self, job: Job) -> None:
+        if job.slug not in self._outage_told:
+            return
+        self._outage_told.discard(job.slug)
+        await self._alert(job.slug, f"ComfyUI is back; {job.bin_name or job.id} is starting")
+
+    async def _tell_stall(self, job: Job) -> None:
+        pct = f" at {job.progress:.1f}%" if job.progress is not None else ""
+        minutes = int(round(self.stall_after / 60)) or 1
+        await self._alert(
+            job.slug,
+            f"render of {job.bin_name or job.id} has made no progress for {minutes} min{pct}: ComfyUI may be hung. "
+            "Cancel the render, or restart ComfyUI; a render ComfyUI loses in a restart is queued again by itself",
+        )
+
+    def _start(self, job: Job) -> Job:
         cmd = [
             sys.executable, "-u", str(runner_script(job.kind, self.scripts_dir)),
             "--generation", str(job.paths.spec), "--status-file", str(job.paths.status),
@@ -300,9 +442,29 @@ class JobManager:
                 if gen.id in self._jobs or not gen.bin or gen.bin not in project.bins_by_id:
                     continue
                 if gen.status in ("queued", "running"):
-                    self.attach(slug, project, gen)
+                    paths = job_paths(self.store.files_dir(project), gen.id)
+                    if paths.spec.is_file() and not paths.status.exists() and not paths.log.exists():
+                        # prepared but never started (it was waiting for ComfyUI when this
+                        # server went down): start it now, through the same wait
+                        self._relaunch(slug, project, gen, paths)
+                    else:
+                        self.attach(slug, project, gen)
                 elif gen.status == "failed" and self._worth_a_late_pass(gen):
                     self.collect_late(slug, project, gen)
+
+    def _relaunch(self, slug: str, project: Project, gen: Generation, paths) -> Job:
+        kind, _, _ = self._spec_target(project, gen)
+        try:
+            comfy = resolve_comfy(project, self.settings.comfy)
+            api_base, stale_after = comfy.api_base, float(comfy.timeout_for(kind))
+        except ValueError:
+            api_base, stale_after = "", 3600.0
+        job = Job(
+            id=gen.id, slug=slug, kind=kind, paths=paths, bin=gen.bin, bin_name=self._bin_name(project, gen),
+            started=gen.ts, stale_after=stale_after, api_base=api_base,
+        )
+        self._jobs[gen.id] = job
+        return self.launch(job)
 
     @staticmethod
     def _worth_a_late_pass(gen: Generation) -> bool:
@@ -381,6 +543,8 @@ class JobManager:
                     gen.status = "cancelled"
                     gen.warnings = list(gen.warnings) + [{"kind": "cancelled", "handle": "", "detail": detail}]
                     self.store.append_generation(project, gen)
+                    # no take will come: its card owes nothing any more
+                    close_render_card(self.store, project, gen.id, "generation cancelled")
             except ProjectNotFound:
                 pass
         job.status, job.error, job.task, job.finished = "cancelled", detail, None, utc_now()
@@ -422,6 +586,7 @@ class JobManager:
                     job.status, job.progress, job.task, job.comfy = "running", status.progress, status.task, status.live
                     if changed:
                         self._publish(job)
+                    await self._watch_stall(job, status)
                 if job.proc is not None and job.proc.poll() is not None:
                     final = read_status(job.paths.status)
                     if final is not None:
@@ -453,6 +618,25 @@ class JobManager:
             except Exception:
                 job.status, job.error, job.finished = "failed", f"job watcher error: {exc}", utc_now()
                 self._publish(job)
+
+    async def _watch_stall(self, job: Job, status: RunnerStatus) -> None:
+        """Progress that has not moved for ``stall_after`` is a stall: said once in the feed,
+        carried on the job until it moves again. Only an executing prompt can stall; one still
+        waiting in ComfyUI's queue is waiting, not stuck."""
+        live = status.live
+        mark = (status.progress, getattr(live, "phase", None), getattr(live, "step", None), getattr(live, "pass_no", None), getattr(live, "queue_ahead", None))
+        now = time.monotonic()
+        if mark != job.progress_mark:
+            job.progress_mark, job.progress_at = mark, now
+            if job.stalled:
+                job.stalled = False
+                self._publish(job)
+            return
+        if job.stalled or getattr(live, "phase", None) == "queued" or now - job.progress_at < self.stall_after:
+            return
+        job.stalled = True
+        self._publish(job)
+        await self._tell_stall(job)
 
     def _stale(self, job: Job, status: RunnerStatus | None) -> str | None:
         """Why a re-attached job (no process handle) should be given up, or None to keep waiting."""
@@ -513,6 +697,10 @@ class JobManager:
                         exec_seconds=comfy_history.history_exec_seconds(entry),
                     )
                     return
+                if state == "gone" and job.requeue and not job.retried:
+                    # ComfyUI is answering and has lost the prompt: the render goes again
+                    await self._requeue(job)
+                    return
                 if state == "gone" or time.monotonic() - t0 > LATE_HORIZON_S:
                     return
                 await asyncio.sleep(self.late_poll_interval)
@@ -520,6 +708,85 @@ class JobManager:
             raise
         except Exception as exc:  # a late pass is best effort; never take the server down over it
             _say(f"[THM] {job.slug} | {job.id} | late pass stopped: {exc}")
+
+    # -- queued again -----------------------------------------------------------
+
+    @staticmethod
+    def _worth_a_requeue(error: str | None) -> bool:
+        text = str(error or "")
+        return any(mark in text for mark in REQUEUE_MARKS)
+
+    async def _requeue(self, job: Job, *, why: str | None = None, after_restart: bool = False) -> Job:
+        """Queue a render again on the same spec: the generation goes back to ``queued`` with the
+        reason on its record, the old status file goes (the watcher must not read the failure
+        again), and ``launch`` runs it -- or waits for ComfyUI first. Once per generation."""
+        why = why or job.error or "ComfyUI lost the render"
+        job.retried, job.requeue = True, False
+        async with self.registry.lock(job.slug):
+            try:
+                project = self.registry.get(job.slug)
+                gen = self.store.read_generation(project, job.id)
+                if gen is None or gen.bin not in project.bins_by_id or gen.outputs:
+                    return job
+                gen = gen.model_copy()
+                gen.status = "queued"
+                gen.warnings = list(gen.warnings) + [{"kind": "runner", "handle": "", "detail": f"queued again: {why}"}]
+                self.store.append_generation(project, gen)
+                version = self.registry.touch(job.slug)
+            except ProjectNotFound:
+                return job
+        try:
+            job.paths.status.unlink(missing_ok=True)
+        except OSError:
+            pass
+        job.status, job.error, job.task, job.finished, job.progress, job.comfy = "queued", None, None, None, None, None
+        job.proc, job.prompt_id, job.stalled, job.collector = None, None, False, None
+        job.watch_started, job.progress_at, job.progress_mark = time.monotonic(), time.monotonic(), None
+        self.bus.publish(job.slug, version)
+        _say(f"[THM] {job.slug} | {job.id} | queued again: {why}")
+        return self.launch(job, after_restart=after_restart)
+
+    # -- restarting ComfyUI -----------------------------------------------------
+
+    async def restart_comfy(self, *, by: str, reason: str = "", slug: str | None = None) -> dict:
+        """Stop and start ComfyUI through the user's own script (``[advanced] restart_script``).
+        Every live render on it is stopped first and queued again, to start when ComfyUI answers;
+        every project with one gets the line. Refuses with ValueError when no script is set."""
+        script = str(getattr(self.settings.comfy, "restart_script", "") or "").strip()
+        if not script:
+            raise ValueError("no ComfyUI restart script: set [advanced] restart_script in config.toml (the script that stops and starts ComfyUI on this machine)")
+        cwd = Path(str(getattr(self.settings.comfy, "install_path", "") or "") or Path(script).parent)
+        live = [j for j in self._jobs.values() if j.live]
+        requeued: list[str] = []
+        # the restart line below is the outage line for these projects: no second "not reachable"
+        self._outage_told.update(j.slug for j in live)
+        for job in live:
+            if job.watcher is not None and not job.watcher.done():
+                job.watcher.cancel()
+                await asyncio.gather(job.watcher, return_exceptions=True)
+            if job.status == "running":
+                status = read_status(job.paths.status)
+                pid = job.proc.pid if job.proc is not None else (status.pid if status else None)
+                await run_in_threadpool(self.kill_fn, job.proc, pid)
+            if job.retried:
+                await self._finish_failed(job, f"ComfyUI restarted by the {by} while this render ran a second time{': ' + reason if reason else ''}")
+                continue
+            await self._requeue(job, why=f"ComfyUI restarted by the {by}{': ' + reason if reason else ''}", after_restart=True)
+            requeued.append(job.id)
+        log = REPO_ROOT / "thm_runner" / "logs" / "comfyui-restart.log"
+        try:
+            await run_in_threadpool(self.comfy_restart_fn, script, str(cwd), log)
+        except Exception as exc:
+            raise RuntimeError(f"could not run {script}: {exc}") from None
+        self.comfy_restarted_at = utc_now()
+        told = {j.slug for j in live}
+        if slug:
+            told.add(slug)
+        for s in told:
+            n = sum(1 for j in live if j.slug == s and j.id in requeued)
+            tail = f"; {n} render{'s' if n != 1 else ''} here queued again and start when it answers" if n else ""
+            await self._alert(s, f"ComfyUI is restarting ({by}{': ' + reason if reason else ''}){tail}")
+        return {"script": script, "requeued": requeued, "started": self.comfy_restarted_at, "log": str(log)}
 
     async def _note(self, job: Job, detail: str) -> None:
         """Append a warning to a finished generation's record without changing its status."""
@@ -585,9 +852,12 @@ class JobManager:
                     self.store.append_generation(project, gen)
             except ProjectNotFound:
                 pass
-        job.status, job.error, job.task, job.finished = "failed", error, None, utc_now()
+        job.status, job.error, job.task, job.finished, job.stalled = "failed", error, None, utc_now(), False
         self._publish(job)
-        if late:
+        # an interruption (ComfyUI, the machine or this server went away under it) earns the
+        # render another go once ComfyUI is back and has no trace of it: the late pass decides
+        job.requeue = not job.retried and self._worth_a_requeue(error)
+        if late or job.requeue:
             if job.prompt_id is None:
                 job.prompt_id = self._prompt_id_from_log(job.paths.log)
             job.collector = asyncio.create_task(self._collect_late(job))

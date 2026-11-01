@@ -33,6 +33,11 @@ def _go_live(world, mode="image_review"):
     return sess.id
 
 
+def _cursor(world) -> str:
+    """The agent's current inbox cursor, for a post: a note that landed unread refuses the post."""
+    return str(world.client.get(f"{_base(world)}/inbox", headers=AGENT).json()["cursor"])
+
+
 def _agent(world, name, body, session, **headers):
     h = {**AGENT, "X-THM-Session": session, **headers}
     return world.client.post(f"{_base(world)}/commands/{name}", json=body, headers=h)
@@ -47,7 +52,7 @@ def test_workflow_detail_carries_its_prompt_guide(tmp_path):
     assert all(w.get("guide") is None for w in listed), "the list stays light"
     one = world.client.get("/api/workflows/vid.json").json()
     assert one["kind"] == "video" and one["guide_source"] == "default"
-    assert "one continuous shot" in one["guide"] and "dot-tags" in one["guide"]
+    assert "one continuous shot" in one["guide"] and "@-tags" in one["guide"]
     assert world.client.get("/api/workflows/nope.json").status_code == 404
 
 
@@ -66,7 +71,7 @@ def test_project_cards_carry_the_session_blocker_and_pending_count(tmp_path):
     assert cards[0]["agent_session"] is None and cards[0]["blocker"] is None and cards[0]["pending_changes"] == 0
 
     session = _go_live(world)
-    _agent(world, "post_message", {"text": "need the logo file", "kind": "blocker"}, session)
+    _agent(world, "post_message", {"text": "need the logo file", "kind": "blocker"}, session, **{"X-THM-Inbox-Cursor": _cursor(world)})
     # a manual session lands the agent's edits; the pending count is the renders (or a card it asked for)
     r = _agent(world, "set_bin_field", {"bin": world.video, "field": "length_s", "value": 8}, session)
     assert r.json()["change"]["decision"] is None
@@ -97,7 +102,7 @@ def test_agent_uploads_into_a_bin_with_provenance(tmp_path):
     # auto mode: it landed, done, no card
     assert body["change"]["actor"] == "agent" and body["change"]["decision"] is None
     detail = world.client.get(f"{base}/bins/{world.image}").json()
-    assert detail["selected"] == body["media"]["id"]
+    assert detail["selected"] != body["media"]["id"]  # an arrival is new, not the current take
 
     bad = world.client.post(
         f"{base}/uploads",
@@ -128,6 +133,23 @@ def test_agent_lifts_a_still_but_does_not_cut(tmp_path):
     assert r.status_code == 200, r.text
     assert r.json()["media"]["origin"]["type"] == "frame" and r.json()["media"]["type"] == "image"
 
+
+def test_agent_makes_a_gif(tmp_path):
+    world = seeded_world(tmp_path)
+    video_path = make_tiny_mp4(world.media_dir / "g.mp4")
+    if video_path is None:
+        pytest.skip("ffmpeg/ffprobe not on PATH")
+    project = world.registry.get(world.slug)
+    media = adopt_media(project, video_path, origin=MediaOrigin(type="upload", bin=world.mara))
+    world.store.save(project)
+    world.registry.invalidate(world.slug)
+
+    r = world.client.post(f"{_base(world)}/clips", json={"source": media.id, "mode": "gif", "bin": world.mara}, headers=AGENT)
+    assert r.status_code == 409 and r.json()["code"] == "no_session"
+    session = _go_live(world, mode="auto")
+    r = world.client.post(f"{_base(world)}/clips", json={"source": media.id, "mode": "gif", "bin": world.mara}, headers={**AGENT, "X-THM-Session": session})
+    assert r.status_code == 200, r.text
+    assert r.json()["media"]["origin"]["type"] == "gif" and r.json()["media"]["path"].endswith(".gif")
 
 def test_frames_sheet_for_a_video(tmp_path):
     world = seeded_world(tmp_path)
@@ -173,7 +195,7 @@ def test_auto_session_owes_nothing_even_when_the_agent_asks(tmp_path):
     assert world.client.get(base).json()["pending_changes"] == 0
 
     # card is the one ask auto honors: the finished candidate, presented for a verdict
-    r = _agent(world, "set_bin_field", {"bin": world.video, "field": "prompt", "value": ".mara at the rail, dawn", "card": True}, session)
+    r = _agent(world, "set_bin_field", {"bin": world.video, "field": "prompt", "value": "@mara.png at the rail, dawn", "card": True}, session)
     assert r.status_code == 200, r.text
     assert r.json()["change"]["decision"]["status"] == "pending"
     assert [m["kind"] for m in r.json()["messages"]] == ["change"]
@@ -183,14 +205,14 @@ def test_auto_session_owes_nothing_even_when_the_agent_asks(tmp_path):
 
     r = _agent(world, "set_session_mode", {"mode": "video_review", "requested": True}, session)
     assert r.status_code == 200 and r.json()["change"]["decision"] is None
-    assert r.json()["messages"][0]["kind"] == "system" and r.json()["messages"][0]["text"] == "session mode video_review"
+    assert r.json()["messages"][0]["kind"] == "system" and r.json()["messages"][0]["text"].startswith("session mode video cards -- ")
     # a manual session still lands the agent's edits with the reason; only its renders are cards
     r = _agent(world, "set_bin_field", {"bin": world.video, "field": "length_s", "value": 6, "reason": "shorter holds"}, session)
     assert r.json()["change"]["decision"] is None
     assert [(m["kind"], m["text"]) for m in r.json()["messages"]] == [("system", "agent: Video 1 - length 8s to 6s -- shorter holds")]
 
 
-def test_plan_session_only_proposes_the_brief_and_approval_flips_to_auto(tmp_path):
+def test_plan_session_only_proposes_the_brief_and_stays_plan_on_approval(tmp_path):
     world = seeded_world(tmp_path)
     base = _base(world)
     world.client.post(f"{base}/commands/start_session", json={"notes": "plan this", "mode": "plan"})
@@ -200,29 +222,36 @@ def test_plan_session_only_proposes_the_brief_and_approval_flips_to_auto(tmp_pat
     r = _agent(world, "set_bin_field", {"bin": world.video, "field": "length_s", "value": 8}, session)
     assert r.status_code == 409 and r.json()["code"] == "plan_mode"
     r = _agent(world, "post_message", {"text": "here is the plan", "kind": "agent"}, session)
-    assert r.status_code == 200
+    assert r.status_code == 409 and r.json()["code"] == "inbox_cursor_required", r.text
+    r = _agent(world, "post_message", {"text": "here is the plan", "kind": "agent"}, session, **{"X-THM-Inbox-Cursor": _cursor(world)})
+    assert r.status_code == 200, r.text
     r = _agent(world, "set_project_settings", {"brief": "two bins: mara portrait, rail wide"}, session)
     assert r.status_code == 409 and r.json()["code"] == "plan_mode"
     r = _agent(world, "set_project_settings", {"brief": "two bins: mara portrait, rail wide"}, session, **{"X-THM-Propose": "1"})
     assert r.status_code == 200 and r.json()["change"]["decision"]["status"] == "proposed"
     change = r.json()["change"]["id"]
 
-    r = world.client.post(f"{base}/changes/{change}/decision", json={"action": "approve", "note": "go"})
+    r = world.client.post(f"{base}/changes/{change}/decision", json={"action": "approve"})
     assert r.status_code == 200, r.text
     detail = world.client.get(base).json()
-    assert detail["brief"] == "two bins: mara portrait, rail wide" and detail["agent_session"]["mode"] == "auto"
-    assert any(m["text"] == "brief approved, session mode auto" for m in r.json()["messages"])
+    # the brief is written and the session is still planning: the panel changes the mode, not the approval
+    assert detail["brief"] == "two bins: mara portrait, rail wide" and detail["agent_session"]["mode"] == "plan"
+    assert not any("session mode" in (m.get("text") or "") for m in r.json()["messages"])
     r = _agent(world, "set_bin_field", {"bin": world.video, "field": "length_s", "value": 8}, session)
-    assert r.status_code == 200 and r.json()["change"]["decision"] is None
+    assert r.status_code == 409 and r.json()["code"] == "plan_mode"
+    # a second proposal is a second card; the first stays as it was decided
+    r = _agent(world, "set_project_settings", {"brief": "three bins"}, session, **{"X-THM-Propose": "1"})
+    assert r.status_code == 200 and r.json()["change"]["decision"]["status"] == "proposed"
+    assert world.client.get(f"{base}/changes/{change}").json()["decision"]["status"] == "approved"
 
 
 def test_set_bin_field_warns_about_unbound_handles(tmp_path):
     world = seeded_world(tmp_path)
     base = _base(world)
-    r = world.client.post(f"{base}/commands/set_bin_field", json={"bin": world.video, "field": "prompt", "value": ".mara and .ghost walk"})
+    r = world.client.post(f"{base}/commands/set_bin_field", json={"bin": world.video, "field": "prompt", "value": "@mara.png and @ghost.png walk"})
     assert r.status_code == 200
     kinds = {(w["kind"], w["handle"]) for w in r.json()["warnings"]}
-    assert ("unknown_token", "ghost") in kinds
+    assert ("unknown_token", "ghost.png") in kinds
 
 
 # -- the agent's sign of life ---------------------------------------------------------
@@ -231,7 +260,7 @@ def test_set_bin_field_warns_about_unbound_handles(tmp_path):
 def test_agent_calls_record_activity_and_the_status_route(tmp_path):
     world = seeded_world(tmp_path)
     base = _base(world)
-    assert world.client.get(f"{base}/agent/activity").json() == {"seen": None, "doing": None, "idle_s": None}
+    assert world.client.get(f"{base}/agent/activity").json() == {"seen": None, "doing": None, "idle_s": None, "gone": None}
     # a user call is not the agent's heartbeat
     world.client.get(f"{base}/inbox")
     assert world.client.get(f"{base}/agent/activity").json()["seen"] is None
@@ -346,14 +375,14 @@ def test_enhance_request_walks_queued_seen_working(tmp_path, monkeypatch):
             threading.Event().wait(0.02)
         req = reqs[0]
         assert world.client.post(f"{base}/enhance/requests/{req['id']}/ack", headers=h).status_code == 200
-        world.client.post(f"{base}/enhance/requests/{req['id']}/reply", json={"prompt": ".mara at the rail, dawn light"}, headers=h)
+        world.client.post(f"{base}/enhance/requests/{req['id']}/reply", json={"prompt": "@mara.png at the rail, dawn light"}, headers=h)
 
     t = threading.Thread(target=agent_side)
     t.start()
-    r = world.client.post(f"{base}/enhance", json={"kind": "video", "workflow": "vid.json", "prompt": ".mara at the rail", "note": "dawn", "engine": "agent", "bin": world.video})
+    r = world.client.post(f"{base}/enhance", json={"kind": "video", "workflow": "vid.json", "prompt": "@mara.png at the rail", "note": "dawn", "engine": "agent", "bin": world.video})
     t.join(5)
     assert r.status_code == 200, r.text
-    assert r.json()["engine"] == "agent" and r.json()["prompt"] == ".mara at the rail, dawn light"
+    assert r.json()["engine"] == "agent" and r.json()["prompt"] == "@mara.png at the rail, dawn light"
     stages = [(e["engine"], e["status"]) for e in seen]
     assert stages == [("agent", "queued"), ("agent", "seen"), ("agent", "working"), ("agent", "done")]
     assert seen[2]["task"] == "the agent is rewriting" and seen[0]["request"] == seen[-1]["request"]
@@ -365,7 +394,7 @@ def test_pending_count_is_the_live_sessions_open_cards_only(tmp_path):
     base = _base(world)
     session = _go_live(world, mode="image_review")
     _agent(world, "set_bin_field", {"bin": world.video, "field": "length_s", "value": 8, "card": True}, session)
-    _agent(world, "set_bin_field", {"bin": world.video, "field": "prompt", "value": ".mara, wide", "card": True}, session)
+    _agent(world, "set_bin_field", {"bin": world.video, "field": "prompt", "value": "@mara.png, wide", "card": True}, session)
     assert world.client.get(base).json()["pending_changes"] == 2
     assert world.client.get("/api/projects").json()[0]["pending_changes"] == 2
 
@@ -398,8 +427,11 @@ def test_a_session_from_another_project_is_refused(tmp_path):
     assert _agent(world, "set_bin_field", {"bin": world.video, "field": "length_s", "value": 8}, session).status_code == 200
     r = world.client.post(f"{base}/commands/set_bin_field", json={"bin": world.video, "field": "length_s", "value": 7}, headers=AGENT)
     assert r.status_code == 200
-    # talking never needs the header to match: a blocker from a confused agent still reaches the user
-    r = world.client.post(f"{base}/commands/post_message", json={"text": "which project am I on?", "kind": "agent"}, headers=other)
+    # talking in the wrong room is the leak: a post under another project's session is refused,
+    # a post with no session header (a fresh process) still reaches the user
+    r = world.client.post(f"{base}/commands/post_message", json={"text": "which project am I on?", "kind": "agent"}, headers={**other, "X-THM-Inbox-Cursor": _cursor(world)})
+    assert r.status_code == 409 and r.json()["code"] == "wrong_session"
+    r = world.client.post(f"{base}/commands/post_message", json={"text": "which project am I on?", "kind": "agent"}, headers={**AGENT, "X-THM-Inbox-Cursor": _cursor(world)})
     assert r.status_code == 200
 
 
@@ -419,7 +451,7 @@ def test_propose_shots_round_trip(tmp_path):
     base = _base(world)
     session = _go_live(world, mode="video_review")
     items = [
-        {"name": "S01 neon", "description": "hood mount, neon rain", "prompt": ".mara in the rain", "workflow": "vid.json", "references": [world.m1], "length_s": 4, "quarter": True},
+        {"name": "S01 neon", "description": "hood mount, neon rain", "prompt": "@mara.png in the rain", "workflow": "vid.json", "references": [world.m1], "length_s": 4, "quarter": True},
         {"name": "S02 desert", "description": "a rabbit past the hood", "workflow": "vid.json", "references": [world.m1]},
         {"name": "S03 plate", "description": "the empty street", "workflow": "img.json"},
     ]
@@ -445,8 +477,10 @@ def test_propose_shots_round_trip(tmp_path):
     assert world.client.get(f"{base}/changes/{cards[0]['id']}").json()["command"] == "propose_shots"
     assert world.client.get(f"{base}/changes/c_nope").status_code == 404
 
-    # the verdicts, one card each: kept, rewritten, closed
-    r = world.client.post(f"{base}/changes/{cards[0]['id']}/decision", json={"action": "approve", "note": "go"})
+    # the verdicts, one card each: replied then kept, rewritten, closed
+    r = world.client.post(f"{base}/changes/{cards[0]['id']}/decision", json={"action": "approve", "note": "is the rain in the plate?"})
+    assert r.status_code == 200 and r.json()["change"]["decision"]["status"] == "replied" and r.json()["generations"] == [], r.text
+    r = world.client.post(f"{base}/changes/{cards[0]['id']}/decision", json={"action": "approve"})
     assert r.status_code == 200, r.text
     kept = r.json()
     assert kept["change"]["decision"]["status"] == "approved" and len(kept["generations"]) == 1 and len(kept["changes"]) == 1
@@ -465,20 +499,23 @@ def test_propose_shots_round_trip(tmp_path):
     assert shots[1]["description"] == "a jackrabbit, both flinch" and shots[2]["bin"] is None
     children = [e for e in feed if e["change"] and e["change"].get("batch") == cards[0]["id"]]
     assert len(children) == 1 and children[0]["message"]["kind"] == "change"
-    assert world.client.get(base).json()["pending_changes"] == 2  # the two takes owed a verdict
+    # the two renders owe a verdict once their takes are in; queued, nothing waits on the user yet
+    assert world.client.get(base).json()["pending_changes"] == 0
     detail = world.client.get(base).json()
     assert {b["name"] for b in detail["bins"]} >= {"S01 neon", "S02 desert"} and "S03 plate" not in {b["name"] for b in detail["bins"]}
-    assert detail["pending_changes"] == 2  # the two takes, once they land
+    assert detail["pending_changes"] == 0  # the two takes count once they land
     assert len(world.client.get(f"{base}/jobs").json()) == 2
 
-    # the session stops there: the next video render waits for a verdict
+    # nothing waits on those verdicts unless it renders from them: an unrelated video goes, as a card
     cursor = world.client.get(f"{base}/inbox").json()["cursor"]
     r = _agent(world, "generate", {"bin": world.video}, session, **{"X-THM-Inbox-Cursor": str(cursor)})
-    assert r.status_code == 409 and r.json()["code"] == "verdict_owed", r.text
+    assert r.status_code == 200 and r.json()["change"]["decision"]["status"] == "pending", r.text
+    # three render cards, none with a take yet: none waits on the user (close all still clears them)
+    assert world.client.get(base).json()["pending_changes"] == 0
 
     # close all: nothing owed, one line, the agent reads one line
     r = world.client.post(f"{base}/changes/close-pending")
-    assert r.status_code == 200 and r.json()["closed"] == 2 and r.json()["messages"][0]["text"] == "you: closed 2 cards"
+    assert r.status_code == 200 and r.json()["closed"] == 3 and r.json()["messages"][0]["text"] == "you: closed 3 cards"
     assert world.client.get(base).json()["pending_changes"] == 0
     assert world.client.post(f"{base}/changes/close-pending").json()["closed"] == 0
     r = world.client.post(f"{base}/changes/{kept['changes'][0]['id']}/decision", json={"action": "reopen"})
@@ -593,3 +630,58 @@ def test_private_project_keeps_its_words_inside(tmp_path, capsys):
     # inside the project the bin is still named
     job = next(j for j in world.client.get(f"{base}/jobs").json() if j["job"] == r.json()["generation"]["id"])
     assert job["bin_name"] == "Image 1"
+
+
+def test_local_enhance_can_be_cancelled_while_the_app_waits(tmp_path, monkeypatch):
+    """The cancel route flags the run under the app's request id; the waiting request answers
+    ``enhance_cancelled``, the event stream says cancelled (not failed), and the run is forgotten."""
+    import threading
+
+    from thm_server.routes import enhance as enh
+
+    world = seeded_world(tmp_path)
+    base = _base(world)
+    st = world.app.state.thm
+    seen: list[dict] = []
+    real_publish = st.bus.publish_event
+
+    def spy(slug, event, data, id=None):
+        if event == "enhance":
+            seen.append(dict(data))
+        return real_publish(slug, event, data, id)
+
+    monkeypatch.setattr(st.bus, "publish_event", spy)
+    told: list[str] = []
+
+    # stands in for ComfyUI: the run has posted its prompt and waits on its flag, the way
+    # run_graph_once does through the tracker's stop hook
+    def fake_run_local(project, st_, body, on_progress=None, run=None):
+        run.prompt_id = "pid-enh"
+        on_progress({"phase": "sampling", "step": 3, "steps": 20, "task": "sampling 3/20"})
+        assert run.cancelled.wait(5), "cancel never arrived"
+        raise enh._cancelled()
+
+    monkeypatch.setattr(enh, "run_local", fake_run_local)
+    monkeypatch.setattr(enh, "drop_prompt", lambda run: told.append(run.prompt_id) or "interrupted in ComfyUI")
+
+    cancel_answer: dict = {}
+
+    def cancel_side():
+        for _ in range(200):
+            if "enh_test" in st.enhance_local:
+                break
+            threading.Event().wait(0.02)
+        r = world.client.post(f"{base}/enhance/enh_test/cancel")
+        cancel_answer["status"], cancel_answer["body"] = r.status_code, r.json()
+
+    t = threading.Thread(target=cancel_side)
+    t.start()
+    r = world.client.post(f"{base}/enhance", json={"kind": "image", "prompt": "a rail at dawn", "engine": "local", "request": "enh_test"})
+    t.join(5)
+    assert r.status_code == 409 and r.json()["code"] == "enhance_cancelled", r.text
+    assert cancel_answer == {"status": 200, "body": {"request": "enh_test", "detail": "interrupted in ComfyUI"}}
+    assert told == ["pid-enh"]  # ComfyUI was told to drop the posted prompt
+    assert [(e["status"], e["request"]) for e in seen] == [("running", "enh_test"), ("cancelled", "enh_test")]
+    assert "enh_test" not in st.enhance_local
+    # nothing left to cancel: the run is gone
+    assert world.client.post(f"{base}/enhance/enh_test/cancel").status_code == 404

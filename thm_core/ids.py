@@ -17,6 +17,10 @@ GENERATION = "g_"
 CHANGE = "c_"
 MESSAGE = "msg_"
 SESSION = "as_"
+FILE = "f_"  # a file a message carries; not project media
+SEQUENCE = "sq_"
+RULE = "rule_"  # a project rule (QC action, continuity) the agent applies from then on
+POST = "pub_"  # a post: a video with its title and description, drafted for a platform (YouTube)
 
 
 def new_id(prefix: str) -> str:

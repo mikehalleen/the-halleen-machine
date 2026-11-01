@@ -1,4 +1,5 @@
 import type { JobOut } from "../api/types";
+import { clockTime } from "./mediaLabel";
 
 /** The live fields a job carries; the enhancer's progress event carries the same ones. */
 export type LiveLike = Pick<JobOut, "status" | "task" | "phase" | "step" | "steps" | "pass_no" | "passes" | "queue_ahead" | "queue_ahead_ours">;
@@ -36,16 +37,12 @@ export function jobPhaseLine(job: LiveLike | null | undefined): string | null {
   return phase;
 }
 
-/** ComfyUI's execution time for a finished job as `42s` / `3m 12s` / `1h 04m`, or null when
- * the runner did not report one (a failure, or an older runner). The render alone: queue
+/** ComfyUI's execution time for a finished job as a clock (`0:42`, `1:23`, `1:02:03`), or null
+ * when the runner did not report one (a failure, or an older runner). The render alone: queue
  * wait and THM's landing are not in it. */
 export function execTimeLabel(seconds: number | null | undefined): string | null {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return null;
-  const s = Math.round(seconds);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
-  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+  return clockTime(seconds);
 }
 
 export function jobStepLabel(job: LiveLike | null | undefined): string | null {

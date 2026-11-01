@@ -10,6 +10,7 @@ from thm_core.commands import SetProjectSettings
 from thm_core.ids import utc_now
 from thm_core.models import ComfySettings
 
+from .. import agent_activity
 from ..deps import actor_context, state
 from ..derive import bin_cards, bin_detail, project_card, project_detail, project_latest
 from ..errors import ApiError
@@ -22,7 +23,12 @@ router = APIRouter(prefix="/api", tags=["projects"])
 @router.get("/health", response_model=HealthOut)
 async def health(request: Request):
     st = state(request)
-    return HealthOut(version=request.app.version, projects_dir=str(st.settings.projects_dir), workflows_dir=str(st.settings.workflows_dir))
+    return HealthOut(
+        version=request.app.version,
+        projects_dir=str(st.settings.projects_dir),
+        workflows_dir=str(st.settings.workflows_dir),
+        comfy_url=str(getattr(st.settings.comfy, "api_base", "") or "").strip(),
+    )
 
 
 @router.get("/projects", response_model=list[ProjectCard])
@@ -41,9 +47,13 @@ async def list_projects(request: Request):
         if agent and project.private:
             continue
         card = project_card(st.store, project, st.registry.version(slug))
+        card.agent_gone = agent_activity.gone(st, slug, project.agent_session)
         live = [j for j in st.jobs.for_project(slug) if j.live]
         card.generating = len(live)
-        card.generating_job = to_out(live[0]) if live else None
+        # the one executing in ComfyUI, then one handed over and waiting there, then the first here
+        outs = [to_out(j) for j in live]
+        card.generating_job = next((o for o in outs if o.status == "running" and (o.phase or "") != "queued"), None) or next((o for o in outs if o.status == "running"), None) or (outs[0] if outs else None)
+        card.held = sum(1 for g in st.store.read_generations(project) if g.status == "held")
         if card.generating_job is not None and project.private:
             # the list is read from every screen: a private render shows its progress, never its words
             card.generating_job.bin_name = None
@@ -72,7 +82,7 @@ async def create_project(body: CreateProjectBody, request: Request):
     if body.settings is not None:
         # the settings command validates and applies; creation itself is not a logged change
         settings = SetProjectSettings(**body.settings.model_dump(exclude_none=True))
-        if settings.changes():
+        if settings.changes() or settings.private is not None or settings.youtube_channel is not None:
             ctx = actor_context(request)
             settings.check(project, ctx, st.env)
             settings.apply(project, ctx, st.env)
@@ -110,6 +120,7 @@ async def get_project(slug: str, request: Request):
     st = state(request)
     project = st.registry.get(slug)
     detail = project_detail(st.store, project, st.registry.version(slug), st.env)
+    detail.agent_gone = agent_activity.gone(st, slug, project.agent_session)
     _stamp_live(st, slug, detail.bins)
     return detail
 

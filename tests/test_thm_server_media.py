@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from thm_core import MediaOrigin, adopt_media
-from thm_server_fixtures import make_tiny_mp4, seeded_world
+from thm_server_fixtures import make_tiny_audio, make_tiny_mp4, seeded_world
 
 
 @pytest.fixture
@@ -97,3 +97,41 @@ def test_thumb_video_poster(world, tmp_path):
     r = world.client.get(f"/media/{world.slug}/{m.id}/file", headers={"Range": "bytes=0-9"})
     assert r.status_code == 206 and r.headers["content-type"] == "video/mp4"
     assert world.client.get(f"/api/projects/{world.slug}/media", params={"type": "video"}).json()["total"] == 1
+
+
+def test_audio_upload_plays_seeks_and_has_a_waveform_tile(world, tmp_path):
+    song = make_tiny_audio(tmp_path / "song.wav", seconds=2.0)
+    if song is None:
+        pytest.skip("ffmpeg/ffprobe not on PATH")
+    # the same path a browser or `cli.py upload` takes: multipart into a named bin
+    with open(song, "rb") as f:
+        r = world.client.post(f"/api/projects/{world.slug}/uploads", files={"file": ("song.wav", f, "audio/wav")}, data={"bin_name": "Music"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    media = body["media"]
+    assert media["type"] == "audio" and media["sample_rate"] == 44100 and media["channels"] == 1
+    assert media["width"] is None and media["fps"] is None and abs(media["duration_s"] - 2.0) < 0.1
+    assert body["bin"]["name"] == "Music" and media["id"] in body["bin"]["media"]
+    # served with its mime type, seekable by Range
+    url = f"/media/{world.slug}/{media['id']}/file"
+    full = world.client.get(url)
+    assert full.status_code == 200 and full.headers["content-type"] == "audio/wav" and full.headers.get("accept-ranges") == "bytes"
+    part = world.client.get(url, headers={"Range": "bytes=100-199"})
+    assert part.status_code == 206 and len(part.content) == 100
+    # the tile is a waveform: grid square, detail a wide strip, poster = detail
+    for size, (w, h) in (("grid", (320, 320)), ("detail", (1280, 256)), ("poster", (1280, 256))):
+        t = world.client.get(f"/media/{world.slug}/{media['id']}/thumb", params={"size": size})
+        assert t.status_code == 200 and t.headers["content-type"] == "image/webp", size
+        from io import BytesIO
+
+        from PIL import Image
+
+        assert Image.open(BytesIO(t.content)).size == (w, h), size
+    # no frames of an audio file, by code
+    r = world.client.get(f"/media/{world.slug}/{media['id']}/frames")
+    assert r.status_code == 422 and r.json()["code"] == "not_video"
+    # it survives a reload from disk with its probed fields
+    world.registry.invalidate(world.slug)
+    again = world.client.get(f"/api/projects/{world.slug}/media/{media['id']}").json()
+    assert again["type"] == "audio" and again["sample_rate"] == 44100
+    assert world.client.get(f"/api/projects/{world.slug}/media", params={"type": "audio"}).json()["total"] == 1

@@ -55,36 +55,6 @@ function show(title: string, body: string, opts: { tag: string; icon?: string; u
   }
 }
 
-/** What the settings screen reports, and a test the user can fire while looking at the tab. */
-export function notificationState(): "unsupported" | "insecure" | "granted" | "denied" | "default" {
-  if (!supported) return "unsupported";
-  if (!window.isSecureContext) return "insecure";
-  return Notification.permission;
-}
-
-/** Fires a test and reports what the browser did with it, for the settings screen's toast. */
-export async function sendTestNotification(): Promise<string> {
-  if (!supported) return "this browser has no Notification API";
-  if (!window.isSecureContext) return "blocked: not a secure context (https or localhost)";
-  if (!(await requestNotifications())) return `blocked: permission is ${Notification.permission}`;
-  return new Promise((resolve) => {
-    try {
-      const n = new Notification("THM 2.0 — test", { body: "notifications reach you here", tag: "test", icon: "/icon-512.png" });
-      const timer = setTimeout(() => resolve("sent, but the browser never reported showing it — check Windows notification settings for Chrome"), 3000);
-      n.onshow = () => {
-        clearTimeout(timer);
-        resolve("shown");
-      };
-      n.onerror = () => {
-        clearTimeout(timer);
-        resolve("the browser refused to show it (onerror)");
-      };
-    } catch (e) {
-      resolve(`failed: ${(e as Error).message}`);
-    }
-  });
-}
-
 const thumb = (slug: string, id: string) => `/media/${encodeURIComponent(slug)}/${encodeURIComponent(id)}/thumb?size=detail`;
 const binUrl = (slug: string, bin: string) => `/p/${encodeURIComponent(slug)}/b/${encodeURIComponent(bin)}`;
 
@@ -92,7 +62,13 @@ export interface NotifyContext {
   slug: string;
   project: ProjectDetail | undefined;
   bins: BinCard[] | undefined;
+  /** The feed as cached: a landed render may be the take an agent card is waiting on. */
+  feed?: FeedEntry[];
 }
+
+/** An agent card still owed a verdict. */
+const owesVerdict = (entry: FeedEntry) =>
+  !!entry.change?.decision && (entry.change.decision.status === "pending" || entry.change.decision.status === "proposed") && entry.change.actor === "agent";
 
 function binName(ctx: NotifyContext, binId: string): string {
   return ctx.bins?.find((b) => b.id === binId)?.name ?? ctx.project?.bins.find((b) => b.id === binId)?.name ?? "a bin";
@@ -108,6 +84,16 @@ export function notifyJob(ctx: NotifyContext, job: JobOut) {
   const name = binName(ctx, job.bin);
   const project = ctx.project?.name ?? ctx.slug;
   if (job.status === "done") {
+    // a review mode's render card: the verdict is owed now that the take is in, not when it was queued
+    const card = ctx.feed?.find((e) => e.change?.generation === job.job && owesVerdict(e));
+    if (card?.change && job.takes[0]) {
+      show(`agent — needs your ok`, card.change.description || `${name} — take landed`, {
+        tag: `change:${card.change.id}`,
+        icon: thumb(ctx.slug, job.takes[0]),
+        url: binUrl(ctx.slug, job.bin),
+      });
+      return;
+    }
     const n = job.takes.length;
     show(`${name} — ${n === 1 ? "take landed" : `${n} takes landed`}`, project, {
       tag: `job:${job.job}`,
@@ -124,7 +110,9 @@ export function notifyFeed(ctx: NotifyContext, entry: FeedEntry) {
   if (!allowed(ctx)) return;
   const project = ctx.project?.name ?? ctx.slug;
   const change = entry.change;
-  if (change?.decision && (change.decision.status === "pending" || change.decision.status === "proposed") && change.actor === "agent") {
+  if (change && owesVerdict(entry)) {
+    // a render card owes its verdict on the take, which is not in yet: the landing notifies
+    if (change.generation && !entry.media) return;
     const bin = entry.bin?.id ?? (change.target.type === "bin" ? change.target.id : null);
     show(`agent — needs your ok`, change.description || entry.message.text, {
       tag: `change:${change.id}`,

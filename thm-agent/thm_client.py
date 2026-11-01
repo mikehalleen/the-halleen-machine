@@ -18,6 +18,7 @@ a project file and no reason to know one (design section 6).
 
 from __future__ import annotations
 
+import base64
 import difflib
 import json
 import mimetypes
@@ -36,27 +37,31 @@ HEADER_ACTOR = "x-thm-actor"
 HEADER_SESSION = "x-thm-session"
 HEADER_CURSOR = "x-thm-inbox-cursor"
 HEADER_PROPOSE = "x-thm-propose"
+# the session mode this agent last saw; the server refuses a changing command with mode_changed
+# when the user has switched mode since, so a plan never runs on in a mode it was not made for
+HEADER_MODE = "x-thm-mode"
 HEADER_DOING = "x-thm-agent-doing"  # what the agent is doing, shown in the app's strip while it works
+ALERT_PREFIX = "alert: "  # the server's own system lines (thm_server.jobs.ALERT_PREFIX): a stall, an outage, a restart
 LIVE_SESSION = ("waiting", "live")
 TERMINAL_GENERATION = ("done", "failed", "cancelled")
 
 # The same token the server scans for (thm_core/slug.py TOKEN_RE), copied rather than imported:
 # this client runs on machines with no thm_core. tests/test_thm_client.py asserts they match.
-TOKEN_RE = re.compile(r"(?<![A-Za-z0-9\-.])\.([a-z0-9][a-z0-9-]*)(?:\.(\d+))?(?![A-Za-z0-9\-])")
+TOKEN_RE = re.compile(r"(?<![A-Za-z0-9\-@])@([a-z0-9][a-z0-9-]*)\.([a-z][a-z0-9]{0,4})(?:\.(\d+))?(?![A-Za-z0-9\-])")
 
 # What the runners read out of ``generate --params``, by kind (scripts/run_images.py and
 # scripts/run_video.py). Anything else is accepted by the server, stored on the generation,
 # and silently ignored by the runner -- so the client warns.
 PARAM_KEYS = {
-    "image": ("seed", "steps", "cfg", "sampler", "scheduler", "width", "height"),
-    "video": ("seed", "steps", "fps", "length_s", "quarter", "width", "height"),
+    "image": ("seed", "steps", "cfg", "sampler", "scheduler", "width", "height", "draft"),
+    "video": ("seed", "steps", "fps", "length_s", "quarter", "width", "height", "draft"),
 }
 
 
 def handles_in(text: str) -> set[str]:
     out: set[str] = set()
     for m in TOKEN_RE.finditer(text or ""):
-        out.add(m.group(1) + (f".{m.group(2)}" if m.group(2) else ""))
+        out.add(m.group(1) + "." + m.group(2) + (f".{m.group(3)}" if m.group(3) else ""))
     return out
 
 
@@ -116,6 +121,7 @@ class ThmClient:
         cursor: int | None = None,
         transport: Transport | None = None,
         doing: str | None = None,
+        mode: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         # this client is the agent and only the agent: the private-project gate keys on the actor
@@ -123,6 +129,8 @@ class ThmClient:
         self.actor = "agent"
         self.session = session
         self.cursor = cursor
+        # the session mode last read from a command answer or the inbox (``auto``, ``manual+drafts``)
+        self.mode = mode
         self.transport = transport or urllib_transport
         # every request is a heartbeat the app shows the user; this names it ("reading your messages")
         self.doing = doing
@@ -139,6 +147,8 @@ class ThmClient:
             h[HEADER_DOING] = self.doing.encode("ascii", "replace").decode("ascii")
         if cursor is not None:
             h[HEADER_CURSOR] = str(int(cursor))
+        if self.mode:
+            h[HEADER_MODE] = self.mode
         if propose:
             h[HEADER_PROPOSE] = "1"
         return h
@@ -215,6 +225,33 @@ class ThmClient:
         """Every workflow the server offers: name, kind (image or video), slots, negative support."""
         return self.get("/api/workflows")
 
+    def comfy_runs(self, limit: int = 10) -> list[dict]:
+        """The user's recent ComfyUI runs, newest first (THM's own renders left out): what an import starts from."""
+        return self.get("/api/workflows/comfy-runs", {"limit": limit})
+
+    def import_workflow(
+        self, name: str, *, run: str | None = None, png: bytes | None = None, kind: str | None = None,
+        tags: dict[str, str] | None = None, untag: list[str] | None = None, system_prompt: str | None = None,
+        keep_builtin_enhancer: bool = False, lora_marker: bool = True, dry_run: bool = False, replace: bool = False,
+    ) -> dict:
+        """Tag and save a workflow the user ran in ComfyUI: the API graph THM renders with, and a
+        tagged UI copy in samples/workflows_openincomfy for the user to open. Returns the report."""
+        body: dict = {"name": name, "tags": dict(tags or {}), "untag": list(untag or []), "keep_builtin_enhancer": keep_builtin_enhancer,
+                      "lora_marker": lora_marker, "dry_run": dry_run, "replace": replace}
+        if run:
+            body["run"] = run
+        if png is not None:
+            body["png_b64"] = base64.b64encode(png).decode("ascii")
+        if kind:
+            body["kind"] = kind
+        if system_prompt:
+            body["system_prompt"] = system_prompt
+        return self.post("/api/workflows/import", body)
+
+    def loras(self) -> list[dict]:
+        """Every LoRA file ComfyUI can load: name (exactly as a bin's loras field wants it), size."""
+        return self.get("/api/loras")
+
     def jobs(self, slug: str) -> list[dict]:
         return self.get(f"/api/projects/{_q(slug)}/jobs")
 
@@ -224,6 +261,96 @@ class ThmClient:
     def change(self, slug: str, change_id: str) -> dict:
         """One change's latest record: a propose_shots card's items carry the outcome in ``payload``."""
         return self.get(f"/api/projects/{_q(slug)}/changes/{_q(change_id)}")
+
+    # -- sequences --------------------------------------------------------------
+
+    def sequences(self, slug: str) -> list[dict]:
+        """Every sequence with its items joined to the takes that play, durations and the last export."""
+        return self.get(f"/api/projects/{_q(slug)}/sequences")
+
+    def sequence(self, slug: str, seq_id: str) -> dict:
+        return self.get(f"/api/projects/{_q(slug)}/sequences/{_q(seq_id)}")
+
+    def export_status(self, slug: str, seq_id: str) -> dict:
+        return self.get(f"/api/projects/{_q(slug)}/sequences/{_q(seq_id)}/export")
+
+    def preview_item(self, slug: str, seq_id: str, bin: str, *, handles_s: float = 0.0) -> bytes:
+        """One item rendered with its layer slices and mix through the export's own graph, plus
+        up to ``handles_s`` of the take either side: an mp4 for a QC listen, not media."""
+        return self.request("POST", f"/api/projects/{_q(slug)}/sequences/{_q(seq_id)}/preview", body={"bin": bin, "handles_s": handles_s}, raw=True)
+
+    def export_sequence(self, slug: str, seq_id: str, *, bin: str | None = None) -> dict:
+        """Start the export; it lands in the sequence's output bin as the next take. ``bin``
+        points the sequence at another bin first."""
+        return self.post(f"/api/projects/{_q(slug)}/sequences/{_q(seq_id)}/export", {"bin": bin} if bin else {})
+
+    def wait_export(self, slug: str, seq_id: str, *, poll_s: float = 1.0, timeout_s: float | None = None, sleep: Callable[[float], None] = time.sleep) -> dict:
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        while True:
+            status = self.export_status(slug, seq_id)
+            if status.get("status") in ("done", "failed", "idle"):
+                return status
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"export of {seq_id} still running after {timeout_s}s")
+            sleep(poll_s)
+
+    # -- posts -------------------------------------------------------------------
+
+    def posts(self, slug: str, bin: str | None = None) -> list[dict]:
+        """Every post (a video with its title and description, drafted for a platform), newest
+        first, each with its bin's name and the video it names; ``bin`` narrows to one bin's."""
+        return list(self.get(f"/api/projects/{_q(slug)}/posts", {"bin": bin} if bin else None) or [])
+
+    def post_detail(self, slug: str, post_id: str) -> dict:
+        return self.get(f"/api/projects/{_q(slug)}/posts/{_q(post_id)}")
+
+    def create_post(self, slug: str, bin: str, *, media: str | None = None, title: str = "", description: str = "", tags: list[str] | None = None, platform: str = "youtube", **flags) -> dict:
+        """Draft a post for a bin's current video (or ``media``, a video in that bin); held
+        private and unsent. ``flags`` are ``reason``, ``card``, ``quiet``, ``requested``."""
+        payload: dict[str, Any] = {"bin": bin, "platform": platform, "title": title, "description": description}
+        if media:
+            payload["media"] = media
+        if tags is not None:
+            payload["tags"] = list(tags)
+        payload.update({k: v for k, v in flags.items() if v})
+        return self.command(slug, "create_post", payload, cursor=self.cursor)
+
+    def set_post_field(self, slug: str, post_id: str, field: str, value: Any, **flags) -> dict:
+        payload: dict[str, Any] = {"post": post_id, "field": field, "value": value}
+        payload.update({k: v for k, v in flags.items() if v})
+        return self.command(slug, "set_post_field", payload, cursor=self.cursor)
+
+    def upload_post(self, slug: str, post_id: str, *, requested: bool = False, reason: str | None = None) -> dict:
+        """Send the post's video to its platform, private. A card (proposed) unless ``requested``:
+        the user asked for it in the feed, and it lands and starts at once."""
+        payload: dict[str, Any] = {"post": post_id}
+        if reason:
+            payload["reason"] = reason
+        if requested:
+            payload["requested"] = True
+        return self.command(slug, "upload_post", payload, propose=not requested, cursor=self.cursor)
+
+    def upload_status(self, slug: str, post_id: str) -> dict:
+        return self.get(f"/api/projects/{_q(slug)}/posts/{_q(post_id)}/upload")
+
+    def wait_upload(self, slug: str, post_id: str, *, poll_s: float = 2.0, timeout_s: float | None = None, sleep: Callable[[float], None] = time.sleep) -> dict:
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        while True:
+            status = self.upload_status(slug, post_id)
+            if status.get("status") in ("done", "failed", "idle"):
+                return status
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"upload of {post_id} still running after {timeout_s}s")
+            sleep(poll_s)
+
+    def publish_status(self, platform: str = "youtube") -> dict:
+        """Whether this server can upload to the platform, and the fix when it cannot."""
+        return self.get(f"/api/publish/{_q(platform)}")
+
+    def delete_post(self, slug: str, post_id: str, **flags) -> dict:
+        payload: dict[str, Any] = {"post": post_id}
+        payload.update({k: v for k, v in flags.items() if v})
+        return self.command(slug, "delete_post", payload, cursor=self.cursor)
 
     def generations(self, slug: str, bin: str | None = None, status: str | None = None) -> list[dict]:
         """Every generation in landing order, narrowed by bin and status when given."""
@@ -276,6 +403,7 @@ class ThmClient:
                 "seed": params.get("seed"),
                 "length_s": params.get("length_s"),
                 "quarter": bool(params.get("quarter")),
+                "draft": bool(params.get("draft")),
                 "params": params,
                 "media": outputs[0] if outputs else None,
                 "media_state": "ok" if media else ("deleted" if outputs else "no outputs"),
@@ -301,12 +429,38 @@ class ThmClient:
     def media_file(self, slug: str, media_id: str) -> bytes:
         return self.request("GET", f"/media/{_q(slug)}/{_q(media_id)}/file", raw=True)
 
-    def upload(self, slug: str, path: str | Path, *, bin: str | None = None, bin_name: str | None = None, source: str | None = None, note: str | None = None) -> dict:
+    def message_file(self, slug: str, file_id: str) -> bytes:
+        """A file a note carries (``files`` on an inbox message): the user's, not project media."""
+        return self.request("GET", f"/api/projects/{_q(slug)}/chat-files/{_q(file_id)}", raw=True)
+
+    def keep_file(self, slug: str, file_id: str, *, bin: str | None = None, bin_name: str | None = None) -> dict:
+        """Make a note's file project media: it lands in the bin like an upload."""
+        return self.post(f"/api/projects/{_q(slug)}/chat-files/{_q(file_id)}/keep", {"bin": bin, "bin_name": bin_name})
+
+    def gif(
+        self,
+        slug: str,
+        media_id: str,
+        *,
+        bin: str | None = None,
+        bin_name: str | None = None,
+        start_s: float | None = None,
+        end_s: float | None = None,
+        fps: float | None = None,
+        width: int | None = None,
+    ) -> dict:
+        """Export a video media as an animated GIF, made on the server and landed in a bin like
+        an upload (origin ``gif``, ``source`` the video). The whole clip unless trimmed."""
+        body = {"source": media_id, "mode": "gif", "bin": bin, "bin_name": bin_name, "start_s": start_s, "end_s": end_s, "fps": fps, "width": width}
+        return self.post(f"/api/projects/{_q(slug)}/clips", {k: v for k, v in body.items() if v is not None})
+
+    def upload(self, slug: str, path: str | Path, *, bin: str | None = None, bin_name: str | None = None, source: str | None = None, note: str | None = None, tags: list[str] | None = None) -> dict:
         """Put a local file into a bin, the way the browser does. ``source`` and ``note`` say
-        where it came from when the agent made it from a take ("audio removed, ffmpeg -an")."""
+        where it came from when the agent made it from a take ("audio removed, ffmpeg -an");
+        ``tags`` go on the bin when the upload mints it."""
         p = Path(path)
         data = p.read_bytes()
-        fields = {"bin": bin, "bin_name": bin_name, "source": source, "note": note}
+        fields = {"bin": bin, "bin_name": bin_name, "source": source, "note": note, "tags": ",".join(tags) if tags else None}
         boundary = f"----thm{uuid.uuid4().hex}"
         parts: list[bytes] = []
         for key, value in fields.items():
@@ -339,11 +493,17 @@ class ThmClient:
                 "slug": p["slug"], "name": p.get("name", ""), "status": sess.get("status") or "none", "mode": sess.get("mode"),
                 "harness": sess.get("harness"), "session": sess.get("id"), "blocker": (p.get("blocker") or {}).get("text"),
                 "pending_changes": int(p.get("pending_changes") or 0),
+                # live with nobody heard on it: the harness closed without end; connect to it
+                "agent_gone": bool(p.get("agent_gone")),
             })
         return out
 
-    def set_mode(self, slug: str, mode: str, *, requested: bool = False) -> dict:
-        payload: dict[str, Any] = {"mode": mode}
+    def set_mode(self, slug: str, mode: str | None, *, drafts: bool | None = None, requested: bool = False) -> dict:
+        payload: dict[str, Any] = {}
+        if mode is not None:
+            payload["mode"] = mode
+        if drafts is not None:
+            payload["drafts"] = drafts
         if requested:
             payload["requested"] = True
         return self.command(slug, "set_session_mode", payload)
@@ -372,6 +532,46 @@ class ThmClient:
         out = self.get(f"/api/projects/{_q(slug)}/inbox", {"cursor": int(start or 0)})
         return list(out.get("messages") or []), int(out["cursor"])
 
+    def open_notes(self, slug: str) -> list[dict]:
+        """The user's notes this session has not accounted for, oldest first: the to-do list.
+        Reading the inbox closes none of them; ``answer_notes`` does."""
+        try:
+            return list(self.get(f"/api/projects/{_q(slug)}/notes").get("notes") or [])
+        except ThmError as exc:
+            if exc.status == 404 and exc.code != "unknown_project":
+                # a server still running the code from before notes were tracked: it cannot say
+                # what is owed, which is not the same as nothing being owed
+                self.notes_untracked = True
+                return []
+            raise
+
+    def resume(self, slug: str) -> dict:
+        """The reconnect summary: mode, open notes, live and interrupted renders, last post, rules."""
+        out = self.get(f"/api/projects/{_q(slug)}/resume")
+        self.mode = out.get("mode") or self.mode
+        return out
+
+    def answer_notes(self, slug: str, notes: list[str], did: str) -> dict:
+        """Close notes with what was done about them, in a few words the user reads on the note.
+        Sends the inbox cursor: a note that landed since refuses the answer with ``inbox_behind``
+        (a note is never closed unread, and never closed after a post that was itself refused)."""
+        return self.command(slug, "answer_notes", {"notes": list(notes), "did": did}, cursor=self.cursor)
+
+    def withdraw(self, slug: str, change_id: str, why: str = "") -> dict:
+        """Take back one of this session's own waiting cards; it closes with the reason on it."""
+        return self.command(slug, "withdraw_change", {"change": change_id, "why": why})
+
+    def cancel_job(self, slug: str, gen_id: str, *, requested: bool = False, reason: str = "") -> dict:
+        """Stop a live render. On the agent's own judgement only in an auto session; in any
+        other mode ``requested`` says the user asked for it (``requested_required`` otherwise)."""
+        return self.post(f"/api/projects/{_q(slug)}/jobs/{_q(gen_id)}/cancel", {"requested": requested, "reason": reason})
+
+    def restart_comfy(self, slug: str, *, requested: bool = False, reason: str = "") -> dict:
+        """Stop and start ComfyUI through the server (the user's own restart script). Live
+        renders are queued again and start when it answers. Same rule as ``cancel_job``: on its
+        own only in an auto session on ``slug``, else only when the user asked."""
+        return self.post("/api/comfy/restart", {"slug": slug, "requested": requested, "reason": reason})
+
     def enhance_requests(self, slug: str) -> list[dict]:
         """Prompt rewrites the app is waiting on the agent for. Each carries ``system_prompt``
         (the workflow's own instructions, or the app's default for its kind) and ``message``
@@ -394,35 +594,84 @@ class ThmClient:
         """Answer one enhance request: the rewritten prompt, or why there is none."""
         return self.post(f"/api/projects/{_q(slug)}/enhance/requests/{_q(req_id)}/reply", {"prompt": prompt, "error": error})
 
+    def _peek(self, slug: str, cursor: int | None) -> tuple[list[dict], str | None]:
+        """The inbox past ``cursor`` and the session mode now, without moving anything."""
+        start = self.cursor if cursor is None else cursor
+        out = self.get(f"/api/projects/{_q(slug)}/inbox", {"cursor": int(start or 0)})
+        return list(out.get("messages") or []), out.get("mode")
+
+    def _events(self, slug: str, cursor: int | None, kinds: tuple[str, ...], jobs: tuple[str, ...], mode: str | None) -> list[dict]:
+        """Everything on one project that should wake the agent now: the user's messages and
+        decisions, a session mode other than the one it last saw, a listed render that finished
+        or failed, a pending enhance request."""
+        messages, now_mode = self._peek(slug, cursor)
+        # the server's own alerts (a stalled render, ComfyUI unreachable or restarting) are system
+        # lines that wake the agent like a note; reading the inbox moves past them
+        woke = [m for m in messages if m.get("kind") in kinds or (m.get("kind") == "system" and str(m.get("text") or "").startswith(ALERT_PREFIX))]
+        if mode and now_mode and now_mode != mode:
+            woke.append({"kind": "mode", "mode": now_mode, "text": f"MODE CHANGED: the session mode is now {now_mode} (you last saw {mode}): re-plan before your next step"})
+        if jobs:
+            for j in self.jobs(slug):
+                if j.get("job") in jobs and j.get("status") not in ("queued", "running"):
+                    detail = f" takes={j.get('takes')}" if j.get("takes") else (f" error={j.get('error')}" if j.get("error") else "")
+                    woke.append({"kind": "job", "id": j["job"], "status": j.get("status"), "takes": j.get("takes") or [], "text": f"render {j['job']} in {j.get('bin_name') or j.get('bin')} {j.get('status')}{detail}"})
+        for r in self.enhance_requests(slug):
+            woke.append({"kind": "enhance", "id": r["id"], "ts": r.get("created", ""), "text": f"enhance request {r['id']} ({r.get('kind')}, {r.get('workflow') or 'default'}) -- run enhance-requests"})
+        return woke
+
+    def _retrying(self, attempt: Callable[[], Any], deadline: float | None, sleep: Callable[[float], None], poll_s: float) -> Any:
+        """One poll, retried with backoff while the server is unreachable (a restart, a reboot):
+        a wait never dies on a restart, it waits it out until its own deadline."""
+        delay = poll_s
+        while True:
+            try:
+                return attempt()
+            except OSError:
+                pass
+            except ThmError as exc:
+                if exc.status < 500:
+                    raise
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("the server was unreachable until the timeout")
+            sleep(delay)
+            delay = min(30.0, delay * 2)
+
     def wait_for_inbox(
         self,
         slug: str,
         *,
         cursor: int | None = None,
         kinds: tuple[str, ...] = ("user", "decision", "blocker"),
+        jobs: tuple[str, ...] = (),
+        mode: str | None = None,
         poll_s: float = 3.0,
         timeout_s: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> list[dict]:
-        """Block until the user says something past ``cursor``; returns the waking messages.
+        """Block until something on this project needs the agent; returns what woke it.
 
-        The agent has no other way to know the user wrote: the server's SSE stream is for the
-        browser, and a harness that is not looking is simply deaf. Blocking here and returning
-        is what wakes it, exactly as ``wait_for_session`` does for a kickoff.
+        The one wait there is: a user message or decision past ``cursor``, the session mode
+        moving off ``mode`` (the mode the agent last saw), any of ``jobs`` (generation ids)
+        finishing or failing, or a pending enhance request. So waiting on a render never means
+        missing a note: the first of them returns. Notes read earlier and never answered return
+        too -- waiting on the user while they wait on you is the stall. The server going away
+        (a restart) is waited out, not reported.
 
-        Only the user's own kinds wake it -- messages, decisions, blockers -- so a long render
-        does not tick it awake every few seconds. The cursor is deliberately not advanced:
-        ``inbox`` still owes the read, so "read before every generate" is unchanged.
-
-        A pending enhance request wakes it too, as a synthetic ``enhance`` message: the app is
-        holding a request open for the answer, so it cannot wait for the next real message.
+        The cursor is deliberately not advanced: ``inbox`` still owes the read, so "read before
+        every generate" is unchanged.
         """
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
+
+        def once() -> list[dict]:
+            woke = self._events(slug, cursor, kinds, tuple(jobs), mode)
+            if not woke:
+                owed = self.open_notes(slug)
+                if owed:
+                    return [{**m, "open": True} for m in owed]
+            return woke
+
         while True:
-            messages, _ = self.peek_inbox(slug, cursor)
-            woke = [m for m in messages if m.get("kind") in kinds]
-            for r in self.enhance_requests(slug):
-                woke.append({"kind": "enhance", "id": r["id"], "ts": r.get("created", ""), "text": f"enhance request {r['id']} ({r.get('kind')}, {r.get('workflow') or 'default'}) -- run enhance-requests"})
+            woke = self._retrying(once, deadline, sleep, poll_s)
             if woke:
                 return woke
             if deadline is not None and time.monotonic() >= deadline:
@@ -434,19 +683,30 @@ class ThmClient:
         cursors: dict[str, int | None],
         *,
         kinds: tuple[str, ...] = ("user", "decision", "blocker"),
+        jobs: tuple[str, ...] = (),
+        modes: dict[str, str | None] | None = None,
+        sessions: dict[str, str | None] | None = None,
         poll_s: float = 3.0,
         timeout_s: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> dict:
-        """Block until any project needs the agent: a session waiting for a connect, a user
-        message or decision past that project's cursor on a live session, or an open enhance
-        request. Returns ``{slug, why, messages}``. One list request per poll; the cards carry
-        the session, so only projects with a live session get an inbox peek.
+        """Block until any project needs the agent: a session waiting for a connect, a live
+        session whose agent is gone, a user message or decision past that project's cursor, a
+        mode other than the one last seen there (``modes``), a listed render finishing, or an
+        open enhance request. Returns ``{slug, why, messages}``. One list request per poll; the
+        cards carry the session, so only projects with a live session get a closer look. The
+        server going away (a restart) is waited out.
 
         ``cursors`` maps slug to the agent's saved inbox cursor there (None = never read).
+        ``sessions`` maps slug to the session id this agent holds there: each poll on that
+        project is made as that session, so the server keeps hearing its owner and the session
+        never reads as unattended while the agent is only waiting.
         """
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
-        while True:
+        modes = modes or {}
+        sessions = sessions or {}
+
+        def once() -> dict | None:
             for p in self.projects():
                 slug = p["slug"]
                 sess = p.get("agent_session") or {}
@@ -455,12 +715,28 @@ class ThmClient:
                     return {"slug": slug, "why": "session waiting", "messages": []}
                 if status != "live":
                     continue
-                messages, _ = self.peek_inbox(slug, cursors.get(slug) or 0)
-                woke = [m for m in messages if m.get("kind") in kinds]
-                for r in self.enhance_requests(slug):
-                    woke.append({"kind": "enhance", "id": r["id"], "ts": r.get("created", ""), "text": f"enhance request {r['id']} ({r.get('kind')}, {r.get('workflow') or 'default'}) -- run enhance-requests"})
+                if p.get("agent_gone") and sessions.get(slug) != sess.get("id"):
+                    # live, but the server has heard no agent on it for a while: the harness that
+                    # had it closed without ``end``. Connecting again takes it over.
+                    return {"slug": slug, "why": "agent gone", "session": sess.get("id"), "messages": []}
+                held = self.session
+                self.session = sessions.get(slug) or None  # heard as the session we hold there, if any
+                try:
+                    woke = self._events(slug, cursors.get(slug) or 0, kinds, tuple(jobs), modes.get(slug))
+                finally:
+                    self.session = held
                 if woke:
                     return {"slug": slug, "why": f"{len(woke)} new item(s)", "messages": woke}
+                if int(p.get("open_notes") or 0) > 0:
+                    owed = self.open_notes(slug)
+                    if owed:
+                        return {"slug": slug, "why": f"{len(owed)} open note(s)", "messages": [{**m, "open": True} for m in owed]}
+            return None
+
+        while True:
+            woke = self._retrying(once, deadline, sleep, poll_s)
+            if woke:
+                return woke
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("nothing from the user on any project")
             sleep(poll_s)
@@ -479,15 +755,42 @@ class ThmClient:
         start = self.cursor if cursor is None else cursor
         out = self.get(f"/api/projects/{_q(slug)}/inbox", {"cursor": int(start or 0)})
         self.cursor = int(out["cursor"])
+        self.mode = out.get("mode") or self.mode
         return list(out.get("messages") or []), self.cursor
 
     def post_message(self, slug: str, text: str, kind: str = "agent", attachments: list[str] | None = None) -> dict:
-        return self.command(slug, "post_message", {"text": text, "kind": kind, "attachments": list(attachments or [])})
+        """Sends the inbox cursor: a note that landed while the reply was written refuses the
+        post with ``inbox_behind`` and hands it over, so it is answered rather than talked over."""
+        return self.command(slug, "post_message", {"text": text, "kind": kind, "attachments": list(attachments or [])}, cursor=self.cursor)
+
+    def recall(self, slug: str, media_id: str, *, bin: str | None = None, reason: str | None = None) -> dict:
+        """Put a bin back to the recipe that made a take: workflow, prompt, negative, references
+        with their handles, loras. The recipe is read from the media's record (or the file), so
+        nothing has to be asked of anyone. Returns the command result with ``recipe`` attached;
+        seed and length are the caller's to reuse (``generate --params``, ``set_bin_field``)."""
+        rec = self.recipe(slug, media_id)
+        if not rec.get("found"):
+            raise ThmError(409, "not_a_take", f"{media_id} has no recipe: it was not generated", {})
+        target = bin or rec.get("bin")
+        if not target:
+            raise ThmError(409, "no_bin", f"{media_id} was made in no bin still here; pass one", {})
+        refs = [{"media": m, "handle": h} for m, h in zip(rec.get("references") or [], rec.get("handles") or [])]
+        payload: dict[str, Any] = {
+            "bin": target, "from_media": media_id, "workflow": rec.get("workflow"), "prompt": rec.get("prompt", ""),
+            "negative": rec.get("negative", ""), "references": refs, "loras": list(rec.get("loras") or []),
+        }
+        if reason:
+            payload["reason"] = reason
+        result = self.command(slug, "recall_generation", payload)
+        return {**result, "recipe": rec}
 
     # -- writes -----------------------------------------------------------------
 
     def command(self, slug: str, name: str, payload: dict | None = None, *, propose: bool = False, cursor: int | None = None) -> dict:
-        return self.post(f"/api/projects/{_q(slug)}/commands/{_q(name)}", dict(payload or {}), propose=propose, cursor=cursor)
+        out = self.post(f"/api/projects/{_q(slug)}/commands/{_q(name)}", dict(payload or {}), propose=propose, cursor=cursor)
+        if isinstance(out, dict) and out.get("mode"):
+            self.mode = out["mode"]
+        return out
 
     def generate(self, slug: str, bin: str, *, propose: bool = False, params: dict | None = None, requested: bool = False, card: bool = False, reason: str | None = None) -> dict:
         """Queue a render of the bin's recipe. Sends the inbox cursor; the server refuses with ``inbox_behind`` when unread items exist."""

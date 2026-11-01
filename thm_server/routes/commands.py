@@ -9,17 +9,23 @@ its messages as ``message`` events and then a ``project`` event.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Query, Request
 from starlette.concurrency import run_in_threadpool
 
-from thm_core import Change, Generation, Media, Message, Project, ProjectStore, close_pending, decide, execute, parse_command, resolve_comfy
+from thm_core import Change, CommandContext, Generation, Media, Message, Project, ProjectStore, close_pending, decide, execute, parse_command, resolve_comfy
+from thm_core import youtube
+from thm_core.commands import mode_token, open_notes
 
+from .. import agent_activity
 from ..deps import ServerState, actor_context, state
-from ..derive import feed_entries
+from ..derive import moved_items, feed_entries
 from ..errors import ApiError
 from ..publish import publish_result
 from ..recover import sweep_bin
-from ..schemas import ClosePendingOut, CommandResultOut, DecisionBody, FeedOut, InboxOut
+from ..jobs import INTERRUPTED_MARKS, to_out
+from ..schemas import ClosePendingOut, CommandResultOut, DecisionBody, FeedOut, InboxOut, InterruptedOut, NotesOut, ResumeOut
 from .uploads import unlink_upload_file
 
 router = APIRouter(prefix="/api/projects/{slug}", tags=["commands"])
@@ -89,11 +95,65 @@ def _refuse_if_busy(st: ServerState, slug: str, project: Project, name: str, bin
         raise ApiError(409, "comfy_unconfigured", str(exc)) from None
 
 
+def _refuse_upload_unconfigured(st: ServerState, name: str, *, propose: bool = False) -> None:
+    """An ``upload_post`` that is about to run needs the YouTube credentials on this server; a
+    proposal does not (the card can wait for them), its approval is checked here again."""
+    if name != "upload_post" or propose:
+        return
+    ok, why = youtube.configured(st.youtube_env)
+    if not ok:
+        raise ApiError(409, "youtube_unconfigured", why)
+
+
+def _approved_upload(store: ProjectStore, project: Project, change_id: str, action: str) -> bool:
+    if action != "approve":
+        return False
+    change = store.read_changes(project).get(change_id)
+    return change is not None and change.command == "upload_post"
+
+
+def _uploads_to_start(result) -> list[str]:
+    """The posts whose ``upload_post`` just landed: the user's own click (no decision), or the
+    user's **approval** of the agent's card. A card still waiting, closed, rejected or replied
+    to never starts a transfer: nothing ran, the post is still a draft."""
+    out: list[str] = []
+    for ch in (result.change, *result.changes):
+        if ch is None or ch.command != "upload_post":
+            continue
+        if ch.decision is not None and ch.decision.status != "approved":
+            continue
+        post_id = result.post or ((ch.payload or {}).get("post") if ch.payload else None)
+        if not post_id:
+            posts = ch.after.get("posts") if isinstance(ch.after, dict) else None
+            post_id = next((p.get("id") for p in posts or [] if isinstance(p, dict) and p.get("status") == "uploading"), None)
+        if post_id:
+            out.append(str(post_id))
+    return out
+
+
 def _out(result, version: int) -> CommandResultOut:
     return CommandResultOut(
         change=result.change, generation=result.generation, warnings=result.warnings, messages=result.messages, project_version=version,
-        changes=result.changes, generations=result.generations,
+        changes=result.changes, generations=result.generations, bin=result.bin, sequence=result.sequence, post=result.post, mode=mode_token(result.project.agent_session),
     )
+
+
+def _connect_takeover(st: ServerState, slug: str, project: Project, name: str, body: dict, ctx_session: str | None = None) -> dict:
+    """A connect on a live session: the agent that owns it (its call names the session) always
+    gets it back -- a server restart or a quiet spell must never lock an agent out of its own
+    session. Anyone else takes it over only when the owner has not been heard for
+    ``agent_activity.GONE_S`` (its harness closed without ``end``), so two agents never drive one
+    project. The server decides, never the caller: ``takeover`` in the body is ignored."""
+    sess = project.agent_session
+    if name != "connect_session" or sess is None or sess.status != "live":
+        return body
+    if ctx_session and ctx_session == sess.id:
+        return {**body, "takeover": True, "rejoin": True}  # the owner coming back, not a takeover
+    if not agent_activity.gone(st, slug, sess):
+        act = st.agent_activity.get(slug)
+        ago = f"{int(act.at and __import__('time').monotonic() - act.at)}s ago" if act else "just now"
+        raise ApiError(409, "session_active", f"another agent is on this session (heard {ago}); it is not yours to take", {"session": sess.id})
+    return {**body, "takeover": True}
 
 
 def _publish(st: ServerState, slug: str, project: Project, result, version: int) -> None:
@@ -111,15 +171,23 @@ async def run_command(slug: str, name: str, request: Request):
     jobs = []
     async with st.registry.lock(slug):
         project = st.registry.get(slug)
+        body = _connect_takeover(st, slug, project, name, body, ctx.session)
         command = parse_command(name, body)
         _refuse_if_busy(st, slug, project, name, _generate_bin_id(name, body), propose=ctx.propose)
+        _refuse_upload_unconfigured(st, name, propose=ctx.propose)
         to_unlink = _media_to_unlink(name, command, project) if name in DELETE_COMMANDS else []
         result = await run_in_threadpool(execute, st.store, project, command, ctx, env=st.env)
+        if name == "connect_session":
+            # the agent is here now, not before, and heard as the session it now holds
+            held = project.agent_session.id if project.agent_session is not None else None
+            agent_activity.note(st, slug, agent_activity.CONNECTING, session=held)
         # a batch the user asked for out loud queues every render it made; a held one waits for release
         jobs = [st.jobs.prepare(slug, project, gen, queued_by=ctx.actor) for gen in result.all_generations() if gen.status != "held"]
         for media in to_unlink:
             if media.id not in project.media_by_id:  # a delete_bin keeps media something else still holds
                 unlink_upload_file(st.store, project, media)
+        for post_id in _uploads_to_start(result):
+            st.uploads.start(slug, project, post_id, ctx)
         version = st.registry.touch(slug)
     _publish(st, slug, project, result, version)
     for job in jobs:
@@ -138,9 +206,13 @@ async def decide_change(slug: str, change_id: str, body: DecisionBody, request: 
         approved = _approved_generate(st.store, project, change_id, body.action)
         if approved is not None:
             _refuse_if_busy(st, slug, project, *approved)
-        result = await run_in_threadpool(decide, st.store, project, change_id, body.action, body.note, ctx, env=st.env, items=items)
+        if _approved_upload(st.store, project, change_id, body.action):
+            _refuse_upload_unconfigured(st, "upload_post")
+        result = await run_in_threadpool(decide, st.store, project, change_id, body.action, body.note, ctx, env=st.env, items=items, hold=body.hold, files=body.files)
         # an approved proposal is the agent's render (a batch's, its renders); the user only let it through
         jobs = [st.jobs.prepare(slug, project, gen, queued_by="agent") for gen in result.all_generations() if gen.status != "held"]
+        for post_id in _uploads_to_start(result):
+            st.uploads.start(slug, project, post_id, CommandContext(actor="agent", session=project.agent_session.id if project.agent_session else None))
         version = st.registry.touch(slug)
     _publish(st, slug, project, result, version)
     for job in jobs:
@@ -192,8 +264,55 @@ async def list_messages(slug: str, request: Request):
 @router.get("/inbox", response_model=InboxOut)
 async def inbox(slug: str, request: Request, cursor: int = 0):
     st = state(request)
-    messages, next_cursor = st.store.read_inbox(st.registry.get(slug), cursor)
-    return InboxOut(messages=messages, cursor=next_cursor)
+    project = st.registry.get(slug)
+    messages, next_cursor = st.store.read_inbox(project, cursor)
+    return InboxOut(messages=messages, cursor=next_cursor, mode=mode_token(project.agent_session))
+
+
+@router.get("/notes", response_model=NotesOut)
+async def notes(slug: str, request: Request):
+    """The user's notes the live session has not accounted for: the agent's to-do list. A note
+    leaves it only through ``answer_notes``; reading the inbox does not close anything."""
+    st = state(request)
+    return NotesOut(notes=open_notes(st.store, st.registry.get(slug)))
+
+
+@router.get("/resume", response_model=ResumeOut)
+async def resume(slug: str, request: Request):
+    """The reconnect summary: the mode, the notes still owed, the renders running or queued,
+    the ones a restart or reboot cut off in the last day, the agent's last post and the project's
+    standing rules. ``connect`` prints it; ``resume`` reads it any time."""
+    st = state(request)
+    project = st.registry.get(slug)
+    live = [to_out(j) for j in st.jobs.for_project(slug) if j.live]
+    live_ids = {j.job for j in live}
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cut_off: list[InterruptedOut] = []
+    for gen in st.store.read_generations(project):
+        if gen.status != "failed" or gen.outputs or gen.id in live_ids:
+            continue
+        notes = [str(w.get("detail") or "") for w in gen.warnings if isinstance(w, dict) and w.get("kind") == "runner"]
+        why = next((n for n in reversed(notes) if any(mark in n for mark in INTERRUPTED_MARKS)), "")
+        if not why:
+            continue
+        try:
+            when = datetime.fromisoformat(str(gen.ts).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when < cutoff:
+            continue
+        b = project.bins_by_id.get(gen.bin)
+        cut_off.append(InterruptedOut(generation=gen.id, bin=gen.bin, bin_name=b.name if b else "", ts=gen.ts, why=why))
+    posts = [m for m in st.store.read_messages(project) if m.kind in ("agent", "blocker")]
+    return ResumeOut(
+        mode=mode_token(project.agent_session),
+        open_notes=open_notes(st.store, project),
+        jobs=live,
+        interrupted=cut_off,
+        last_agent_post=posts[-1] if posts else None,
+        moved=moved_items(project),
+        rules=list(project.rules),
+    )
 
 
 @router.get("/feed", response_model=FeedOut)

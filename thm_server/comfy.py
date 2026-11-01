@@ -110,3 +110,51 @@ def kill_runner(proc: Any | None, pid: int | None) -> None:
             os.kill(int(pid), signal.SIGKILL)
     except Exception:
         pass
+
+
+def restart_comfy(script: str, cwd: str, log_path: Any) -> Any:
+    """Run the user's ComfyUI restart script, detached: it outlives this server (a ``.ps1`` is
+    run through PowerShell with the user's profile, as they run it themselves; anything else is
+    run as a program). Output goes to ``log_path``. Raises when the script is missing."""
+    from pathlib import Path
+
+    path = Path(script)
+    if not path.is_file():
+        raise FileNotFoundError(f"restart script not found: {script}")
+    if path.suffix.lower() == ".ps1":
+        cmd = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(path)]
+    else:
+        cmd = [str(path)]
+    log = Path(log_path)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "DETACHED_PROCESS", 0)
+    else:
+        kwargs["start_new_session"] = True
+    with open(log, "ab") as out:
+        out.write(f"\n==== restart {__import__('datetime').datetime.now().isoformat(timespec='seconds')} ====\n".encode("utf-8"))
+        return subprocess.Popen(cmd, cwd=cwd or None, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **kwargs)
+
+
+def recent_runs(api_base: str, *, max_items: int = 50, timeout_s: float = 10.0, transport=None) -> list[tuple[str, dict]]:
+    """``/history`` entries newest first, for importing a workflow the user ran in ComfyUI.
+    Read-only. Raises on an unreachable ComfyUI."""
+    base = str(api_base).rstrip("/")
+    with httpx.Client(timeout=timeout_s, transport=transport) as client:
+        history = _history_entries(client, base, None, max_items)
+    entries = [(str(pid), e) for pid, e in history.items() if isinstance(e, dict)]
+
+    def created(item: tuple[str, dict]) -> float:
+        prompt = item[1].get("prompt") or []
+        extra = prompt[3] if isinstance(prompt, (list, tuple)) and len(prompt) > 3 and isinstance(prompt[3], dict) else {}
+        return float(extra.get("create_time") or 0)
+
+    # history is oldest-first; the stable sort keeps that order for entries without a time
+    return sorted(reversed(entries), key=created, reverse=True)
+
+
+def run_entry(api_base: str, prompt_id: str, *, timeout_s: float = 10.0, transport=None) -> dict | None:
+    base = str(api_base).rstrip("/")
+    with httpx.Client(timeout=timeout_s, transport=transport) as client:
+        return _history_entries(client, base, prompt_id, 1).get(str(prompt_id))

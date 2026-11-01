@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useParams } from "react-router-dom";
-import { errorText, mediaUrl, thumbUrl, useBin, useCreateClip, useMedia, useProject } from "../api/client";
+import { errorText, mediaUrl, thumbUrl, useBin, useCommand, useCreateClip, useMedia, useProject, useSequence } from "../api/client";
 import type { ClipBody, ClipMode } from "../api/types";
+import { Crumbs } from "../components/Crumbs";
+import { libraryCrumb } from "../layout/useLibraryTab";
 import { Hint } from "../components/Hint";
-import { Tag } from "../components/Tag";
 import { useToast } from "../components/Toast";
 import { Shell } from "../layout/Shell";
 import { useCloseTo } from "../layout/useCloseTo";
@@ -27,12 +28,18 @@ function clamp(v: number): number {
  * truthful preview because `extract_segment`/`extract_still` put `-ss` after `-i` and cut
  * frame-accurately rather than snapping to a keyframe. */
 export function ClipperRoute() {
-  const { slug, binId, mediaId } = useParams();
+  const { slug, binId, mediaId: routeMediaId, seqId } = useParams();
   const toast = useToast();
 
+  // sequence mode (`/s/:seqId/clip/:binId`): the item's selected take is the source, and the
+  // result is a trim on the sequence item, never a new clip in the bin
+  const seq = useSequence(slug, seqId);
+  const seqItem = seqId ? seq.data?.items.find((i) => i.bin === binId) : undefined;
+  const mediaId = seqId ? seqItem?.media?.id : routeMediaId;
   const media = useMedia(slug, mediaId);
   const bin = useBin(slug, binId);
   const createClip = useCreateClip(slug);
+  const command = useCommand(slug);
 
   const [mode, setMode] = useState<ClipMode>("segment");
   const [inPct, setInPct] = useState(18);
@@ -41,13 +48,31 @@ export function ClipperRoute() {
   /** which end of the segment the preview is parked on — whichever you moved last */
   const [handle, setHandle] = useState<"in" | "out">("in");
   const [playing, setPlaying] = useState(false);
+  // the item's current trim seeds the sliders once, when the take's length is known
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!seqItem || seeded.current) return;
+    const len = seqItem.media?.duration_s;
+    if (!len) return;
+    seeded.current = true;
+    const dropped = seqItem.trim_dropped;
+    const head = dropped ? 0 : seqItem.head_s;
+    const tail = dropped ? 0 : seqItem.tail_s;
+    setInPct(clamp((head / len) * 100));
+    setOutPct(clamp(((len - tail) / len) * 100));
+  }, [seqItem]);
 
   const projectPath = `/p/${encodeURIComponent(slug ?? "")}`;
-  const returnPath = binId ? `${projectPath}/b/${encodeURIComponent(binId)}` : projectPath;
+  const seqPath = seqId ? `${projectPath}/s/${encodeURIComponent(seqId)}` : null;
+  const returnPath = seqPath ?? (binId ? `${projectPath}/b/${encodeURIComponent(binId)}` : projectPath);
   const close = useCloseTo(returnPath);
   // this screen renders its own Shell, so it is outside the veil context: a private project's
   // source video simply never gets a poster (the shell's stylesheet hides the frame on a phone)
-  const veiled = !!useProject(slug).data?.private;
+  const project = useProject(slug);
+  const veiled = !!project.data?.private; // the project is private: silent by default, no poster
+  // a private project's video starts silent; this screen has no player controls, so its own
+  // sound toggle sits on the frame
+  const [soundOn, setSoundOn] = useState(false);
 
   const total = media.data?.duration_s ?? 0;
   const tIn = (total * inPct) / 100;
@@ -55,7 +80,7 @@ export function ClipperRoute() {
   const tPos = (total * framePct) / 100;
   const label =
     mode === "segment"
-      ? `${tIn.toFixed(1)}s – ${tOut.toFixed(1)}s · ${(tOut - tIn).toFixed(1)}s clip of ${total.toFixed(1)}s`
+      ? `${tIn.toFixed(1)}s – ${tOut.toFixed(1)}s · ${(tOut - tIn).toFixed(1)}s ${seqId ? "of" : "clip of"} ${total.toFixed(1)}s`
       : `frame at ${tPos.toFixed(1)}s of ${total.toFixed(1)}s`;
 
   const previewAt = mode === "still" ? tPos : handle === "out" ? tOut : tIn;
@@ -178,6 +203,23 @@ export function ClipperRoute() {
     setMode(next);
   };
 
+  /** Sequence mode: head and tail onto the item as one change; the take in the bin stays whole. */
+  const applyTrim = (full = false) => {
+    if (!seqId || !binId || total <= 0) return;
+    const head = full ? 0 : Math.max(0, Math.round(tIn * 100) / 100);
+    const tail = full ? 0 : Math.max(0, Math.round((total - tOut) * 100) / 100);
+    command.mutate(
+      { name: "set_item_trim", body: { sequence: seqId, bin: binId, head_s: head, tail_s: tail } },
+      {
+        onSuccess: (r) => {
+          toast(r.change?.description ?? "trimmed");
+          close();
+        },
+        onError: (e) => toast(errorText(e)),
+      },
+    );
+  };
+
   const onSave = () => {
     if (!mediaId || !binId) return;
     const body: ClipBody =
@@ -186,7 +228,7 @@ export function ClipperRoute() {
         : { source: mediaId, mode: "still", at_s: tPos, bin: binId };
     createClip.mutate(body, {
       onSuccess: (res) => {
-        toast(`saved → ${res.bin.name} #${(res.bin.media ?? []).length} (${mode === "segment" ? "clip" : "still"}) — selected in the bin`);
+        toast(`saved → ${res.bin.name} #${(res.bin.media ?? []).length} (${mode === "segment" ? "clip" : "still"}) — new in the bin`);
         close();
       },
       onError: (e) => toast(errorText(e)),
@@ -198,17 +240,37 @@ export function ClipperRoute() {
   const ar = media.data?.width && media.data?.height ? media.data.width / media.data.height : 16 / 9;
 
   return (
-    <Shell slug={slug} binId={binId}>
+    <Shell slug={slug} binId={seqId ? undefined : binId}>
       <div className="screen" data-screen-label="Clipper">
         <header className="screen-head">
-          <button type="button" className="back" aria-label="Close" onClick={close}>
-            ✕
-          </button>
-          <b className="screen-title">Clip {media.data ? "media" : "…"}</b>
+          <Crumbs
+            items={
+              seqId
+                ? [
+                    { label: project.data?.name ?? slug ?? "…", to: `/p/${encodeURIComponent(slug ?? "")}`, title: "this project" },
+                    libraryCrumb(slug, "sequences"),
+                    { label: seq.data?.name ?? "…", to: returnPath, title: "the sequence" },
+                    { label: "Clip" },
+                  ]
+                : [
+                    { label: project.data?.name ?? slug ?? "…", to: `/p/${encodeURIComponent(slug ?? "")}`, title: "this project" },
+                    libraryCrumb(slug, "bins"),
+                    { label: bin.data?.bin.name ?? "…", to: returnPath, title: "this bin's gallery" },
+                    { label: "Clip" },
+                  ]
+            }
+          />
           <span className="spacer" />
-          <Tag>CLIPPER</Tag>
         </header>
         <div className="screen-body">
+          {seqItem && (
+            <div className="meta seq-clip-item">
+              {seqItem.shot != null && <span className="shot-no">{seqItem.shot}</span>}
+              <b>{seqItem.name}</b>
+              {seqItem.media?.take ? ` · take ${seqItem.media.take}` : ""}
+            </div>
+          )}
+          {seqId && seq.data && !seqItem && <div className="hint">this bin is no longer in the sequence</div>}
           <div className={`preview clip-source ${playing ? "is-playing" : ""}`} style={{ "--ar": ar } as CSSProperties}>
             {media.data && mediaId && (
               <video
@@ -217,6 +279,7 @@ export function ClipperRoute() {
                 poster={veiled ? undefined : thumbUrl(slug ?? "", mediaId, "poster")}
                 preload="metadata"
                 playsInline
+                muted={veiled && !soundOn}
                 onLoadedMetadata={() => seekTo(previewAt)}
                 onSeeked={onSeeked}
                 onTimeUpdate={() => checkStop()}
@@ -236,16 +299,30 @@ export function ClipperRoute() {
               </button>
             )}
             {total > 0 && <span className="preview-badge">{previewLabel}</span>}
+            {veiled && total > 0 && (
+              <button
+                type="button"
+                className="clip-sound"
+                aria-pressed={soundOn}
+                aria-label={soundOn ? "Mute" : "Unmute"}
+                title={soundOn ? "mute — a private project plays silent by default" : "unmute — a private project plays silent by default"}
+                onClick={() => setSoundOn(!soundOn)}
+              >
+                {soundOn ? "🔊" : "🔇"}
+              </button>
+            )}
           </div>
 
-          <div className="row chips">
-            <button type="button" className={`chip ${mode === "segment" ? "is-on" : ""}`} onClick={() => pickMode("segment")}>
-              ✂ shorter segment
-            </button>
-            <button type="button" className={`chip ${mode === "still" ? "is-on" : ""}`} onClick={() => pickMode("still")}>
-              ◻ still image
-            </button>
-          </div>
+          {!seqId && (
+            <div className="row chips">
+              <button type="button" className={`chip ${mode === "segment" ? "is-on" : ""}`} onClick={() => pickMode("segment")}>
+                ✂ shorter segment
+              </button>
+              <button type="button" className={`chip ${mode === "still" ? "is-on" : ""}`} onClick={() => pickMode("still")}>
+                ◻ still image
+              </button>
+            </div>
+          )}
 
           <div className="card clip-scrub">
             <div className="clip-timeline">
@@ -275,17 +352,50 @@ export function ClipperRoute() {
             <div className="clip-label">{label}</div>
           </div>
 
-          <div className="row">
-            <span className="tag">INTO</span>
-            <b>.{bin.data?.bin.name ?? "…"}</b>
-          </div>
-          <Hint>the clip lands in this bin as ordinary media — usable as a reference anywhere</Hint>
+          {seqId ? (
+            <>
+              <div className="row">
+                <span className="tag">APPLIES TO</span>
+                <b>
+                  {seq.data?.name ?? "…"}
+                  {seqItem ? ` · item ${seqItem.position}` : ""}
+                </b>
+              </div>
+              <Hint>
+                Only this sequence item is trimmed. The take in the bin stays whole.
+                {seqItem && Object.keys(seqItem.agent ?? {}).length > 0 && " Agent settings on this item are kept."}
+              </Hint>
+            </>
+          ) : (
+            <>
+              <div className="row">
+                <span className="tag">INTO</span>
+                <b>{bin.data?.bin.name ?? "…"}</b>
+              </div>
+              <Hint>the clip lands in this bin as ordinary media — usable as a reference anywhere</Hint>
+            </>
+          )}
         </div>
-        <footer className="screen-foot">
-          <button type="button" className="btn-primary btn-block" disabled={createClip.isPending || total <= 0} onClick={onSave}>
-            {createClip.isPending ? "saving…" : mode === "segment" ? "Save clip to bin" : "Save still to bin"}
-          </button>
-        </footer>
+        {seqId ? (
+          <footer className="screen-foot is-split">
+            <button type="button" className="btn-outline" disabled={command.isPending || total <= 0} onClick={() => applyTrim(true)} title="no trim: the whole take plays">
+              Full take
+            </button>
+            <span className="spacer" />
+            <button type="button" className="btn-outline" onClick={close}>
+              Cancel
+            </button>
+            <button type="button" className="btn-primary" disabled={command.isPending || total <= 0 || !seqItem} onClick={() => applyTrim()}>
+              {command.isPending ? "applying…" : "Apply trim"}
+            </button>
+          </footer>
+        ) : (
+          <footer className="screen-foot">
+            <button type="button" className="btn-primary btn-block" disabled={createClip.isPending || total <= 0} onClick={onSave}>
+              {createClip.isPending ? "saving…" : mode === "segment" ? "Save clip to bin" : "Save still to bin"}
+            </button>
+          </footer>
+        )}
       </div>
     </Shell>
   );

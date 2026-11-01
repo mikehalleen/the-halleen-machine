@@ -90,6 +90,7 @@ LORA_LOW = "lora_low"
 SLOWMO_PRIMER = "slowmo_primer"
 PARTNER_NODE = "partner_node"
 VIDEO_REFERENCE = "video_reference"
+IS_DRAFT = "is_draft"
 
 SAMPLER_CHAIN_CLASSES = frozenset({"KSampler", "KSamplerAdvanced"})
 LATENT_UPSTREAM_KEYS = ("latent_image", "latent", "samples")
@@ -126,6 +127,7 @@ CONTROL_TAGS: dict[str, list[str]] = {
     SLOWMO_PRIMER: ["THM-SlowMoPrimer"],
     PARTNER_NODE: ["THM-PartnerNode"],
     VIDEO_REFERENCE: ["THM-VideoReference", "THM-ReferenceVideo"],  # same: accepted, not documented
+    IS_DRAFT: ["THM-IsDraft"],
 }
 
 _DEPRECATED_REFERENCE_TAG_PREFIXES = (
@@ -168,6 +170,9 @@ PARTNER_FRAME_COUNT_KEYS = ("length", "frame_count", "num_frames", "frames")
 PARTNER_FRAME_RATE_KEYS = ("frame_rate", "fps")
 PARTNER_WIDTH_KEYS = ("width",)
 PARTNER_HEIGHT_KEYS = ("height",)
+PARTNER_DURATION_KEYS = ("duration",)  # whole seconds (Seedance); Kling's "mode" string is never rewritten
+PARTNER_SEED_KEYS = ("seed",)
+PARTNER_ASPECT_KEYS = ("aspect_ratio", "ratio")
 VideoFrameClipType = Literal["SE", "SO", "OE"]
 
 
@@ -2320,6 +2325,88 @@ def inject_pose_reference_flips(workflow: dict[str, Any], id_conf: dict[str, Any
     return inserted
 
 
+# -- canvas fit: round up to the model's size step, crop back to the request ------------------
+#
+# Every latent model takes a canvas only in steps (LTX 32, Wan/Flux 16, SD-class latents 8) and
+# rounds a size it cannot take DOWN, so a 720-wide request renders 704 and the export pads it.
+# THM's rule: never render smaller than asked. The canvas written into the graph is the request
+# rounded UP to the model's step, and a crop node spliced in before the output node brings the
+# frames back to the exact request. The file lands at the size the project asked for.
+
+SIZE_STEP_BY_CLASS: tuple[tuple[str, int], ...] = (
+    ("LTXV", 32),
+    ("EmptyLTXV", 32),
+    ("LTXAV", 32),
+    ("Wan", 16),
+    ("Flux2", 16),
+    ("EmptyFlux2", 16),
+    ("EmptySD3", 16),
+    ("Hunyuan", 16),
+    ("Qwen", 16),
+    ("Mochi", 16),
+    ("Cosmos", 16),
+    ("EmptyLatentImage", 8),
+)
+DEFAULT_SIZE_STEP = 8
+FIT_CROP_TITLE = "THM-FitCrop"
+# output nodes that take frames on ``images``; the crop goes in front of that link
+FIT_CROP_OUTPUT_CLASSES = ("CreateVideo", "VHS_VideoCombine", "SaveImage", "SaveAnimatedWEBP", "SaveWEBM")
+
+
+def size_step(workflow: dict[str, Any]) -> int:
+    """The coarsest canvas step among the model nodes in the graph (``DEFAULT_SIZE_STEP`` when
+    none is recognised: every ComfyUI latent is at least a multiple of 8)."""
+    step = DEFAULT_SIZE_STEP
+    for _, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        cls = node_class(node)
+        for prefix, n in SIZE_STEP_BY_CLASS:
+            if cls.startswith(prefix):
+                step = max(step, n)
+    return step
+
+
+def round_up_to_step(value: int, step: int) -> int:
+    value, step = int(value), max(1, int(step))
+    return -(-value // step) * step
+
+
+def fit_canvas(workflow: dict[str, Any], width: int, height: int) -> tuple[int, int, int]:
+    """``(render_width, render_height, step)``: the request rounded up to the graph's size step."""
+    step = size_step(workflow)
+    return round_up_to_step(width, step), round_up_to_step(height, step), step
+
+
+def inject_fit_crop(workflow: dict[str, Any], width: int, height: int, render_width: int, render_height: int) -> int:
+    """Splice an ``ImageCrop`` (centered, ``width``x``height``) in front of every output node's
+    ``images`` link when the rendered canvas is larger than the request. Returns the number of
+    crops placed: 0 when nothing needs cropping, or when no output node takes frames (a partner
+    API node saves its own video; its size was never THM's to set)."""
+    width, height = int(width), int(height)
+    render_width, render_height = int(render_width), int(render_height)
+    if (render_width, render_height) == (width, height) or render_width < width or render_height < height:
+        return 0
+    x = (render_width - width) // 2
+    y = (render_height - height) // 2
+    placed = 0
+    for _, node in list(workflow.items()):
+        if not isinstance(node, dict) or node_class(node) not in FIT_CROP_OUTPUT_CLASSES:
+            continue
+        link = (node.get("inputs") or {}).get("images")
+        if not isinstance(link, list) or len(link) < 1:
+            continue
+        crop_id = new_node_id(workflow)
+        workflow[crop_id] = {
+            "inputs": {"image": list(link), "width": width, "height": height, "x": x, "y": y},
+            "class_type": "ImageCrop",
+            "_meta": {"title": FIT_CROP_TITLE},
+        }
+        node["inputs"]["images"] = [crop_id, 0]
+        placed += 1
+    return placed
+
+
 def set_dimensions(workflow: dict[str, Any], width: int, height: int) -> int:
     tagged_count = 0
     for control_node in find_tagged_control_nodes(workflow, IMAGE_SIZE):
@@ -2409,6 +2496,41 @@ def set_seed(workflow: dict[str, Any], seed: int) -> int:
         count += 1
     for _, node in find_nodes_by_class(workflow, "RandomNoise"):
         set_input(node, "noise_seed", int(seed))
+        count += 1
+    return count
+
+
+def supports_draft(workflow: dict[str, Any]) -> bool:
+    """The workflow carries a ``THM-IsDraft`` switch: it has a cheaper draft setting of its own
+    (fewer steps, a distilled model...) that THM can turn on per render."""
+    return bool(find_tagged_control_nodes(workflow, IS_DRAFT))
+
+
+def supports_size(workflow: dict[str, Any]) -> bool:
+    """THM can set this workflow's canvas: a width/height, image-size or video-generator node
+    (tagged, or by its legacy title). A partner API node picks its own size: no canvas to set,
+    so quarter size has nothing to halve."""
+    return any(find_control_nodes(workflow, c) for c in (WIDTH, HEIGHT, IMAGE_SIZE, VIDEO_GENERATOR))
+
+
+def _draft_input_key(node: dict[str, Any]) -> str:
+    """The boolean the switch reads: ``switch`` on ComfyUI's Switch node, else the only boolean
+    input the node has, else ``value`` (a primitive boolean)."""
+    inputs = node.get("inputs") or {}
+    if "switch" in inputs:
+        return "switch"
+    bools = [k for k, v in inputs.items() if isinstance(v, bool)]
+    return bools[0] if len(bools) == 1 else ("value" if "value" in inputs else "switch")
+
+
+def set_draft(workflow: dict[str, Any], draft: bool) -> int:
+    """Set every ``THM-IsDraft`` switch: true takes the workflow's draft branch, false (the
+    default) its full-quality one. Returns how many switches were set; 0 when the workflow has none."""
+    count = 0
+    for control_node in find_tagged_control_nodes(workflow, IS_DRAFT):
+        key = _draft_input_key(control_node.node)
+        set_input(control_node.node, key, bool(draft))
+        print(f"[DRAFT] THM-IsDraft node {control_node.node_id}: {key}={bool(draft)}")
         count += 1
     return count
 
@@ -4137,6 +4259,7 @@ class VideoCapabilities:
     workflow_baked_sigma_schedules: list[dict[str, Any]] = field(default_factory=list)
     has_partner_node: bool = False
     partner_node_classes: list[str] = field(default_factory=list)
+    partner_duration_writable: bool = False  # a partner node carries a whole-seconds duration field
     video_reference_count: int = 0
     video_reference_node_ids: list[str] = field(default_factory=list)
 
@@ -4200,6 +4323,7 @@ def discover_video_capabilities(workflow: dict[str, Any]) -> VideoCapabilities:
         workflow_baked_sigma_schedules=discover_workflow_baked_sigma_schedules(workflow),
         has_partner_node=bool(partner_nodes),
         partner_node_classes=[cn.class_type for cn in partner_nodes],
+        partner_duration_writable=partner_node_has_duration_field(workflow),
         video_reference_count=len(video_refs),
         video_reference_node_ids=[s.node_id for s in video_refs],
     )
@@ -4222,6 +4346,7 @@ class VideoInjectionContext:
     lora_specs: list[LoraSpec] | None = None
     seed_target_title: str | None = None
     seed_exclude_title: str | None = None
+    duration_s: float | None = None  # clip length in seconds; partner nodes with a duration field take it
 
 
 PARTNER_SCALE_TITLE_PREFIX = "Injected_PartnerScale_"
@@ -4285,16 +4410,49 @@ def inject_partner_frame_scalers(workflow: dict[str, Any], width: Any, height: A
     return inserted
 
 
+def _partner_input_key(inputs: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    """The input name on a partner node that carries one of ``keys``.
+
+    A literal match wins. Otherwise a dotted name whose last segment is the key
+    matches: ComfyUI's dynamic-combo nodes (Seedance 2.x) nest their widgets as
+    ``model.prompt``, ``model.duration`` and so on. A nested group entry such as
+    ``model.reference_images.image_1`` never matches a bare key.
+    """
+    for key in keys:
+        if key in inputs:
+            return key
+    for key in keys:
+        for name in inputs:
+            if name.endswith("." + key) and name.count(".") == 1:
+                return name
+    return None
+
+
+def _partner_input_value(inputs: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    name = _partner_input_key(inputs, keys)
+    return inputs.get(name) if name is not None else None
+
+
 def _write_matching_input_if_present(node: dict[str, Any], keys: tuple[str, ...], value: Any) -> bool:
     """Write ``value`` to the first key already present on the node's inputs.
 
     Unlike ``_write_first_matching_input`` this never invents a new field —
     partner API nodes have fixed provider schemas that reject unknown inputs.
+    Dotted ``model.<key>`` names count as present (see ``_partner_input_key``).
     """
     inputs = node.get("inputs") or {}
-    for key in keys:
-        if key in inputs:
-            inputs[key] = value
+    name = _partner_input_key(inputs, keys)
+    if name is None:
+        return False
+    inputs[name] = value
+    return True
+
+
+def partner_node_has_duration_field(workflow: dict[str, Any]) -> bool:
+    """True when a THM-PartnerNode carries a writable whole-seconds duration field."""
+    for control_node in find_control_nodes(workflow, PARTNER_NODE):
+        inputs = control_node.node.get("inputs") or {}
+        if _partner_input_key(inputs, PARTNER_DURATION_KEYS) is not None:
             return True
     return False
 
@@ -4302,8 +4460,9 @@ def _write_matching_input_if_present(node: dict[str, Any], keys: tuple[str, ...]
 def set_partner_node_fields(workflow: dict[str, Any], ctx: "VideoInjectionContext") -> int:
     """Write project-driven values onto THM-PartnerNode inputs when the field exists.
 
-    Enum/opaque provider fields (aspect_ratio, resolution, mode, duration) are
-    never written; they stay workflow-baked.
+    Enum/opaque provider fields (aspect_ratio / ratio, resolution, mode) are never
+    written; they stay workflow-baked. ``duration`` (whole seconds) is written from
+    ``ctx.duration_s`` and ``seed`` from ``ctx.seed`` when the node has the field.
     """
     count = 0
     for control_node in find_control_nodes(workflow, PARTNER_NODE):
@@ -4324,6 +4483,11 @@ def set_partner_node_fields(workflow: dict[str, Any], ctx: "VideoInjectionContex
             count += _write_matching_input_if_present(node, PARTNER_WIDTH_KEYS, int(ctx.width))
         if ctx.height is not None:
             count += _write_matching_input_if_present(node, PARTNER_HEIGHT_KEYS, int(ctx.height))
+        if ctx.duration_s is not None and ctx.duration_s > 0:
+            count += _write_matching_input_if_present(
+                node, PARTNER_DURATION_KEYS, max(1, int(round(float(ctx.duration_s))))
+            )
+        count += _write_matching_input_if_present(node, PARTNER_SEED_KEYS, int(ctx.seed))
     return count
 
 
@@ -4350,27 +4514,29 @@ def derive_partner_metadata(workflow: dict[str, Any]) -> dict[str, Any] | None:
     height: int | None = None
     source_fields: dict[str, Any] = {}
 
-    duration_val = inputs.get("duration")
+    duration_val = _partner_input_value(inputs, PARTNER_DURATION_KEYS)
     if isinstance(duration_val, (int, float)):
         duration_sec = float(duration_val)
         source_fields["duration"] = duration_val
 
-    mode_val = inputs.get("mode")
+    mode_val = _partner_input_value(inputs, ("mode",))
     if duration_sec is None and isinstance(mode_val, str):
         match = _KLING_MODE_DURATION_RE.search(mode_val)
         if match:
             duration_sec = float(match.group(1))
         source_fields["mode"] = mode_val
 
-    if isinstance(inputs.get("width"), (int, float)):
-        width = int(inputs["width"])
-        source_fields["width"] = inputs["width"]
-    if isinstance(inputs.get("height"), (int, float)):
-        height = int(inputs["height"])
-        source_fields["height"] = inputs["height"]
+    width_val = _partner_input_value(inputs, PARTNER_WIDTH_KEYS)
+    height_val = _partner_input_value(inputs, PARTNER_HEIGHT_KEYS)
+    if isinstance(width_val, (int, float)):
+        width = int(width_val)
+        source_fields["width"] = width_val
+    if isinstance(height_val, (int, float)):
+        height = int(height_val)
+        source_fields["height"] = height_val
 
-    resolution_val = inputs.get("resolution")
-    aspect_val = inputs.get("aspect_ratio")
+    resolution_val = _partner_input_value(inputs, ("resolution",))
+    aspect_val = _partner_input_value(inputs, PARTNER_ASPECT_KEYS)
     if isinstance(resolution_val, str):
         source_fields["resolution"] = resolution_val
     if isinstance(aspect_val, str):

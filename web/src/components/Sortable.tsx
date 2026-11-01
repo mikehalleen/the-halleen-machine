@@ -98,7 +98,9 @@ export function SortableItem({ id, children }: { id: string; children: (s: Sorta
   const { swallowClick } = useContext(SortableCtx);
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
   const style: CSSProperties = {
-    transform: CSS.Transform.toString(transform),
+    // translate only: the full transform also scales the moving item to the size of the one it
+    // is over, which squeezes a tall (open) row into a short one's box while it is dragged
+    transform: CSS.Translate.toString(transform),
     transition,
     zIndex: isDragging ? 2 : undefined,
     position: isDragging ? "relative" : undefined,

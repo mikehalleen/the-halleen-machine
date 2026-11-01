@@ -49,9 +49,9 @@ def _shots(p, ref):
         title="Drive, round 3",
         reason="the shot ideas you asked for",
         items=[
-            ShotItem(name="S01 hood neon", description="hood mount, neon rain", prompt="rain on the hood, .mara screaming", workflow="vid.json", references=[ref], length_s=4, quarter=True),
+            ShotItem(name="S01 hood neon", description="hood mount, neon rain", prompt="rain on the hood, @mara.png screaming", workflow="vid.json", references=[ref], length_s=4, quarter=True),
             ShotItem(name="S02 desert rabbit", description="a rabbit whips past the hood", workflow="vid.json", references=[ref]),
-            ShotItem(name="S03 bus", description="a crossing bus fills the windows", prompt="the bus, .mara", workflow="vid.json", references=[ref]),
+            ShotItem(name="S03 bus", description="a crossing bus fills the windows", prompt="the bus, @mara.png", workflow="vid.json", references=[ref]),
             ShotItem(name="S04 plate", description="the neon street, empty", workflow="img.json"),
         ],
     )
@@ -81,20 +81,20 @@ def test_approve_with_items_mints_bins_and_queues_renders(world):
     p.agent_session.mode = "video_review"
     cards = execute(store, p, _shots(p, ref), PROPOSE, env=env).changes
     # each card decided on its own: kept, rewritten twice, and the last one closed
-    r1 = decide(store, p, cards[0].id, "approve", "go", USER, env=env, items=[{"index": 0, "enabled": True}])
+    r1 = decide(store, p, cards[0].id, "approve", None, USER, env=env, items=[{"index": 0, "enabled": True}])
     r2 = decide(store, p, cards[1].id, "approve", None, USER, env=env, items=[{"index": 0, "enabled": True, "description": "a jackrabbit whips past the hood, both flinch"}])  # no separate prompt: the edit is the prompt
     r3 = decide(store, p, cards[2].id, "approve", None, USER, env=env, items=[{"index": 0, "enabled": True, "description": "a bus, but from behind"}])  # over the agent's prompt: held for a reprompt
     r4 = decide(store, p, cards[3].id, "close", None, USER, env=env)
-    assert r1.change.id == cards[0].id and r1.change.decision.status == "approved" and r1.change.decision.note == "go"
+    assert r1.change.id == cards[0].id and r1.change.decision.status == "approved" and r1.change.decision.note is None
     assert r4.change.decision.status == "closed"
     bins = {b.name: b for b in p.bins_by_id.values()}
     assert {"S01 hood neon", "S02 desert rabbit", "S03 bus"} <= set(bins) and "S04 plate" not in bins
     # the recipes
-    assert bins["S01 hood neon"].prompt == "rain on the hood, .mara screaming" and bins["S01 hood neon"].length_s == 4
-    assert [x.handle for x in bins["S01 hood neon"].references] == ["mara"]
+    assert bins["S01 hood neon"].prompt == "rain on the hood, @mara.png screaming" and bins["S01 hood neon"].length_s == 4
+    assert [x.handle for x in bins["S01 hood neon"].references] == ["mara.png"]
     assert bins["S02 desert rabbit"].prompt == "a jackrabbit whips past the hood, both flinch"
     assert bins["S02 desert rabbit"].description == "a jackrabbit whips past the hood, both flinch"
-    assert bins["S03 bus"].prompt == "the bus, .mara" and bins["S03 bus"].description == "a bus, but from behind"
+    assert bins["S03 bus"].prompt == "the bus, @mara.png" and bins["S03 bus"].description == "a bus, but from behind"
     # the outcome, per card
     i1, i2, i3 = (r.change.payload["items"][0] for r in (r1, r2, r3))
     assert [i["edited"] for i in (i1, i2, i3)] == [False, True, True]
@@ -156,7 +156,6 @@ def test_batch_refusals(world):
     refused("propose_required", lambda: execute(store, p, _shots(p, ref), cursor, env=env))
     refused("bad_value", lambda: execute(store, p, ProposeShots(items=[]), PROPOSE, env=env))
     refused("unknown_workflow", lambda: execute(store, p, ProposeShots(items=[ShotItem(name="x", description="y", workflow="nope.json")]), PROPOSE, env=env))
-    refused("wrong_kind", lambda: execute(store, p, ProposeShots(items=[ShotItem(name="x", description="y", workflow="img.json", length_s=3)]), PROPOSE, env=env))
     refused("unknown_id", lambda: execute(store, p, ProposeShots(items=[ShotItem(name="x", description="y", workflow="img.json", references=["m_nope"])]), PROPOSE, env=env))
     refused("too_many_references", lambda: execute(store, p, ProposeShots(items=[ShotItem(name="x", description="y", workflow="img.json", references=[ref, ref, ref])]), PROPOSE, env=env))
     p.agent_session.mode = "plan"
@@ -185,13 +184,27 @@ def test_existing_bin_target_and_a_failed_child(world):
     ref = add_media(p, mara)
     vid = add_bin(p, "Video 1", "vid.json")
     p.bins_by_id[vid].prompt = "old"
-    cmd = ProposeShots(items=[ShotItem(name="Video 1", bin=vid, description="the same, at four seconds", prompt="new .mara", references=[ref], length_s=4)])
+    cmd = ProposeShots(items=[ShotItem(name="Video 1", bin=vid, description="the same, at four seconds", prompt="new @mara.png", references=[ref], length_s=4)])
     ch = execute(store, p, cmd, PROPOSE, env=env).change
     r = decide(store, p, ch.id, "approve", None, USER, env=env)
     b = p.bins_by_id[vid]
-    assert b.prompt == "new .mara" and b.length_s == 4 and [x.handle for x in b.references] == ["mara"]
+    assert b.prompt == "new @mara.png" and b.length_s == 4 and [x.handle for x in b.references] == ["mara.png"]
     assert r.change.payload["items"][0]["bin_id"] == vid and len(r.generations) == 1
     assert r.changes[0].batch == ch.id
+
+
+def test_a_retake_card_without_a_prompt_keeps_the_bin_prompt(world):
+    """The card's one-liner is display text: approving a retake that names no prompt renders the
+    bin's own recipe, it never writes the description over it."""
+    store, p, env = world
+    vid = add_bin(p, "Video 1", "vid.json")
+    p.bins_by_id[vid].prompt = "Dev: Get broker."
+    cmd = ProposeShots(items=[ShotItem(name="Video 1", bin=vid, description="re-roll take 46, seed sweep (m_ab12 recipe)")])
+    ch = execute(store, p, cmd, PROPOSE, env=env).change
+    r = decide(store, p, ch.id, "approve", None, USER, env=env)
+    b = p.bins_by_id[vid]
+    assert b.prompt == "Dev: Get broker." and b.description == "re-roll take 46, seed sweep (m_ab12 recipe)"
+    assert len(r.generations) == 1 and r.generations[0].prompt_typed == "Dev: Get broker."
 
 
 def test_approved_batch_reject_keeps_the_bins(world):

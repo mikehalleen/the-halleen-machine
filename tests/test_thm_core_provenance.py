@@ -88,7 +88,7 @@ def upload_name(path: Path) -> str:
 @pytest.fixture
 def world(tmp_path):
     """A project with img.json (two slots, <Picture n> tokens), a Mara bin holding two uploads, and
-    a Shot bin that references both as .mara and .mara.2."""
+    a Shot bin that references both as @mara.png and @mara.png.2."""
     store = make_store(tmp_path)
     wdir = workflows_dir(tmp_path, {"img.json": image_workflow(2), "other.json": image_workflow(4)}, {"img.thm.toml": IMAGE_SIDECAR})
     project = store.new_project("Rail Dawn Promo")
@@ -230,11 +230,11 @@ def test_reconstruct_fresh_record_from_graph(world):
     assert gen.workflow == "img.json" and gen.recovered_from == take.path
     # quarter: the graph's canvas is half the project's on both sides
     assert gen.params == {"seed": 4242, "width": 1280, "height": 720, "quarter": True, "steps": 8}
-    assert [(r.media, r.handle, r.slot, r.ordinal) for r in gen.references] == [(world.m1, "mara", "10", 1), (world.m2, "mara.2", "11", 2)]
+    assert [(r.media, r.handle, r.slot, r.ordinal) for r in gen.references] == [(world.m1, "mara.png", "10", 1), (world.m2, "mara.png.2", "11", 2)]
     assert gen.references[0].ref.startswith("r_")  # the bin's own reference, since it is still bound there
     assert gen.paths_by_slot == {"10": world.a.as_posix(), "11": world.b.as_posix()}
     assert gen.prompt_submitted == "<Picture 1> and <Picture 2> at the rail\ncrisp photo"
-    assert gen.prompt_typed == ".mara and .mara.2 at the rail"  # tokens back to handles, global prompt off the end
+    assert gen.prompt_typed == "@mara.png and @mara.png.2 at the rail"  # tokens back to handles, global prompt off the end
     assert gen.negative_submitted == "blurry"
     assert [(l.name, l.strength) for l in gen.loras] == [("style.safetensors", 0.7)]
     assert gen.warnings[0]["kind"] == "recovered"
@@ -248,8 +248,8 @@ def test_reconstruct_mints_handles_for_media_the_bin_never_bound(world):
     take = _upload(world, png_with_graph(world.tmp / "in" / "t2.png", g), other)
     rec = reconstruct(world.project, take, read_embedded(take.path), generations=[], workflows_dir=world.wdir)
     gen = rec.generation
-    assert [(r.media, r.handle, r.ref) for r in gen.references] == [(world.m2, "mara", "")]
-    assert gen.prompt_typed == ".mara alone"
+    assert [(r.media, r.handle, r.ref) for r in gen.references] == [(world.m2, "mara.png", "")]
+    assert gen.prompt_typed == "@mara.png alone"
     assert any("stock.png" in w for w in rec.warnings) and gen.params["width"] == 640 and "quarter" not in gen.params
 
 
@@ -264,7 +264,7 @@ def test_reconstruct_length_from_frames_and_rate(world):
 def test_reconstruct_attaches_to_the_failed_generation_by_seed_and_bin(world):
     """The timed-out render's record keeps its handles and typed prompt; the file completes it."""
     failed = Generation(id="g_timedout", bin=world.shot, kind="image", ts="2026-09-15T10:00:00Z", workflow="img.json",
-                        prompt_typed=".mara at the rail", prompt_submitted="<Picture 1> at the rail\ncrisp photo",
+                        prompt_typed="@mara.png at the rail", prompt_submitted="<Picture 1> at the rail\ncrisp photo",
                         params={"width": 1280, "height": 720, "seed": 4242}, status="failed",
                         warnings=[{"kind": "runner", "handle": "", "detail": "prompt x timed out after 3600s"}])
     older = failed.model_copy(update={"id": "g_older", "ts": "2026-09-14T10:00:00Z", "prompt_submitted": "something else"})
@@ -275,7 +275,7 @@ def test_reconstruct_attaches_to_the_failed_generation_by_seed_and_bin(world):
     rec = reconstruct(world.project, take, read_embedded(take.path), generations=[older, other_bin, done, failed], workflows_dir=world.wdir)
     gen = rec.generation
     assert rec.attached and gen.id == "g_timedout" and gen.status == "done" and gen.outputs == [take.id]
-    assert gen.prompt_typed == ".mara at the rail" and gen.params == {"width": 1280, "height": 720, "seed": 4242, "steps": 8}
+    assert gen.prompt_typed == "@mara.png at the rail" and gen.params == {"width": 1280, "height": 720, "seed": 4242, "steps": 8}
     assert gen.warnings[-1]["kind"] == "recovered" and gen.recovered_from == take.path
     # a different seed is a different render: a fresh record
     g2 = rendered_graph({}, seed=1)
@@ -302,7 +302,7 @@ def test_reconstruct_snapshot_workflow_and_paths_win_over_the_graph(world):
     take = _upload(world, png_with_graph(world.tmp / "in" / "t7.png", g, snap), world.shot)
     gen = reconstruct(world.project, take, read_embedded(take.path), generations=[], workflows_dir=world.wdir).generation
     assert gen.workflow == "img.json" and gen.negative_submitted == "haze"
-    assert [(r.media, r.handle) for r in gen.references] == [(world.m2, "mara.2")]
+    assert [(r.media, r.handle) for r in gen.references] == [(world.m2, "mara.png.2")]
     assert gen.params == {"seed": 3, "width": 1280, "height": 720, "quarter": True, "steps": 8}
 
 

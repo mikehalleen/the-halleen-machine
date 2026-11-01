@@ -4,8 +4,9 @@ renders into cards, so every structural change here asks for its card with ``car
 import pytest
 
 from thm_core import Change, CommandContext, CommandRefused, decide, execute
-from thm_core.commands import BindReference, CreateBin, DeleteMedia, Generate, MarkTake, SetBinField, UnbindReference
-from thm_core.models import ChangeTarget, Decision
+from thm_core.commands import BindReference, CreateBin, DeleteMedia, Generate, MarkTake, ReorderReferences, SetBinField, UnbindReference
+from thm_core.commands import clear_unseen_for
+from thm_core.models import ChangeTarget, Decision, Generation, GenerationReference
 from thm_core_fixtures import (
     AGENT,
     USER,
@@ -41,16 +42,34 @@ def _status(store, p, change_id):
     return store.read_changes(p)[change_id].decision.status
 
 
-def test_approve_pending_writes_decision_message(world):
+def test_approve_with_a_note_is_a_reply(world):
     store, p, env = world
     s = add_bin(p, "Video 1", "vid.json", length_s=5)
     ch = execute(store, p, SetBinField(bin=s, field="length_s", value=8, card=True), AGENT, env=env).change
     r = decide(store, p, ch.id, "approve", "apply to the next ones too", USER, env=env)
-    assert r.change.decision.status == "approved" and r.change.decision.note == "apply to the next ones too"
-    assert _status(store, p, ch.id) == "approved"
+    assert r.change.decision.status == "replied" and r.change.decision.note == "apply to the next ones too"
+    assert _status(store, p, ch.id) == "replied"
     last = store.read_messages(p)[-1]
-    assert last.kind == "decision" and last.change == ch.id and last.status == "approved" and last.note == "apply to the next ones too"
-    assert p.bins_by_id[s].length_s == 8
+    assert last.kind == "decision" and last.change == ch.id and last.status == "replied" and last.note == "apply to the next ones too"
+    assert p.bins_by_id[s].length_s == 8  # applied stays applied: the words are the instruction, the agent acts
+    with pytest.raises(CommandRefused) as exc:
+        decide(store, p, ch.id, "reply", None, USER, env=env)
+    assert exc.value.code == "bad_value"
+    # the bare click afterwards is the go, no words
+    r = decide(store, p, ch.id, "approve", None, USER, env=env)
+    assert r.change.decision.status == "approved" and r.change.decision.note is None
+    # a reply on a proposal never runs it; the bare approve later does
+    propose = CommandContext(actor="agent", session=p.agent_session.id, propose=True, now="2026-09-06T10:00:00Z")
+    prop = execute(store, p, SetBinField(bin=s, field="prompt", value="y"), propose, env=env).change
+    r = decide(store, p, prop.id, "reply", "make it z instead", USER, env=env)
+    assert r.change.decision.status == "replied" and p.bins_by_id[s].prompt != "y"
+    r = decide(store, p, prop.id, "approve", None, USER, env=env)
+    assert r.change.decision.status == "approved" and p.bins_by_id[s].prompt == "y"
+    # replied is open: close and reject still work on it
+    other = execute(store, p, SetBinField(bin=s, field="negative", value="blur", card=True), AGENT, env=env).change
+    decide(store, p, other.id, "reply", "hm", USER, env=env)
+    r = decide(store, p, other.id, "reject", "no", USER, env=env)
+    assert r.change.decision.status == "rejected" and p.bins_by_id[s].negative != "blur"
 
 
 def test_reject_settings_change_reverts_field(world):
@@ -75,17 +94,21 @@ def test_reject_bind_removes_reference_keeps_media(world):
     assert p.bins_by_id[s].counters == {}
 
 
-def test_reject_rename_restores_every_referencing_bin(world):
+def test_reject_retitle_restores_the_title_and_a_slug_change_every_referencing_bin(world):
     store, p, env = world
     mara = add_bin(p, "Mara")
     s = add_bin(p, "Image 1", "img.json")
     bind(p, s, add_media(p, mara))
-    p.bins_by_id[s].prompt = ".mara waits"
+    p.bins_by_id[s].prompt = "@mara.png waits"
+    # the agent retitles: a title only, the prompt never moves
     ch = execute(store, p, SetBinField(bin=mara, field="name", value="Mara Vane", card=True), AGENT, env=env).change
-    assert p.bins_by_id[s].prompt == ".mara-vane waits"
+    assert p.bins_by_id[mara].name == "Mara Vane" and p.bins_by_id[s].prompt == "@mara.png waits"
     decide(store, p, ch.id, "reject", None, USER, env=env)
-    assert p.bins_by_id[mara].name == "Mara" and p.bins_by_id[s].prompt == ".mara waits"
-    assert p.bins_by_id[s].references[0].handle == "mara"
+    assert p.bins_by_id[mara].name == "Mara"
+    # the user moves the handle: every referencing bin follows, and the rewrite is one change
+    r = execute(store, p, SetBinField(bin=mara, field="slug", value="mara-vane"), USER, env=env)
+    assert p.bins_by_id[s].prompt == "@mara-vane.png waits" and r.change.target.type == "project"
+    assert p.bins_by_id[s].references[0].handle == "mara-vane.png"
 
 
 def test_reject_on_take_marks_fail_and_keeps_take(world):
@@ -137,16 +160,17 @@ def test_superseded_partial_reverts_only_untouched_fields(world):
     s = add_bin(p, "Image 1", "img.json")
     r1 = bind(p, s, add_media(p, mara))
     bind(p, s, add_media(p, mara))
-    p.bins_by_id[s].prompt = ".mara with .mara.2"
+    p.bins_by_id[s].prompt = "@mara.png with @mara.png.2"
     # unbind moves two recorded fields at once: the references, and the prompt that renumbering rewrote
     ch = execute(store, p, UnbindReference(bin=s, reference=r1.id, card=True), AGENT, env=env).change
     assert set(ch.after) == {"references", "prompt"}
-    assert p.bins_by_id[s].prompt == ".mara with .mara"
+    # the unbound one's mention dangles; the survivor's follows its renumber
+    assert p.bins_by_id[s].prompt == "@mara-unbound.png with @mara.png"
     # the user then edits the prompt themselves, so only the references are still where the change left them
     p.bins_by_id[s].prompt = "a prompt of my own"
     r = decide(store, p, ch.id, "reject", None, USER, env=env)
     assert r.change.decision.status == "superseded"
-    assert [x.handle for x in p.bins_by_id[s].references] == ["mara", "mara.2"]
+    assert [x.handle for x in p.bins_by_id[s].references] == ["mara.png", "mara.png.2"]
     assert p.bins_by_id[s].prompt == "a prompt of my own"
 
 
@@ -157,7 +181,7 @@ def test_a_render_is_never_proposed(world):
     mara = add_bin(p, "Mara")
     s = add_bin(p, "Image 1", "img.json")
     bind(p, s, add_media(p, mara))
-    p.bins_by_id[s].prompt = ".mara"
+    p.bins_by_id[s].prompt = "@mara.png"
     cursor = store.message_cursor(p)
     with pytest.raises(CommandRefused) as exc:
         execute(store, p, Generate(bin=s), CommandContext(actor="agent", inbox_cursor=cursor, propose=True), env=env)
@@ -273,3 +297,67 @@ def test_legacy_full_snapshot_delete_still_reverts_without_losing_newer_media(wo
     assert m in p.media_by_id and newer in p.media_by_id
     assert p.bins_by_id[b1].media == [m, keep] and p.bins_by_id[b2].media == [m]
     assert newer in p.bins_by_id[b3].media
+
+
+def test_a_verdict_on_a_take_card_clears_unseen_of_that_type_only(world):
+    store, p, env = world
+    b = add_bin(p, "Img 1", "img.json")
+    other = add_bin(p, "Img 2", "img.json")
+    t1, t2, t3 = (add_take(p, b, type="image") for _ in range(3))
+    vid = add_take(p, b, type="video")
+    elsewhere = add_take(p, other, type="image")
+    p.bins_by_id[b].unseen = [t1, t2, t3, vid]
+    p.bins_by_id[other].unseen = [elsewhere]
+    ch = execute(store, p, SetBinField(bin=b, field="selected", value=t3, card=True), AGENT, env=env).change
+    decide(store, p, ch.id, "close", None, USER, env=env)
+    assert p.bins_by_id[b].unseen == [t1, t2, t3, vid]  # a close judges nothing
+    decide(store, p, ch.id, "reopen", None, USER, env=env)
+    decide(store, p, ch.id, "reply", "hmm, tweak the hair", USER, env=env)
+    assert p.bins_by_id[b].unseen == [vid]  # a reply is a verdict; the video still wants a look
+    assert p.bins_by_id[other].unseen == [elsewhere]
+    assert t1 in p.bins_by_id[b].media  # forgotten, not deleted
+    # a reject is a verdict too
+    p.bins_by_id[b].unseen = [t1, t2]
+    ch2 = execute(store, p, SetBinField(bin=b, field="selected", value=t2, card=True), AGENT, env=env).change
+    decide(store, p, ch2.id, "reject", None, USER, env=env)
+    assert p.bins_by_id[b].unseen == []
+
+
+def test_clearing_a_take_clears_what_it_was_made_from(world):
+    store, p, env = world
+    chars, keys, vids = (add_bin(p, n, w) for n, w in (("Chars", "img.json"), ("Keys", "img.json"), ("Vid", "vid.json")))
+    char = add_take(p, chars)
+    key = add_take(p, keys)
+    v1, v2 = add_take(p, vids, type="video"), add_take(p, vids, type="video")
+    for out, src, gid in ((key, char, "g_key"), (v1, key, "g_v1"), (v2, key, "g_v2")):
+        store.append_generation(p, Generation(id=gid, bin=p.media_by_id[out].origin.bin, ts="2026-10-09T00:00:00Z", workflow="x.json",
+                                              references=[GenerationReference(ref="r1", media=src, handle="h")], outputs=[out], status="done"))
+        p.media_by_id[out].origin.generation = gid
+    for b, ids in ((chars, [char]), (keys, [key]), (vids, [v1, v2])):
+        p.bins_by_id[b].unseen = list(ids)
+    ch = execute(store, p, SetBinField(bin=vids, field="selected", value=v2, card=True), AGENT, env=env).change
+    decide(store, p, ch.id, "approve", None, USER, env=env)
+    assert all(p.bins_by_id[b].unseen == [] for b in (chars, keys, vids))
+    # the agent's own verb: an assembly contained the key frame
+    p.bins_by_id[keys].unseen = [key]
+    p.bins_by_id[chars].unseen = [char]
+    assert set(clear_unseen_for(store, p, [key])) == {key, char}
+    refused("unknown_id", lambda: clear_unseen_for(store, p, ["m_nope"]))
+
+
+def test_an_unbound_reference_never_lends_its_name_to_a_survivor(world):
+    """@mentions follow media: after an unbind, the removed one's mention dangles (and generate
+    refuses it), the survivor's mention follows its renumber, and positional "Image N" text is
+    never touched by any reference change."""
+    store, p, env = world
+    mara = add_bin(p, "Mara")
+    s = add_bin(p, "Image 1", "img.json")
+    r1 = bind(p, s, add_media(p, mara))
+    r2 = bind(p, s, add_media(p, mara))
+    p.bins_by_id[s].prompt = "Image 1 is @mara.png, Image 2 is @mara.png.2"
+    execute(store, p, ReorderReferences(bin=s, order=[r2.id, r1.id]), USER, env=env)
+    assert p.bins_by_id[s].prompt == "Image 1 is @mara.png, Image 2 is @mara.png.2"
+    execute(store, p, UnbindReference(bin=s, reference=r1.id), USER, env=env)
+    assert p.bins_by_id[s].prompt == "Image 1 is @mara-unbound.png, Image 2 is @mara.png"
+    assert [x.media for x in p.bins_by_id[s].references] == [r2.media]
+    refused("unknown_handle", lambda: execute(store, p, Generate(bin=s), USER, env=env))

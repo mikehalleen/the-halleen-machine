@@ -1,8 +1,8 @@
 {
   "57": {
     "inputs": {
-      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
-      "type": "krea2",
+      "clip_name": "qwen_3_8b_abliterated_v2_bf16.safetensors",
+      "type": "flux2",
       "device": "default"
     },
     "class_type": "CLIPLoader",
@@ -18,7 +18,7 @@
       ],
       "max_length": 1024,
       "sampling_mode": "on",
-      "sampling_mode.temperature": 0.7,
+      "sampling_mode.temperature": 0.3,
       "sampling_mode.top_k": 64,
       "sampling_mode.top_p": 0.95,
       "sampling_mode.min_p": 0.05,

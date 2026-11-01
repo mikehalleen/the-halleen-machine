@@ -26,6 +26,7 @@ next generate without it goes back to the defaults.
 | `scheduler` | str | scheduler name |
 | `width` | int | canvas width; from project defaults unless overridden |
 | `height` | int | canvas height; from project defaults unless overridden |
+| `draft` | bool | the workflow's own draft setting (a `THM-IsDraft` switch); only where `bin` says `draft=supported` |
 
 ## Video params
 
@@ -36,10 +37,12 @@ next generate without it goes back to the defaults.
 | `fps` | float | frame rate; omitted means the workflow's own rate |
 | `length_s` | float | clip length in seconds; from the bin unless overridden; frames = round(length_s * fps) + 1 |
 | `quarter` | bool | draft render: halves both sides of the canvas, a quarter of the pixels |
+| `draft` | bool | the workflow's own draft setting (a `THM-IsDraft` switch: fewer steps, a distilled model...); only where `bin` says `draft=supported`, a no-op elsewhere. Images take it too |
 | `width` | int | canvas width; from project defaults unless overridden |
 | `height` | int | canvas height; from project defaults unless overridden |
 
-`quarter` needs a canvas to halve, so it is a no-op without `width` and
+A draft render on a workflow with a draft setting carries both: `{"quarter": true,
+"draft": true}`. `quarter` needs a canvas to halve, so it is a no-op without `width` and
 `height` (from the project or from you); the halving is a plain integer
 divide. Some workflow families round the frame count down to their own grid,
 so a requested length can land a few frames short.
@@ -51,7 +54,10 @@ warns on an unrecognised key; treat the warning as "this did nothing".
 
 ## What is not a param
 
-- **loras**: `<lora:name:strength>` tags in the prompt, lifted into `bin.loras`.
+- **loras**: `bin.loras`, set with `set_bin_field loras` using names from `loras`. A
+  `<lora:name:strength>` tag in a prompt is lifted into the same field. The server spells each
+  name the way the file is (a dropped extension or folder is filled in when one file matches)
+  and refuses `unknown_lora` when none does.
 - **start and end frame**: reference positions 1 and 2 on a video bin
   (`bind_reference` with `position`), used when the workflow supports them.
 - **negative**: `bin.negative`, merged with the project negative at render time.
@@ -65,16 +71,16 @@ one clause against a fixed roll. Spread exploratory seeds (`10000`, `20000`,
 
 ## The ladder's typical sets
 
-Draft video, proving a direction (rung 1):
+Draft video, proving a direction (rung 1; add `"draft": true` where supported):
 
 ```
-{"quarter": true, "length_s": 3, "seed": 10000}
+{"quarter": true, "draft": true, "length_s": 3, "seed": 10000}
 ```
 
 Draft video, holding the direction over the full length (rung 2):
 
 ```
-{"quarter": true, "seed": 10000}
+{"quarter": true, "draft": true, "seed": 10000}
 ```
 
 Full-size candidate on the seed that held (rung 3):

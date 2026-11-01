@@ -64,11 +64,11 @@ def test_client_drives_session_end_to_end(tmp_path):
         assert made["change"]["decision"]["status"] == "pending" and made["change"]["target"]["type"] == "project"
         bin_id = next(b["id"] for b in agent.bins(slug) if b["name"] == "Dawn")
         assert agent.project(slug)["bins"][0]["id"] == bin_id  # an empty new bin is the newest thing in the project
-        agent.command(slug, "set_bin_field", {"bin": bin_id, "field": "prompt", "value": ".mara in the dawn light"})
+        agent.command(slug, "set_bin_field", {"bin": bin_id, "field": "prompt", "value": "@mara.png in the dawn light"})
         bound = agent.command(slug, "bind_reference", {"bin": bin_id, "media": world.m1})
-        assert bound["change"]["description"].endswith("bound .mara")
+        assert bound["change"]["description"].endswith("bound @mara.png")
         detail = agent.bin(slug, bin_id)
-        assert [r["handle"] for r in detail["references"]] == ["mara"]
+        assert [r["handle"] for r in detail["references"]] == ["mara.png"]
         assert [m["id"] for m in agent.media(slug, bin=world.mara)["items"]] == [world.m2, world.m1]
 
         queued = agent.generate(slug, bin_id)
@@ -144,7 +144,7 @@ def test_cli_json_output_and_state(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert cli.main(["--server", BASE, "--project", slug, "bin", world.video], transport=send) == 0
     out = capsys.readouterr().out
-    assert "Video 1" in out and ".mara" in out and "length_s=8" in out and "tags: style" in out and out.isascii()
+    assert "Video 1" in out and "@mara.png" in out and "length_s=8" in out and "tags: style" in out and out.isascii()
     assert cli.main(["--server", BASE, "--project", slug, "project"], transport=send) == 0
     assert "Video 1" in capsys.readouterr().out
 

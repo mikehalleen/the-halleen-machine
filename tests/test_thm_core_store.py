@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from thm_core import Change, Generation, Message, ProjectStore, SchemaVersionError, upgrade_v3
+from thm_core import Change, Generation, Message, ProjectStore, SchemaVersionError, upgrade_v3, upgrade_v4, upgrade_v5
 from thm_core import store as store_mod
 from thm_core.models import ChangeTarget
 from thm_core_fixtures import add_bin, add_media, bind, make_project, make_store
@@ -26,7 +26,7 @@ def test_save_then_load_returns_equal_project(tmp_path):
     again = store.load("rail-dawn-promo")
     assert again.model_dump(mode="json") == p.model_dump(mode="json")
     assert store.list_projects() == ["rail-dawn-promo"]
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 4
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 6
 
 
 def test_new_project_slug_avoids_existing_file(tmp_path):
@@ -50,7 +50,7 @@ def test_load_refuses_missing_and_future_versions(tmp_path):
     store = make_store(tmp_path)
     (tmp_path / "projects").mkdir()
     (tmp_path / "projects" / "a.json").write_text(json.dumps({"project": {}}), encoding="utf-8")
-    (tmp_path / "projects" / "b.json").write_text(json.dumps({"schema_version": 5, "id": "p", "name": "b"}), encoding="utf-8")
+    (tmp_path / "projects" / "b.json").write_text(json.dumps({"schema_version": 7, "id": "p", "name": "b"}), encoding="utf-8")
     (tmp_path / "projects" / "c.json").write_text(json.dumps({"schema_version": 2, "id": "p", "name": "c"}), encoding="utf-8")
     with pytest.raises(SchemaVersionError) as exc:
         store.load("a")
@@ -124,6 +124,7 @@ def _write_v3(tmp_path):
 
 
 def test_upgrade_v3_maps_every_shot_and_item_to_a_bin():
+    """v3 alone does not touch handles or prompt tokens; that is v4's job."""
     raw = upgrade_v3(json.loads(json.dumps(V3)))
     assert raw["schema_version"] == 4 and "shots" not in raw and "shots_by_id" not in raw and "items_by_id" not in raw
     assert raw["counters"] == {}
@@ -153,8 +154,11 @@ def test_load_upgrades_a_v3_file_and_reads_its_logs(tmp_path):
     store = ProjectStore(projects)
     assert store.list_projects() == ["old"]
     p = store.load("old")
-    assert p.schema_version == 4 and len(p.bins_by_id) == 5
+    assert p.schema_version == 6 and len(p.bins_by_id) == 5
     assert p.bins_by_id["s_vid"].references[1].bin == "s_vid"
+    # v4 on top of v3: handles carry the media extension and the prompt tokens wear the @ prefix
+    assert [r.handle for r in p.bins_by_id["s_vid"].references] == ["ed.png", "video-1.mp4"]
+    assert p.bins_by_id["s_vid"].prompt == "@ed.png at the rail with @video-1.mp4"
     assert p.media_by_id["m_orphan"].origin.bin == "s_deleted"
     # take numbers: the shot's from its counters, the item generation from the log
     assert p.media_by_id["m_take1"].take == 1 and p.media_by_id["m_take2"].take == 2
@@ -168,7 +172,7 @@ def test_load_upgrades_a_v3_file_and_reads_its_logs(tmp_path):
     assert json.loads((projects / "old.json").read_text(encoding="utf-8"))["schema_version"] == 3
     store.save(p)
     on_disk = json.loads((projects / "old.json").read_text(encoding="utf-8"))
-    assert on_disk["schema_version"] == 4 and "shots_by_id" not in on_disk
+    assert on_disk["schema_version"] == 6 and "shots_by_id" not in on_disk
     assert store.load("old").model_dump(mode="json") == p.model_dump(mode="json")
 
 
@@ -325,3 +329,94 @@ def test_store_requires_slug_for_unsaved_project(tmp_path):
     store = ProjectStore(tmp_path / "projects")
     with pytest.raises(ValueError):
         store.project_path(make_project().model_copy(update={"slug": ""}))
+
+
+# -- schema 4 upgrade ------------------------------------------------------------
+
+V4 = {
+    "schema_version": 4,
+    "id": "p_v4",
+    "name": "Mid",
+    "slug": "mid",
+    "bins_by_id": {
+        "b_mara": {"id": "b_mara", "name": "Mara", "workflow": "img.json", "media": ["m1", "m2", "m3"], "created": "2026-08-01T00:00:00Z"},
+        "b_shot": {
+            "id": "b_shot", "name": "Shot", "workflow": "img.json", "created": "2026-08-02T00:00:00Z",
+            "prompt": ".mara walks. .mara.2 waits. .mara.3 sits. .stranger stays. end.",
+            "negative": "no .mara",
+            "references": [
+                {"id": "r1", "media": "m1", "bin": "b_mara", "handle": "mara"},
+                {"id": "r2", "media": "m2", "bin": "b_mara", "handle": "mara.2"},
+                {"id": "r3", "media": "m3", "bin": "b_mara", "handle": "mara.3"},
+            ],
+        },
+    },
+    "media_by_id": {
+        "m1": {"id": "m1", "type": "image", "path": "C:/x/a.png", "origin": {"type": "upload", "bin": "b_mara"}},
+        "m2": {"id": "m2", "type": "video", "path": "C:/x/b.mp4", "origin": {"type": "upload", "bin": "b_mara"}},
+        "m3": {"id": "m3", "type": "image", "path": "C:/x/c.png", "origin": {"type": "upload", "bin": "b_mara"}},
+    },
+}
+
+
+def test_upgrade_v4_adds_extensions_and_rewrites_tokens():
+    """Handles grow the media's extension and renumber per (bin, extension); the bin's own
+    tokens change prefix with them. A dot word nobody was bound to is left as typed."""
+    raw = upgrade_v4(json.loads(json.dumps(V4)))
+    assert raw["schema_version"] == 5
+    shot = raw["bins_by_id"]["b_shot"]
+    assert [r["handle"] for r in shot["references"]] == ["mara.png", "mara.mp4", "mara.png.2"]
+    assert shot["prompt"] == "@mara.png walks. @mara.mp4 waits. @mara.png.2 sits. .stranger stays. end."
+    assert shot["negative"] == "no @mara.png"
+    assert "prompt" not in raw["bins_by_id"]["b_mara"]  # a bin with nothing bound is left alone
+
+
+def test_load_upgrades_a_v4_file_and_save_writes_schema_5(tmp_path):
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    (projects / "mid.json").write_text(json.dumps(V4), encoding="utf-8")
+    store = ProjectStore(projects)
+    p = store.load("mid")
+    assert p.schema_version == 6
+    shot = p.bins_by_id["b_shot"]
+    assert [r.handle for r in shot.references] == ["mara.png", "mara.mp4", "mara.png.2"]
+    assert shot.prompt == "@mara.png walks. @mara.mp4 waits. @mara.png.2 sits. .stranger stays. end." and shot.negative == "no @mara.png"
+    assert json.loads((projects / "mid.json").read_text(encoding="utf-8"))["schema_version"] == 4  # untouched until a write
+    store.save(p)
+    on_disk = json.loads((projects / "mid.json").read_text(encoding="utf-8"))
+    assert on_disk["schema_version"] == 6
+    assert [r["handle"] for r in on_disk["bins_by_id"]["b_shot"]["references"]] == ["mara.png", "mara.mp4", "mara.png.2"]
+    assert store.load("mid").model_dump(mode="json") == p.model_dump(mode="json")
+
+
+
+def test_upgrade_v5_splits_the_agents_prefixed_names_into_number_and_title():
+    """"P18 please stop" was a series letter, a number and the title in one string, and the
+    handle was minted from all of it. The upgrade keeps that handle (the slug is frozen to
+    what it already was, so no prompt token moves) and makes the number the shot's own:
+    lettered variants and duplicates take the next number above the highest."""
+    raw = {
+        "schema_version": 5, "id": "p", "name": "X", "slug": "x", "counters": {},
+        "bins_by_id": {
+            "b1": {"id": "b1", "name": "P18 please stop", "prompt": "@p18-please-stop.png and @jim.png"},
+            "b2": {"id": "b2", "name": "P21b the moment"},
+            "b3": {"id": "b3", "name": "S03 hood urban bus"},
+            "b4": {"id": "b4", "name": "P18 again"},
+            "b5": {"id": "b5", "name": "Jim", "tags": ["character"]},
+            "b6": {"id": "b6", "name": "Pose 4"},
+        },
+    }
+    out = upgrade_v5(json.loads(json.dumps(raw)))
+    bins = out["bins_by_id"]
+    assert out["schema_version"] == 6
+    assert (bins["b1"]["shot"], bins["b1"]["name"], bins["b1"]["slug"]) == (18, "please stop", "p18-please-stop")
+    assert bins["b1"]["prompt"] == "@p18-please-stop.png and @jim.png"
+    # the P series is the narrative the user knows: its numbers stay; the S series (an earlier
+    # list of test clips), the duplicate 18 and the lettered 21b are numbered above the highest
+    assert (bins["b3"]["shot"], bins["b3"]["name"]) == (20, "hood urban bus")
+    assert bins["b4"]["shot"] == 19 and bins["b2"]["shot"] == 21
+    assert bins["b5"].get("shot") is None and bins["b5"]["slug"] == "jim" and bins["b5"]["name"] == "Jim"
+    assert bins["b6"].get("shot") is None and bins["b6"]["name"] == "Pose 4"  # not the P<n> pattern
+    assert out["counters"]["shot"] == 21
+    # idempotent: a second pass changes nothing
+    assert upgrade_v5(json.loads(json.dumps(out))) == out

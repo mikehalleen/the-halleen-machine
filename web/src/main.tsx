@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles/tokens.css";
 import "./styles/base.css";
+import "./styles/sequence.css";
 import { trackVisualViewport } from "./layout/viewport";
 
 // Theme attributes on <body>, read by tokens.css alone: dark / cyan / charcoal / outlined are

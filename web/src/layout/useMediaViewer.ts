@@ -3,6 +3,10 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { canGoBack } from "./history";
 
 export const VIEW_PARAM = "view";
+/** Reference mode: the viewer was opened from a reference tile on bin `vfor`, reference `vref`;
+ * it pages the bound media's bin and can swap that reference in place. */
+export const VIEW_FOR_PARAM = "vfor";
+export const VIEW_REF_PARAM = "vref";
 
 /**
  * The full-screen media preview lives in the URL as `?view=<slug>/<media id>`, so the
@@ -18,12 +22,22 @@ export function useMediaViewer() {
   const slash = raw ? raw.indexOf("/") : -1;
   const slug = raw && slash > 0 ? raw.slice(0, slash) : null;
   const id = raw && slash > 0 ? raw.slice(slash + 1) : null;
+  const refFor = raw ? params.get(VIEW_FOR_PARAM) : null;
+  const refId = raw ? params.get(VIEW_REF_PARAM) : null;
 
+  /** `replace` swaps the media showing without stacking a history entry: stepping off a media
+   * that no longer exists (deleted here) must not leave it behind for the browser's back. A
+   * step keeps the reference mode it is in; a fresh open is in it only when `extra` says so. */
   const open = useCallback(
-    (mediaSlug: string, mediaId: string) => {
+    (mediaSlug: string, mediaId: string, replace = false, extra?: Record<string, string>) => {
       const next = new URLSearchParams(location.search);
+      if (!replace) {
+        next.delete(VIEW_FOR_PARAM);
+        next.delete(VIEW_REF_PARAM);
+      }
+      for (const [k, v] of Object.entries(extra ?? {})) next.set(k, v);
       next.set(VIEW_PARAM, `${mediaSlug}/${mediaId}`);
-      navigate({ pathname: location.pathname, search: `?${next}` });
+      navigate({ pathname: location.pathname, search: `?${next}` }, { replace });
     },
     [location.pathname, location.search, navigate],
   );
@@ -36,10 +50,12 @@ export function useMediaViewer() {
     }
     const next = new URLSearchParams(location.search);
     next.delete(VIEW_PARAM);
+    next.delete(VIEW_FOR_PARAM);
+    next.delete(VIEW_REF_PARAM);
     navigate({ pathname: location.pathname, search: next.toString() ? `?${next}` : "" }, { replace: true });
   }, [raw, location.pathname, location.search, navigate]);
 
-  return { slug, id, open, close };
+  return { slug, id, refFor, refId, open, close };
 }
 
 /**

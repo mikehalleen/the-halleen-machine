@@ -36,6 +36,19 @@ def make_tiny_mp4(path: Path) -> Path | None:
     return path
 
 
+def make_tiny_audio(path: Path, *, seconds: float = 1.0, hz: int = 440) -> Path | None:
+    """A short mono sine at 44.1 kHz via ffmpeg (``.wav`` or ``.mp3`` by the suffix), or None
+    when ffmpeg/ffprobe are missing."""
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency={hz}:duration={seconds}", "-ac", "1", "-ar", "44100", str(path)],
+        check=True, capture_output=True, timeout=60,
+    )
+    return path
+
+
 def seeded_world(tmp_path: Path) -> SimpleNamespace:
     """A saved project with three bins: Mara (two uploads), Video 1 (vid.json, 5s, both uploads
     bound), and Image 1 (img.json, one take, selected)."""
@@ -64,7 +77,7 @@ def seeded_world(tmp_path: Path) -> SimpleNamespace:
     create_image = CreateBin(bin_name="Image 1", workflow="img.json")
     execute(store, project, create_image, USER, env=env)
     image = create_image._created
-    execute(store, project, SetBinField(bin=video, field="prompt", value=".mara at the rail"), USER, env=env)
+    execute(store, project, SetBinField(bin=video, field="prompt", value="@mara.png at the rail"), USER, env=env)
     execute(store, project, BindReference(bin=video, media=m1.id), USER, env=env)
     execute(store, project, BindReference(bin=video, media=m2.id), USER, env=env)
 

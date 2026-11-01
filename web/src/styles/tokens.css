@@ -92,11 +92,13 @@
   --sel-fg: var(--on-accent);
   --sel-line: var(--accent);
 
-  --w-sidebar: 232px;
+  /* 232px up to a 1160 desk, then a fifth of the screen, to 440px: room for longer names.
+     The user's drag (PaneResizer) overrides it on the shell body */
+  --w-sidebar: clamp(232px, 20vw, 440px);
   --w-slideover: 500px; /* three 16:9 picker tiles (80px tall, ~145px wide) plus gaps and padding */
-  /* the agent rail: 520px on a 1440 desk, never under the handoff's 380px floor; a push
-     column, so the canvas keeps what is left */
-  --w-rail: clamp(380px, 36vw, 520px);
+  /* the agent rail: 520px on a 1440 desk, more on a wider one, never under the handoff's 380px
+     floor; a push column, so the canvas keeps what is left. Draggable like the sidebar */
+  --w-rail: clamp(380px, 36vw, 680px);
   --h-bar: 40px;
 
   --r-card: 8px;

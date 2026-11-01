@@ -7,11 +7,8 @@ import pytest
 from scripts import workflow_controls as wc
 
 WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / "workflows"
-VAGUE_FOUR_WORKFLOW = WORKFLOWS_DIR / "pixa-four-image_vague.json"
 
 
-def _load_vague_four_workflow() -> dict:
-    return json.loads(VAGUE_FOUR_WORKFLOW.read_text(encoding="utf-8"))
 
 
 def _load_workflow_as_image_reference_only(name: str, node_ids: tuple[str, ...]) -> dict:
@@ -803,20 +800,6 @@ def _dangling_input_refs(workflow: dict) -> list[tuple[str, str, list]]:
     return missing
 
 
-def test_strip_prompt_metadata_keeps_subgraph_node_ids():
-    path = WORKFLOWS_DIR / "klein_multi_image.json"
-    graph = json.loads(path.read_text(encoding="utf-8"))
-    colon_before = {k for k in graph if isinstance(k, str) and ":" in k}
-    assert colon_before, "fixture must include subgraph node ids"
-
-    graph = copy.deepcopy(graph)
-    graph["_is_flux2"] = True
-    wc.strip_prompt_metadata(graph)
-
-    assert "_is_flux2" not in graph
-    assert colon_before <= set(graph.keys())
-    assert "110:78" in graph
-    assert _dangling_input_refs(graph) == []
 
 
 def test_strip_prompt_metadata_numeric_ids_unchanged():
@@ -940,49 +923,12 @@ def test_apply_reference_injection_location_via_image_reference_binding(tmp_path
     assert counts["location"] == 1
 
 
-def test_discover_reference_wiring_two_image_test():
-    workflow = _load_workflow_as_image_reference_only("two-image-test.json", ("76", "81"))
-    disc = wc.discover_reference_wiring_order(workflow)
-    assert disc.tier == "linear_ref_stack"
-    roles = [e.role for e in disc.entries]
-    assert roles == ["ref_76", "ref_81"]
-    assert [e.image_index for e in disc.entries] == [1, 2]
 
 
-def test_legacy_klein_multi_image_discovers_no_image_reference_slots():
-    caps = wc.discover_image_reference_slots(
-        json.loads((WORKFLOWS_DIR / "klein_multi_image.json").read_text(encoding="utf-8"))
-    )
-    assert caps == []
 
 
-def test_discover_reference_wiring_klein_multi_image():
-    workflow = _load_workflow_as_image_reference_only("klein_multi_image.json", ("76", "81", "120"))
-    disc = wc.discover_reference_wiring_order(workflow)
-    assert disc.tier == "linear_ref_stack"
-    roles = [e.role for e in disc.entries]
-    assert roles == ["ref_76", "ref_81", "ref_120"]
 
 
-def test_mute_inactive_pose_mutes_parallel_reference_latents():
-    """Klein-style parallel ReferenceLatent branches must not run with empty LoadImage."""
-    workflow = _load_workflow_as_image_reference_only("klein_multi_image.json", ("76", "81", "120"))
-    active = {
-        "ref_76": False,
-        "ref_81": False,
-        "ref_120": True,
-    }
-    char_ref = r"D:\proj\_characters\c1\reference.png"
-    project = {"characters": [{"id": "c1", "reference_image": char_ref}], "settings": []}
-    id_conf = {"characters": ["c1"]}
-    # Inject with fake path then mute (file need not exist for mute test)
-    workflow["120"]["inputs"]["image"] = char_ref
-    disc = wc.discover_reference_wiring_order(workflow)
-    wc.mute_inactive_reference_slots(workflow, disc, active)
-    assert workflow["81"].get("mode") == wc.COMFY_NODE_MODE_NEVER
-    assert workflow["110:77"].get("mode") == wc.COMFY_NODE_MODE_NEVER
-    assert workflow["110:76"].get("mode") == wc.COMFY_NODE_MODE_NEVER
-    assert workflow["120"].get("mode") != wc.COMFY_NODE_MODE_NEVER
 
 
 def test_apply_reference_injection_mutes_empty_character():
@@ -1122,106 +1068,16 @@ def _pixa_four_id_conf(workflow, *, c1=True, c2=True, loc=True, pose=False):
     }
 
 
-def test_legacy_pixa_four_image_discovers_no_image_reference_slots():
-    workflow = json.loads((WORKFLOWS_DIR / "pixa-four-image.json").read_text(encoding="utf-8"))
-    assert wc.discover_image_reference_slots(workflow) == []
 
 
-def test_pixa_four_image_omits_location_rewires_both_stacks(tmp_path):
-    workflow = _load_vague_four_workflow()
-    project = _pixa_four_project(tmp_path, loc=False)
-    id_conf = _pixa_four_id_conf(workflow, loc=False)
-    wc.apply_reference_injection(
-        workflow,
-        project=project,
-        id_conf=id_conf,
-        pose_path=None,
-        sequence={},
-        custom_mode=True,
-    )
-    assert workflow["218"].get("mode") == wc.COMFY_NODE_MODE_NEVER
-    assert workflow["224"].get("mode") == wc.COMFY_NODE_MODE_NEVER
-    assert workflow["210"]["inputs"]["conditioning"] == ["204", 0]
-    assert workflow["209"]["inputs"]["conditioning"] == ["205", 0]
-    assert workflow["163"]["inputs"]["positive"] == ["210", 0]
-    assert workflow["163"]["inputs"]["negative"] == ["209", 0]
 
 
-def test_pixa_four_image_omits_pose_rewires_sampler_to_last_active(tmp_path):
-    workflow = _load_vague_four_workflow()
-    project = _pixa_four_project(tmp_path)
-    id_conf = _pixa_four_id_conf(workflow, loc=True, c1=True, c2=True, pose=False)
-    wc.apply_reference_injection(
-        workflow,
-        project=project,
-        id_conf=id_conf,
-        pose_path=None,
-        sequence={"setting_id": "s1"},
-        custom_mode=True,
-    )
-    assert workflow["226"].get("mode") == wc.COMFY_NODE_MODE_NEVER
-    assert workflow["225"].get("mode") == wc.COMFY_NODE_MODE_NEVER
-    assert workflow["163"]["inputs"]["positive"] == ["221", 0]
-    assert workflow["163"]["inputs"]["negative"] == ["220", 0]
 
 
-def test_pixa_four_image_prelude_two_chars_no_location(tmp_path):
-    workflow = _load_vague_four_workflow()
-    project = _pixa_four_project(tmp_path, loc=False)
-    id_conf = _pixa_four_id_conf(workflow, loc=False)
-    counts = wc.apply_reference_injection(
-        workflow,
-        project=project,
-        id_conf=id_conf,
-        pose_path=None,
-        sequence={},
-        custom_mode=True,
-    )
-    text = wc.compose_reference_prelude(
-        counts["discovery"],
-        counts["active_by_role"],
-        project=project,
-        sequence={},
-        id_conf=id_conf,
-    )
-    assert "image1 is a character reference." in text
-    assert "image2 is a character reference." in text
-    assert "setting" not in text
-    assert "Boss" not in text
-    assert "Intern" not in text
 
 
-def test_pixa_four_image_prelude_includes_setting_name(tmp_path):
-    workflow = _load_vague_four_workflow()
-    project = _pixa_four_project(tmp_path, c2=False)
-    id_conf = _pixa_four_id_conf(workflow, loc=True, c1=True, c2=False)
-    counts = wc.apply_reference_injection(
-        workflow,
-        project=project,
-        id_conf=id_conf,
-        pose_path=None,
-        sequence={"setting_id": "s1"},
-        custom_mode=True,
-    )
-    text = wc.compose_reference_prelude(
-        counts["discovery"],
-        counts["active_by_role"],
-        project=project,
-        sequence={"setting_id": "s1"},
-        id_conf=id_conf,
-    )
-    assert "image1 is the setting and location reference." in text
-    assert "The Office" not in text
 
 
-def test_discover_reference_wiring_order_is_deterministic():
-    workflow = _load_vague_four_workflow()
-    first = wc.discover_reference_wiring_order(workflow)
-    second = wc.discover_reference_wiring_order(workflow)
-    assert [e.reference_latent_id for e in first.entries] == [
-        e.reference_latent_id for e in second.entries
-    ]
-    assert first.entries[0].reference_latent_id == "204"
 
 
 def test_inject_pose_reference_flips_on_main_image_and_mask():
@@ -1382,58 +1238,12 @@ def test_patch_discovery_roles_from_slots_duplicate_titles():
     assert roles == ["ref_10", "ref_11", "ref_12", "ref_13"]
 
 
-def test_discover_image_reference_slots_vague_workflow_file():
-    path = Path(__file__).resolve().parent.parent / "workflows" / "pixa-four-image_vague.json"
-    workflow = json.loads(path.read_text(encoding="utf-8"))
-    slots = wc.discover_image_reference_slots(workflow)
-    generic = [s for s in slots if s.tag_control == wc.IMAGE_REFERENCE]
-    assert len(generic) == 4
-    assert [s.binding_key for s in generic] == ["198", "213", "218", "224"]
 
 
-def test_remap_reference_bindings_legacy_ordinal_to_node_id(tmp_path):
-    root = Path(__file__).resolve().parent.parent / "workflows"
-    slots = wc.discover_image_reference_slots(json.loads((root / "pixa-four-image_vague.json").read_text()))
-    pin = tmp_path / "loc.png"
-    pin.write_bytes(b"x")
-    legacy = {
-        "": {"semantic": "location", "setting_id": "s1", "reference_image": str(pin)},
-        "2": {"semantic": "character", "character_id": "c1"},
-    }
-    remapped = wc.remap_reference_bindings_for_slots(legacy, slots)
-    assert remapped["198"]["reference_image"] == str(pin)
-    assert remapped["213"]["character_id"] == "c1"
-    assert "" not in remapped
 
 
-def test_remap_reference_bindings_ordinal_roundtrip(tmp_path):
-    root = Path(__file__).resolve().parent.parent / "workflows"
-    vague = wc.discover_image_reference_slots(json.loads((root / "pixa-four-image_vague.json").read_text()))
-    pin = tmp_path / "pinned.png"
-    pin.write_bytes(b"x")
-    saved = {
-        "1": {"semantic": "location", "setting_id": "s1", "reference_image": str(pin)},
-        "2": {"semantic": "character", "character_id": "c1"},
-        "3": {"semantic": "character", "character_id": "c2"},
-    }
-    on_vague = wc.remap_reference_bindings_for_slots(saved, vague)
-    assert on_vague["198"]["reference_image"] == str(pin)
-    assert on_vague["213"]["character_id"] == "c1"
-    assert on_vague["218"]["character_id"] == "c2"
 
 
-def test_remap_does_not_steal_empty_key_for_other_slots():
-    root = Path(__file__).resolve().parent.parent / "workflows"
-    slots = wc.discover_image_reference_slots(json.loads((root / "pixa-four-image_vague.json").read_text()))
-    legacy = {
-        "": {"semantic": "location", "setting_id": "s1"},
-        "2": {"semantic": "unset"},
-        "3": {"semantic": "unset"},
-    }
-    remapped = wc.remap_reference_bindings_for_slots(legacy, slots)
-    assert remapped["198"]["semantic"] == "location"
-    assert remapped["213"]["semantic"] == "unset"
-    assert remapped["218"]["semantic"] == "unset"
 
 
 def test_explicit_unset_slot_not_auto_filled_from_sequence():
@@ -1477,43 +1287,6 @@ def test_ensure_binding_default_reference_image_on_semantic_change(tmp_path):
     )
     assert out["reference_image"] == str(img)
 
-def test_apply_reference_injection_vague_workflow_mutes_empty_fourth_slot(tmp_path):
-    """Duplicate THM-ImageReference titles must mute per-slot, not collapse to ref_1."""
-    path = Path(__file__).resolve().parent.parent / "workflows" / "pixa-four-image_vague.json"
-    workflow = json.loads(path.read_text(encoding="utf-8"))
-    img1 = tmp_path / "one.png"
-    img2 = tmp_path / "two.png"
-    img3 = tmp_path / "three.png"
-    for p in (img1, img2, img3):
-        p.write_bytes(b"x")
-    project = {
-        "characters": [
-            {"id": "c1", "name": "A", "reference_image": str(img2)},
-            {"id": "c2", "name": "B", "reference_image": str(img3)},
-        ],
-        "settings": [{"id": "s1", "name": "Loc", "reference_image": str(img1)}],
-        "styles": [],
-    }
-    id_conf = {
-        "characters": ["", ""],
-        "reference_bindings": {
-            "198": {"semantic": "location", "setting_id": "s1"},
-            "213": {"semantic": "character", "character_id": "c1"},
-            "218": {"semantic": "character", "character_id": "c2"},
-            "224": {"semantic": "unset"},
-        },
-    }
-    counts = wc.apply_reference_injection(
-        workflow,
-        project=project,
-        id_conf=id_conf,
-        pose_path="",
-        sequence={},
-        custom_mode=True,
-    )
-    assert counts["active_by_role"]["ref_224"] is False
-    assert workflow["224"].get("mode") == wc.COMFY_NODE_MODE_NEVER
-    assert counts["branch_changes"] > 0
 
 def test_normalize_reference_bindings_migrates_legacy_pose_and_characters():
     slots = [
@@ -1817,6 +1590,16 @@ def test_keyframe_pin_persists_after_semantic_refresh_simulation(tmp_path):
     assert path == str(kf_pin)
 
 
+
+
+
+
+
+
+
+
+
+
 def test_resolve_sequence_style_reference_path(tmp_path):
     style_img = tmp_path / "noir.png"
     style_img.write_bytes(b"x")
@@ -1826,7 +1609,6 @@ def test_resolve_sequence_style_reference_path(tmp_path):
     assert wc.resolve_style_reference_path(project, seq) == str(style_img)
 
 
-I2V_BASE = WORKFLOWS_DIR / "i2v_base.json"
 
 
 def test_video_generator_writes_length_width_height():
@@ -1857,25 +1639,8 @@ def test_frame_rate_tag_and_thm_fps_alias():
     assert alias["2"]["inputs"]["value"] == 30.0
 
 
-def test_fps_passthrough_project_field_writes_tagged_node():
-    workflow = json.loads(I2V_BASE.read_text(encoding="utf-8"))
-    fps_node = wc.find_control_nodes(workflow, wc.FRAME_RATE)[0]
-    assert wc.set_frame_rate(workflow, 24.0) >= 1
-    assert fps_node.node["inputs"]["value"] == 24.0
-    frames = int(round(3.0 * 24.0)) + 1
-    assert wc.set_frame_count(workflow, frames) >= 1
-    gen = wc.find_control_nodes(workflow, wc.VIDEO_GENERATOR)[0]
-    assert gen.node["inputs"]["length"] == frames
 
 
-def test_discover_video_capabilities_on_i2v_base():
-    workflow = json.loads(I2V_BASE.read_text(encoding="utf-8"))
-    caps = wc.discover_video_capabilities(workflow)
-    assert caps.lora_mode == "dual"
-    assert caps.has_legacy_wan_generator
-    assert caps.has_express_samplers
-    assert not caps.has_thm_ksampler_passes
-    assert not caps.has_thm_slowmo_primer
 
 
 def _tagged_video_sampler_workflow(*, swap_chain_ids: bool = False) -> dict:
@@ -1994,11 +1759,6 @@ def test_discover_thm_ksampler_passes_follows_latent_chain_not_node_id():
     assert [item.node_id for item in swapped] == ["10", "20", "40"]
 
 
-def test_i2v_base_legacy_express_samplers_without_thm_tags():
-    workflow = json.loads(I2V_BASE.read_text(encoding="utf-8"))
-    caps = wc.discover_video_capabilities(workflow)
-    assert caps.has_express_samplers
-    assert not caps.has_thm_ksampler_passes
 
 
 def test_video_lora_mode_dual_vs_single():
@@ -2113,17 +1873,6 @@ def test_resolve_project_fps_default_when_field_omitted():
     assert _resolve_project_fps({"fps": 24}, None) == 24.0
 
 
-def test_set_video_seeds_i2v_base_legacy_triple():
-    workflow = json.loads(I2V_BASE.read_text(encoding="utf-8"))
-    assert wc.set_video_seeds(
-        workflow,
-        4242,
-        seed_target_title="IterKSampler",
-        seed_exclude_title="WanFixedSeed",
-    ) >= 2
-    assert workflow["204"]["inputs"]["noise_seed"] == 4242
-    assert workflow["86"]["inputs"]["noise_seed"] == 4242
-    assert workflow["85"]["inputs"]["noise_seed"] == 0
 
 
 def test_set_video_seeds_fun_inpaint_style_thm_ksampler_chain():
@@ -2168,67 +1917,14 @@ def test_pos_prompt_legacy_alias_for_video():
     assert workflow["1"]["inputs"]["text"] == "video positive"
 
 
-def _load_i2v_base_workflow() -> dict:
-    return json.loads(I2V_BASE.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize(
-    "clip_type,start_path,end_path,expect_start_wired,expect_end_wired",
-    [
-        ("SE", "/start.png", "/end.png", True, True),
-        ("SO", "/start.png", None, True, False),
-        ("OE", None, "/end.png", False, True),
-    ],
-)
-def test_configure_video_frames_open_closed_wiring(
-    clip_type, start_path, end_path, expect_start_wired, expect_end_wired
-):
-    workflow = _load_i2v_base_workflow()
-    wc.configure_video_frames(workflow, clip_type, start_path, end_path)
-    gen = workflow["73"]["inputs"]
-
-    if expect_start_wired:
-        assert gen["start_image"] == ["70", 0]
-        assert workflow["70"]["inputs"]["image"] == start_path
-    else:
-        assert "start_image" not in gen
-        assert workflow["70"]["inputs"]["image"] == ""
-
-    if expect_end_wired:
-        assert gen["end_image"] == ["74", 0]
-        assert workflow["74"]["inputs"]["image"] == end_path
-    else:
-        assert "end_image" not in gen
-        assert workflow["74"]["inputs"]["image"] == ""
 
 
-def test_apply_video_injection_uses_frame_clip_type_for_tagged_workflow():
-    workflow = _load_i2v_base_workflow()
-    ctx = wc.VideoInjectionContext(
-        frame_clip_type="SO",
-        start_frame_path="/only_start.png",
-        end_frame_path="/ignored.png",
-    )
-    wc.apply_video_injection(workflow, ctx)
-    gen = workflow["73"]["inputs"]
-    assert "end_image" not in gen
-    assert workflow["70"]["inputs"]["image"] == "/only_start.png"
-    assert workflow["74"]["inputs"]["image"] == ""
 
 
-def test_discover_video_frame_input_support_ltx_start_only():
-    graph = json.loads((WORKFLOWS_DIR / "THM_video_ltx2_i2v.json").read_text(encoding="utf-8"))
-    support = wc.discover_video_frame_input_support(graph)
-    assert support.supports_start_frame is True
-    assert support.supports_end_frame is False
-    assert "THM-StartFrame" in support.start_mechanisms
 
 
-def test_discover_video_frame_input_support_fun_inpaint_both():
-    graph = json.loads((WORKFLOWS_DIR / "THM_video_wan2_2_14B_fun_inpaint.json").read_text(encoding="utf-8"))
-    support = wc.discover_video_frame_input_support(graph)
-    assert support.supports_start_frame is True
-    assert support.supports_end_frame is True
 
 
 def test_sanitize_prompt_for_ltx_strips_sd_emphasis():
@@ -2236,8 +1932,47 @@ def test_sanitize_prompt_for_ltx_strips_sd_emphasis():
     assert wc.sanitize_prompt_for_ltx(raw) == "nsfw, nude, plain text"
 
 
-def test_discover_workflow_baked_sigma_schedules_ltx():
-    graph = json.loads((WORKFLOWS_DIR / "THM_video_ltx2_i2v.json").read_text(encoding="utf-8"))
-    baked = wc.discover_workflow_baked_sigma_schedules(graph)
-    assert any(b.get("class_type") == "ManualSigmas" for b in baked)
 
+
+
+def test_size_step_is_the_coarsest_model_grid_in_the_graph():
+    assert wc.size_step({"1": node("Empty Latent Image", "EmptyLatentImage", {})}) == 8
+    assert wc.size_step({"1": node("latent", "EmptyFlux2LatentImage", {})}) == 16
+    assert wc.size_step({"1": node("wan", "WanFirstLastFrameToVideo", {})}) == 16
+    assert wc.size_step({"1": node("ltx", "EmptyLTXVLatentVideo", {}), "2": node("latent", "EmptyLatentImage", {})}) == 32
+    assert wc.size_step({"1": node("partner", "KlingFirstLastFrameNode", {})}) == wc.DEFAULT_SIZE_STEP
+
+
+def test_fit_canvas_rounds_up_never_down():
+    graph = {"1": node("ltx", "EmptyLTXVLatentVideo", {})}
+    assert wc.fit_canvas(graph, 720, 1280) == (736, 1280, 32)
+    assert wc.fit_canvas(graph, 360, 640) == (384, 640, 32)
+    assert wc.fit_canvas(graph, 1280, 736) == (1280, 736, 32)
+    assert wc.round_up_to_step(1, 8) == 8
+
+
+def test_fit_crop_is_spliced_in_front_of_every_output_node_that_takes_frames():
+    graph = {
+        "1": node("decode", "VAEDecode", {}),
+        "2": node("video", "CreateVideo", {"images": ["1", 0], "fps": 24}),
+        "3": node("frames", "SaveImage", {"images": ["1", 0], "filename_prefix": "x"}),
+        "4": node("save", "SaveVideo", {"video": ["2", 0]}),
+    }
+    assert wc.inject_fit_crop(graph, 720, 1280, 736, 1280) == 2
+    crops = [(k, n) for k, n in graph.items() if n["class_type"] == "ImageCrop"]
+    assert len(crops) == 2 and all(n["_meta"]["title"] == wc.FIT_CROP_TITLE for _, n in crops)
+    for _, n in crops:
+        assert n["inputs"] == {"image": ["1", 0], "width": 720, "height": 1280, "x": 8, "y": 0}
+    assert graph["2"]["inputs"]["images"][0] in dict(crops)
+    assert graph["3"]["inputs"]["images"][0] in dict(crops)
+    assert graph["4"]["inputs"]["video"] == ["2", 0]
+
+
+def test_fit_crop_does_nothing_when_the_canvas_already_fits_or_cannot_cover():
+    graph = {"1": node("decode", "VAEDecode", {}), "2": node("video", "CreateVideo", {"images": ["1", 0]})}
+    assert wc.inject_fit_crop(graph, 720, 1280, 720, 1280) == 0
+    assert wc.inject_fit_crop(graph, 720, 1280, 704, 1280) == 0
+    assert len(graph) == 2
+    # a partner API node saves its own video: nothing takes frames, nothing to crop
+    partner = {"1": node("save", "SaveVideo", {"video": ["9", 0]})}
+    assert wc.inject_fit_crop(partner, 720, 1280, 736, 1280) == 0

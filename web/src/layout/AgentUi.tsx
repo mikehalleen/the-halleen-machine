@@ -9,6 +9,9 @@ import { createContext, useCallback, useContext, useState, type ReactNode } from
 interface AgentUi {
   railOpen: boolean;
   setRailOpen: (open: boolean) => void;
+  /** The sequence row that is open (its bin id), so a note from the panel is about that item. */
+  openItem: string | null;
+  setOpenItem: (bin: string | null) => void;
 }
 
 const RAIL_KEY = "thm.railOpen";
@@ -25,6 +28,8 @@ function readRailOpen(): boolean {
 const AgentUiContext = createContext<AgentUi>({
   railOpen: true,
   setRailOpen: () => {},
+  openItem: null,
+  setOpenItem: () => {},
 });
 
 export function AgentUiProvider({ children }: { children: ReactNode }) {
@@ -37,9 +42,8 @@ export function AgentUiProvider({ children }: { children: ReactNode }) {
       /* private mode: the default is fine */
     }
   }, []);
-  return (
-    <AgentUiContext.Provider value={{ railOpen, setRailOpen }}>{children}</AgentUiContext.Provider>
-  );
+  const [openItem, setOpenItem] = useState<string | null>(null);
+  return <AgentUiContext.Provider value={{ railOpen, setRailOpen, openItem, setOpenItem }}>{children}</AgentUiContext.Provider>;
 }
 
 export function useAgentUi(): AgentUi {

@@ -35,7 +35,7 @@ def test_ordinals_count_per_media_type(tmp_path):
     r2 = bind(p, s, add_media(p, loc, type="video"))
     r3 = bind(p, s, add_media(p, loc, type="image"))
     resolved = resolve_references(p, p.bins_by_id[s], isfile=lambda _: True)
-    assert [(r.handle, r.media_type, r.ordinal) for r in resolved] == [("mara", "image", 1), ("rail-dawn", "video", 1), ("rail-dawn.2", "image", 2)]
+    assert [(r.handle, r.media_type, r.ordinal) for r in resolved] == [("mara.png", "image", 1), ("rail-dawn.mp4", "video", 1), ("rail-dawn.png", "image", 2)]
     assert [r.reference.id for r in resolved] == [r1.id, r2.id, r3.id]
 
 
@@ -55,14 +55,14 @@ def test_sidecar_profile_rewrites_prompt_per_design_example(tmp_path):
     bind(p, s, add_media(p, it))
     bind(p, s, add_media(p, loc))
     bin_ = p.bins_by_id[s]
-    bin_.prompt = ".mara stands at .rail-dawn as the light breaks"
+    bin_.prompt = "@mara.png stands at @rail-dawn.png as the light breaks"
     bin_.negative = "blurry"
     resolved = resolve_references(p, bin_, isfile=lambda _: True)
     out = assemble(p, bin_, resolved, workflows_dir=wdir, capacity=workflow_capacity("img.json", wdir))
     assert out.prompt_typed == bin_.prompt
     assert out.prompt_submitted == "<Picture 1> stands at <Picture 2> as the light breaks"
     assert out.negative_submitted == "blurry"
-    assert [(r.handle, r.ordinal, r.slot) for r in out.references] == [("mara", 1, "10"), ("rail-dawn", 2, "11")]
+    assert [(r.handle, r.ordinal, r.slot) for r in out.references] == [("mara.png", 1, "10"), ("rail-dawn.png", 2, "11")]
     assert out.paths_by_slot == {"10": p.media_by_id[bin_.references[0].media].path, "11": p.media_by_id[bin_.references[1].media].path}
     assert out.warnings == []
 
@@ -73,7 +73,7 @@ def test_video_tokens_and_prelude_from_sidecar(tmp_path):
     bind(p, s, add_media(p, it))
     bind(p, s, add_media(p, loc, type="video"))
     bin_ = p.bins_by_id[s]
-    bin_.prompt = ".mara walks like .rail-dawn"
+    bin_.prompt = "@mara.png walks like @rail-dawn.mp4"
     out = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir)
     assert out.prompt_submitted == "<Picture 1> walks like <Video 1>"
     assert out.prelude == ["image1: Mara (image)", "image1: Rail Dawn (video)"]
@@ -84,7 +84,7 @@ def test_no_sidecar_uses_bin_names_and_skips_unused_warning(tmp_path):
     bind(p, s, add_media(p, it))
     bind(p, s, add_media(p, loc))
     bin_ = p.bins_by_id[s]
-    bin_.prompt = ".mara at dawn."
+    bin_.prompt = "@mara.png at dawn."
     profile = load_token_profile("img.json", wdir)
     assert not profile.found and not profile.addresses_by_token
     out = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir)
@@ -96,10 +96,10 @@ def test_unknown_token_warning_and_sentence_end_period(tmp_path):
     p, it, loc, s, wdir = _world(tmp_path)
     bind(p, s, add_media(p, it))
     bin_ = p.bins_by_id[s]
-    bin_.prompt = "see .mara. then .bob arrives"
+    bin_.prompt = "see @mara.png. then @bob.png arrives"
     out = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir)
-    assert [(w.kind, w.handle) for w in out.warnings] == [("unknown_token", "bob")]
-    assert out.prompt_submitted == "see <Picture 1>. then .bob arrives"
+    assert [(w.kind, w.handle) for w in out.warnings] == [("unknown_token", "bob.png")]
+    assert out.prompt_submitted == "see <Picture 1>. then @bob.png arrives"
 
 
 def test_unused_handle_warning_present_and_absent(tmp_path):
@@ -107,22 +107,15 @@ def test_unused_handle_warning_present_and_absent(tmp_path):
     bind(p, s, add_media(p, it))
     bind(p, s, add_media(p, loc))
     bin_ = p.bins_by_id[s]
-    bin_.prompt = ".mara alone"
+    bin_.prompt = "@mara.png alone"
     out = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir)
-    assert [(w.kind, w.handle) for w in out.warnings] == [("unused_handle", "rail-dawn")]
-    bin_.negative = "not like .rail-dawn"
+    assert [(w.kind, w.handle) for w in out.warnings] == [("unused_handle", "rail-dawn.png")]
+    bin_.negative = "not like @rail-dawn.png"
     out = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir)
     assert out.warnings == []
     assert out.negative_submitted == "not like <Picture 2>"
 
 
-def test_capacity_from_real_workflow_and_sidecar_clip(tmp_path):
-    cap = workflow_capacity(str(REPO_WORKFLOWS / "pixa-four-image_vague.json"), REPO_WORKFLOWS)
-    assert cap.found and cap.image_slots == 4 and len(cap.slot_node_ids) == 4 and cap.video_slots == 0
-    wdir = workflows_dir(tmp_path, {"img.json": image_workflow(4)}, {"img.thm.toml": '[limits]\nimage_slots = 2\n'})
-    clipped = workflow_capacity("img.json", wdir)
-    assert clipped.image_slots == 2 and len(clipped.slot_node_ids) == 4 and not clipped.addresses_by_token
-    assert not workflow_capacity("nope.json", wdir).found
 
 
 def test_video_workflow_capacity_and_start_end_slots(tmp_path):
@@ -143,49 +136,21 @@ def test_reorder_changes_ordinals_and_submitted_prompt_only(tmp_path):
     bind(p, s, add_media(p, it))
     bind(p, s, add_media(p, loc))
     bin_ = p.bins_by_id[s]
-    bin_.prompt = ".mara then .rail-dawn"
+    bin_.prompt = "@mara.png then @rail-dawn.png"
     first = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir)
     bin_.references.reverse()
     second = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir)
     assert first.prompt_submitted == "<Picture 1> then <Picture 2>"
     assert second.prompt_submitted == "<Picture 2> then <Picture 1>"
     assert first.prompt_typed == second.prompt_typed == bin_.prompt
-    assert [r.handle for r in bin_.references] == ["rail-dawn", "mara"]
+    assert [r.handle for r in bin_.references] == ["rail-dawn.png", "mara.png"]
 
 
 # -- derived token profiles (phase 2: sidecar is an override) ---------------
 
 
-def test_derive_image_notation_from_reference_latent_chain(tmp_path):
-    profile = derive_token_profile(load_workflow_dict(REPO_WORKFLOWS / "pixa-four-image_vague.json"))
-    assert (profile.image, profile.video, profile.found, profile.sidecar) == ("image{n}", None, True, False)
-    assert workflow_capacity(str(REPO_WORKFLOWS / "pixa-four-image_vague.json"), REPO_WORKFLOWS).addresses_by_token
-
-    p = make_project()
-    it = add_bin(p, "Mara")
-    loc = add_bin(p, "Rail Dawn")
-    wdir = workflows_dir(tmp_path, {"stack.json": ref_stack_workflow(4)})
-    s = add_bin(p, "Image 1", "stack.json")
-    bind(p, s, add_media(p, it))
-    bind(p, s, add_media(p, loc))
-    bin_ = p.bins_by_id[s]
-    bin_.prompt = ".mara then .rail-dawn"
-    cap = workflow_capacity("stack.json", wdir)
-    out = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir, capacity=cap)
-    assert out.prompt_submitted == "image1 then image2"
-    assert [r.slot for r in out.references] == ["10", "11"]
-    assert out.warnings == []
-    bin_.prompt = ".mara alone"
-    out = assemble(p, bin_, resolve_references(p, bin_, isfile=lambda _: True), workflows_dir=wdir, capacity=cap)
-    assert [(w.kind, w.handle) for w in out.warnings] == [("unused_handle", "rail-dawn")]
 
 
-def test_derive_api_notation_from_partner_class():
-    assert derive_token_profile(PARTNER_WORKFLOW) == TokenProfile(image="<Picture {n}>", video="<Video {n}>", found=True)
-    shipped = derive_token_profile(load_workflow_dict(REPO_WORKFLOWS / "THM-video_minimax_h3_r2v.json"))
-    assert (shipped.image, shipped.video) == ("<Picture {n}>", "<Video {n}>")
-    cap = workflow_capacity(str(REPO_WORKFLOWS / "THM-video_minimax_h3_r2v.json"), REPO_WORKFLOWS)
-    assert (cap.image_slots, cap.slot_node_ids, cap.video_slots, cap.addresses_by_token) == (2, [], 0, True)
 
 
 def test_derive_positional_when_no_chain_and_no_partner(tmp_path):

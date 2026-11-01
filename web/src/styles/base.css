@@ -81,6 +81,36 @@ video {
   min-height: 0;
 }
 
+/* a side column's drag edge: a hair on screen, a wider grip under the pointer */
+.pane-resizer {
+  flex: none;
+  position: relative;
+  z-index: 5;
+  width: 8px;
+  margin: 0 -4px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-resizer:hover::after,
+.is-resizing-pane .pane-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+/* dragging: the rail follows the pointer, not its open/close animation, and nothing selects */
+.is-resizing-pane .rail {
+  transition: none;
+}
+
+.is-resizing-pane {
+  user-select: none;
+  cursor: col-resize;
+}
+
 .canvas {
   position: relative; /* the library slide-over anchors here, so the sidebar/rail stay clear */
   /* with the rail open the space splits 2:1 after the canvas's own padding and column gap
@@ -91,6 +121,15 @@ video {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: clip;
+}
+
+/* squeezed by a wide sidebar and rail, a screen keeps a usable width anchored at the left and
+   the rail covers the rest, rather than its right-aligned footer spilling over the sidebar */
+@media (min-width: 1120px) {
+  .canvas > * {
+    min-width: 360px;
+  }
 }
 
 .canvas-empty {
@@ -245,6 +284,22 @@ video {
   flex: none;
 }
 
+/* the bar's status dot doubles as a link to ComfyUI: a wider hit area, the dot unchanged */
+.dot-link {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  margin: -4px;
+  border-radius: 50%;
+}
+
+.dot-link:hover .dot,
+.dot-link:focus-visible .dot {
+  box-shadow: 0 0 0 3px var(--sb-line-em);
+}
+
 .dot.is-working {
   background: var(--sb-green);
 }
@@ -312,6 +367,17 @@ video {
   color: var(--sb-muted);
 }
 
+/* the render's names are links to where it lands: plain until hovered */
+a.bar-project,
+a.bar-remote-bin {
+  text-decoration: none;
+}
+
+a.bar-project:hover,
+a.bar-remote-bin:hover {
+  text-decoration: underline;
+}
+
 .bar-queued,
 .bar-phrase,
 .bar-elsewhere,
@@ -371,6 +437,18 @@ video {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+/* both counts open the projects list, where each one is traced to its project */
+a.bar-count.is-link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--sb-line-em);
+  padding-bottom: 1px;
+}
+
+a.bar-count.is-link:hover {
+  color: var(--sb-muted);
 }
 
 .bar-count .dot {
@@ -541,6 +619,34 @@ video {
   white-space: nowrap;
 }
 
+/* the pill gives way before anything leaves the screen: the label ellipsizes, never the chevron */
+.agent-head .mode-pill {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.mode-pill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* draft mode inside the mode menu (phone): under the modes, since it rides with any of them */
+.mode-drafts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--sb-line-card);
+  color: var(--sb-body);
+  cursor: pointer;
+}
+
+.mode-drafts input {
+  margin: 0;
+}
+
 .mode-pill.is-header {
   padding: 3px 10px;
 }
@@ -580,6 +686,24 @@ video {
   color: var(--sb-title);
 }
 
+/* draft mode: a switch beside the mode pill, since it rides with any mode */
+.draft-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--sb-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.draft-toggle input {
+  margin: 0;
+}
+
 .mode-option-check {
   width: 10px;
   color: var(--sb-secondary);
@@ -606,6 +730,7 @@ video {
   gap: 12px;
   padding: 0 16px;
   border-bottom: 1px solid var(--sb-line);
+  min-width: 0;
 }
 
 .agent-title {
@@ -690,6 +815,52 @@ video {
   padding: 16px;
 }
 
+/* the activity row's way to the cards: the oldest still waiting, and the one about the bin on
+   screen, which is a warning -- a note written here would talk past it */
+/* the cards still owed: a pill floating at the bottom of the feed that jumps to the oldest.
+   column-reverse puts the first child at the bottom, so sticky bottom keeps it in view */
+.feed-jump {
+  position: sticky;
+  bottom: 0;
+  align-self: center;
+  z-index: 1;
+  padding: 5px 12px;
+  border: 1px solid var(--sb-line-em);
+  border-radius: 999px;
+  background: var(--sb-panel);
+  color: var(--sb-body);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+}
+
+.agent-doing-card {
+  margin-left: 8px;
+  color: var(--amber);
+  white-space: nowrap;
+}
+
+/* the bin header's warning that the agent already asked about this bin */
+.bin-card-waiting {
+  margin-right: 8px;
+  border-color: var(--amber);
+  color: var(--amber);
+  font-size: 12px;
+}
+
+/* everything older than the open cards and the recent lines, folded into one row */
+.feed-older {
+  align-self: center;
+  padding: 4px 12px;
+  border: 1px dashed var(--sb-line-control);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sb-muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+}
+
 .agent-feed .link {
   color: var(--sb-muted);
 }
@@ -741,12 +912,57 @@ video {
   color: var(--sb-label);
 }
 
+/* what became of a note: still owed (the agent cannot idle on it), or the agent's few words */
+.bubble-open {
+  color: var(--sb-control);
+  font-weight: 700;
+}
+
+/* a note and the agent's reply to it, kept together in order inside the bottom-up feed */
+.bubble-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .bubble-sys {
   align-self: center;
   max-width: 90%;
   font-size: 12px;
   color: var(--sb-muted);
   text-align: center;
+}
+
+/* desktop: the chat pane has room, so its text reads a step larger than on the phone */
+@media (min-width: 760px) {
+  .bubble {
+    font-size: 14.5px;
+  }
+
+  .bubble-sys {
+    font-size: 13px;
+  }
+
+  .bubble-meta {
+    font-size: 12px;
+  }
+}
+
+/* a mode switch: the mode, then what it means, one quiet line each */
+.bubble-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 92%;
+}
+
+.bubble-mode-head {
+  font-weight: 600;
+  color: var(--sb-body);
+}
+
+.bubble-mode-meaning {
+  color: var(--sb-muted);
 }
 
 /* a session boundary: centered mono, rules filling each side */
@@ -888,6 +1104,77 @@ video {
   color: var(--green-text);
 }
 
+/* replied: answered in words, nothing owed -- neither the amber of a verdict nor the green of a go */
+.change-card.is-replied {
+  border-color: var(--sb-line-em);
+}
+
+/* a generate card before its take lands: rendering, not a verdict */
+.change-card.is-rendering {
+  border-color: var(--sb-line-em);
+  background: transparent;
+}
+
+.change-rendering {
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--sb-body);
+}
+
+.change-rendering-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.change-rendering-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: change-rendering-blink 1.2s ease-in-out infinite;
+}
+
+@keyframes change-rendering-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.change-rendering-lost {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* what the agent attached to a line, full size on tap */
+.bubble-attachments {
+  gap: 6px;
+  margin-top: 6px;
+  align-items: flex-start;
+}
+
+/* a chat thumb and, under it, the bin it lives in */
+.bubble-attachment {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 96px;
+}
+
+.bubble-attachment-bin {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .link {
   font-size: 11px;
   font-weight: 700;
@@ -942,11 +1229,35 @@ video {
   font-weight: 600;
 }
 
+/* what the card asks, as the question it is: the first thing read, answered by the Yes under it */
+.change-question {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* under a question the description is the detail, not the headline */
+.change-desc.is-detail {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-2);
+}
+
 .change-reason {
   font-size: 13px;
   line-height: 1.5;
   color: var(--muted-2);
   white-space: pre-wrap;
+  cursor: pointer;
+}
+
+/* two lines at rest; a tap opens the rest */
+.change-reason.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 
 .change-note {
@@ -1030,11 +1341,11 @@ video {
 }
 
 .shot-name {
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .shot-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--sb-muted);
   white-space: nowrap;
 }
@@ -1047,11 +1358,36 @@ video {
 
 .shot-ref {
   display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  font-size: 12px;
   font-family: var(--font-mono);
   color: var(--sb-muted);
+}
+
+/* what a shot waits on: a reference not generated yet, named instead of bound */
+.shot-needs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shot-need {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--amber);
+}
+
+.shot-need.is-ready {
+  color: var(--accent);
+}
+
+/* says what the box under it is: the render's description, not a claim to agree with */
+.shot-desc-label {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--sb-label);
 }
 
 .shot-desc {
@@ -1066,7 +1402,7 @@ video {
 }
 
 .shot-desc-text {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.45;
   white-space: pre-wrap;
 }
@@ -1077,7 +1413,7 @@ video {
 }
 
 .shot-flag {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--sb-muted);
 }
 
@@ -1147,6 +1483,13 @@ video {
   color: var(--sb-control);
 }
 
+/* Yes carries the weight; Later and No sit beside it, narrower */
+.btn-approve.is-yes {
+  flex: 2;
+  font-weight: 700;
+  border-color: var(--sb-control);
+}
+
 /* the activity row: what the agent is doing, above the composer */
 .agent-doing {
   flex: none;
@@ -1172,9 +1515,25 @@ video {
   white-space: nowrap;
 }
 
+/* the row's controls: never inside the ellipsised phrase, so they cannot be what gets cut off */
+.agent-doing-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-doing-actions .agent-doing-card {
+  margin-left: 0;
+}
+
 /* what a note from here is about: the bin on screen and its lead take, beside the phrase */
 .agent-doing-about {
   margin-left: 8px;
+  padding-left: 8px;
+  border-left: var(--b-thin) solid var(--line-soft);
   color: var(--muted-2);
   font-weight: 600;
 }
@@ -1241,6 +1600,57 @@ video {
   color: var(--sb-body);
   font-size: 10px;
   line-height: 1;
+}
+
+/* a note's own file is in no bin: the pill under its tile is the way into the project */
+.composer-chip-bin {
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  transform: translateX(-50%);
+  padding: 1px 6px;
+  border: 1px solid var(--sb-line-em);
+  border-radius: 999px;
+  background: var(--sb-panel);
+  color: var(--sb-body);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.composer-chips:has(.composer-chip-bin) {
+  padding-bottom: 5px;
+}
+
+/* a file on its way up: the tile it will take, turning */
+.composer-chip-busy {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--sb-line-control);
+  border-radius: 7px;
+}
+
+.composer-chip-busy::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1.5px solid var(--sb-line-control);
+  border-top-color: var(--sb-muted);
+  animation: spin 0.9s linear infinite;
+}
+
+/* a clip on a note shows its name, not a frame */
+.file-tile-name {
+  display: block;
+  padding: 4px;
+  font-size: 9px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  color: var(--muted);
 }
 
 /* files held over the panel: the whole panel is the drop target */
@@ -1317,6 +1727,25 @@ video {
   }
 }
 
+/* a shot's permanent number: a small mono chip ahead of its title, never part of the name */
+.shot-no {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--muted);
+  vertical-align: 1px;
+}
+
+.chip-new {
+  gap: 5px;
+}
+
 /* every media tile is tappable */
 .is-tappable {
   cursor: pointer;
@@ -1372,6 +1801,114 @@ video {
   font-size: 13px;
   font-weight: 700;
   line-height: 1;
+  text-decoration: none; /* Download is a link */
+}
+
+/* the viewer runs on black, where --destructive is too dark to read: the delete pill keeps the
+   others' shape and says what it is in words, tinted only enough to set it apart */
+.viewer-recall.is-accent {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* reference mode: which @name this viewer is choosing for; the grey dot marks the one in use */
+.viewer-ref {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--on-ink);
+}
+
+.viewer-current {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.viewer-recall.is-danger {
+  border-color: var(--sb-amber);
+  color: var(--sb-amber);
+}
+
+/* on a phone the viewer's header has no room for words: the pills keep their glyph, which is
+   the same mark the gallery uses for each action, and say the rest through aria-label/title */
+@media (max-width: 759px) {
+  .viewer-head .pill-word {
+    display: none;
+  }
+
+  /* the picture's pixel size is desk information; the phone needs the name and the controls */
+  .viewer-dims {
+    display: none;
+  }
+
+  /* more controls than width: the row scrolls sideways, nothing is cut off */
+  .viewer-head {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .viewer-recall {
+    margin-left: 6px;
+    padding: 4px 8px;
+    font-size: 15px;
+  }
+}
+
+/* the cull run's switch, beside the delete it disarms: quiet, and checked only through its
+   own warning */
+.viewer-nowarn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--on-ink);
+  opacity: 0.75;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.viewer-nowarn input {
+  accent-color: var(--sb-amber);
+  margin: 0;
+}
+
+/* ‹ › over the picture, at mid-height: against .viewer rather than the body, so an actual-size
+   picture scrolling underneath does not carry them off the screen */
+.viewer-step {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: var(--b-thin) solid var(--line-softer);
+  border-radius: 999px;
+  background: var(--inverse-bg);
+  color: var(--on-ink);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.viewer-step.is-prev {
+  left: 12px;
+}
+
+.viewer-step.is-next {
+  right: 12px;
+}
+
+.viewer-step:hover {
+  border-color: var(--on-ink);
 }
 
 .viewer-meta {
@@ -1401,12 +1938,19 @@ video {
   cursor: zoom-in;
 }
 
+/* actual size: a flex box with auto margins on the picture, not justify-content -- auto margins
+   centre a picture smaller than the box and collapse to zero when it is larger, so the scroll
+   box reaches every edge (centring by justify-content would clip the start of an oversized one) */
 .viewer.is-zoomed .viewer-body {
-  display: block;
+  display: flex;
+  justify-content: flex-start; /* the fit view's centring would clip an oversized picture's start */
+  align-items: flex-start;
   overflow: auto;
 }
 
 .viewer.is-zoomed .viewer-body img {
+  flex: none;
+  margin: auto;
   max-width: none;
   max-height: none;
   cursor: zoom-out;
@@ -1433,6 +1977,50 @@ video {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* every screen's place line: `Projects ‹ Memes ‹ newtoold ‹ Generate`. Earlier crumbs are quiet
+   links; the last is where you are and keeps the title weight. Too long, the line is cut at its
+   start (the rtl box overflows and ellipsizes on the left; the line inside reads ltr). */
+.screen-crumbs {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.screen-crumbs-line {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.crumb .screen-title {
+  overflow: visible;
+}
+
+.crumb-sep {
+  margin: 0 8px;
+}
+
+.crumb-link {
+  color: var(--muted-3);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.crumb-link:hover,
+.crumb-link:focus-visible {
+  color: var(--ink);
+  outline: none;
+}
+
+.crumb-sep {
+  flex: none;
+  color: var(--muted-3);
 }
 
 /* a name that edits in place: the text is the control, the field takes its font and place */
@@ -1474,8 +2062,12 @@ video {
   flex: none;
 }
 
+/* the rule under the project picker: settings belongs to the project chosen above it, not to
+   the picker itself. Inset with the head's padding, so it lines up with the select and the link */
 .sidebar-tools {
   margin-top: 8px;
+  padding-top: 8px;
+  border-top: var(--b-thin) solid var(--divider);
   font-size: 13px;
   font-weight: 700;
 }
@@ -1767,9 +2359,10 @@ input.field-input {
   min-height: 0;
 }
 
+/* no rule under the head: settings is closed off by the one above it, and the filter row below
+   carries its own -- a second line here only boxed the picker in */
 .sidebar-head {
   padding: 12px 12px 10px;
-  border-bottom: var(--b-thin) solid var(--divider);
 }
 
 .sidebar-select {
@@ -1936,8 +2529,33 @@ input.field-input {
   padding-bottom: calc(10px + env(safe-area-inset-bottom));
 }
 
-.screen-foot.is-right {
+/* the bin's footer: the media actions (Upload, Clip, Reuse) sit at the left, sized to
+   their words; Generate and its toggles at the right. On a phone the spacer steps aside and
+   the pills grow from their own words rather than equal shares, so a longer label is never
+   wider than its pill; Generate ▸ gives up some side padding to make the room. */
+.screen-foot.is-split {
   justify-content: flex-end;
+}
+
+@media (max-width: 759px) {
+  .screen-foot.is-split > .spacer {
+    display: none;
+  }
+
+  .screen-foot.is-split > .btn-outline {
+    flex: 1 1 auto;
+  }
+
+  .screen-foot.is-split > .btn-open-recipe {
+    padding-inline: 14px;
+  }
+}
+
+@media (min-width: 760px) {
+  .screen-foot.is-split > .btn-outline {
+    flex: none;
+    padding-inline: 14px;
+  }
 }
 
 /* the phase readout is desk furniture: on a phone the pending tile's counter says enough */
@@ -1968,6 +2586,12 @@ input.field-input {
   min-width: 42px;
   padding: 8px 12px;
   color: var(--muted-2);
+}
+
+.btn-later {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .btn-quarter.is-on,
@@ -2137,6 +2761,18 @@ input.field-input {
   gap: 6px;
 }
 
+/* the connect button keeps its words on one line; the explanation beside it wraps, or drops
+   under it once the row is too narrow for both */
+.channel-connect > .btn-outline {
+  flex: none;
+  white-space: nowrap;
+}
+
+.channel-connect > .hint {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
 /* the free-entry length: a chip that holds a small field, lit like a preset when it is the value */
 .len-chip {
   gap: 2px;
@@ -2230,6 +2866,11 @@ input.field-input {
   pointer-events: none;
 }
 
+/* re-picking a reference: the take it uses now, same spot as the new dot, grey */
+.thumb-new.is-current {
+  background: var(--muted);
+}
+
 /* a render in flight: a tile-shaped placeholder at the new end of the strip, shimmering
    until the take lands in its place */
 .thumb.is-pending {
@@ -2283,8 +2924,37 @@ input.field-input {
   color: var(--accent);
 }
 
+.tag-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted-2);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.tag-link:hover {
+  color: var(--accent);
+}
+
+.viewer-new {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 .tag.is-held {
   color: var(--muted-2);
+}
+
+.seq-dur-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* explorer rows: a pulsing dot while a bin renders, a count of takes not yet looked at */
@@ -2380,6 +3050,24 @@ input.field-input {
   scroll-snap-align: start;
 }
 
+/* the gallery's takes: every one at once, as many columns as fit, each tile filling its column */
+.takes-strip.is-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 18px;
+  overflow: visible;
+  margin-top: 0;
+  scroll-snap-type: none;
+}
+
+.takes-strip.is-grid .thumb-col {
+  align-items: stretch;
+}
+
+.takes-strip.is-grid::after {
+  display: none;
+}
+
 /* trailing room in the scroll box for the last tile's corner delete */
 .takes-strip::after {
   content: "";
@@ -2460,6 +3148,18 @@ input.field-input {
   background: var(--empty-fg);
 }
 
+/* the gallery's picture stays put while the facts and the grid scroll under it: stuck to the top
+   of the scrolling body, its own padding covering the body's gutter so nothing shows above it */
+.preview-pin {
+  position: sticky;
+  top: -12px;
+  z-index: 3;
+  margin: -12px -12px 0;
+  padding: 12px 12px 8px;
+  background: var(--page-bg);
+  box-shadow: 0 8px 12px -10px var(--shadow);
+}
+
 .preview img,
 .preview video {
   width: 100%;
@@ -2478,6 +3178,36 @@ input.field-input {
   padding: 2px 9px;
   font-size: 12px;
   font-weight: 600;
+}
+
+/* a render with no take yet, tapped in the strip: its shape and a word, where the picture goes */
+.preview.is-peek {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-style: dashed;
+  color: var(--muted);
+  font-size: 15px;
+  text-align: center;
+  padding: 12px;
+}
+
+/* the looked-at render's prompt, read only, beside its workflow and length */
+.gallery-recipe {
+  flex-basis: 100%;
+}
+
+.fact-prompt {
+  white-space: pre-wrap;
+  font-weight: 400;
+  font-size: 13px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.gallery-recipe-refs {
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .preview-empty {
@@ -2539,10 +3269,52 @@ input.field-input {
   color: var(--sb-label);
 }
 
+/* what a project is asking of you, in the bar's own signs: the live dot, then the amber count */
+.project-row-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-row-state .dot {
+  width: 7px;
+  height: 7px;
+}
+
+/* a render's dot carries its count only when more than one is in flight */
+.project-row-render {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--sb-dim);
+}
+
 .project-row-chevron {
   flex: none;
   font-size: 16px;
   color: var(--sb-faint);
+}
+
+/* the fold between the glanceable projects and the rest: a quiet centred word, not a row, so it
+   neither reads as a project nor competes with the dashed New-project block below it */
+.home-more {
+  flex: none;
+  align-self: center;
+  padding: 6px 14px;
+  border: 0;
+  background: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.home-more:hover,
+.home-more:focus-visible {
+  color: var(--ink);
+  outline: none;
 }
 
 .shot-row {
@@ -2586,6 +3358,36 @@ input.field-input {
   gap: 9px;
 }
 
+/* the gallery's tags, then the recipe's workflow and length, read only: one row when there is
+   room, each card wrapping to its own line when there is not */
+.gallery-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.gallery-facts > .card {
+  flex: 1 1 170px;
+  min-width: 0;
+}
+
+.gallery-facts > .gallery-tags {
+  flex: 3 1 280px;
+}
+
+.fact-value {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.fact-dim {
+  color: var(--muted);
+  font-weight: 600;
+}
+
 /* on the phone the recipe is one scrolling column: the prompt scrolls inside itself past
    about half the screen, so References stay one short swipe away instead of forty rows down
    (the wide layout replaces this with a measured cap, --prompt-max, below) */
@@ -2607,36 +3409,153 @@ input.field-input {
   gap: 14px 12px; /* room for the corner delete, which sits half outside its tile */
 }
 
-/* the tile is as wide as its picture (a 16:9 clip is wider than a portrait still); the label
-   under it ellipsizes to that width */
+/* the tile is as wide as its picture (a 16:9 clip is wider than a portrait still) or its
+   handle, whichever is wider; the handle wraps rather than ellipsizes, since the whole name is
+   what goes in the prompt */
 .ref-tile {
   width: auto;
   min-width: 54px;
-  max-width: 140px;
+  max-width: 168px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
 }
 
+/* the two slot groups (images, then videos) share one wrapping row */
+.refs-group {
+  display: contents;
+}
+
 .ref-label {
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.2;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
+/* the fixed name of the slot under the tile: image 2, video 1, start frame, unused, missing */
+.ref-slot,
 .ref-sub {
   font-size: 11px;
   font-weight: 700;
   color: var(--muted);
   text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 
-.ref-tile.is-missing .ref-label {
+.ref-tile.is-missing .ref-label,
+.ref-tile.is-unused .ref-label {
   color: var(--muted);
+}
+
+.ref-tile.is-empty .tile-add:disabled {
+  opacity: 0.4;
+}
+
+/* while the @ menu is open the tiles are targets: tapping one writes its handle */
+.ref-tile.is-pickable .thumb {
+  outline: var(--b-strong) solid var(--accent);
+  outline-offset: 2px;
+  cursor: pointer;
+  animation: ref-pick-pulse 1.2s ease-in-out infinite;
+}
+
+.ref-tile.is-pickable .ref-label {
+  color: var(--accent);
+}
+
+@keyframes ref-pick-pulse {
+  0%,
+  100% {
+    outline-color: var(--accent);
+  }
+  50% {
+    outline-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ref-tile.is-pickable .thumb {
+    animation: none;
+  }
+}
+
+/* the @ chip beside the prompt label */
+.ref-at {
+  padding: 1px 9px;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+/* the reference menu under the prompt while an @ word is being typed */
+.ref-mention {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+}
+
+.ref-mention-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 3px 12px 3px 4px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.ref-mention-option .thumb {
+  border-radius: 6px;
+}
+
+.ref-mention-option.is-on {
+  background: var(--sel-bg);
+  border-color: var(--sel-line);
+  color: var(--sel-fg);
+}
+
+.ref-mention-option.is-dim {
+  opacity: 0.55;
+}
+
+.ref-mention-slot {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.ref-mention-empty {
+  padding: 4px 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* the keys, on its own line under the chips; phones have none of them */
+.ref-mention-keys {
+  flex-basis: 100%;
+  padding: 2px 6px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+@media (max-width: 759px) {
+  .ref-mention-keys {
+    display: none;
+  }
 }
 
 /* ---- drag to reorder ----------------------------------------------------------- */
@@ -2731,6 +3650,24 @@ input.field-input {
   outline: none;
 }
 
+/* the sort sits left of the name search and takes over pushing the pair right */
+.lib-sort {
+  margin-left: auto;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+  background: var(--surface);
+  outline: none;
+  cursor: pointer;
+}
+
+.lib-sort + .lib-search {
+  margin-left: 0;
+}
+
 .lib-item-select {
   margin-left: auto;
   max-width: 130px;
@@ -2751,6 +3688,11 @@ input.field-input {
 .lib-empty-sub {
   font-size: 11px;
   margin-top: 4px;
+}
+
+/* the way out of a remembered filter that matches nothing here */
+.lib-empty .chip {
+  margin-top: 10px;
 }
 
 .lib-grid {
@@ -3006,6 +3948,24 @@ input.field-input {
   border-right: var(--b-selected) solid var(--accent);
 }
 
+/* a private project's sound toggle, in the frame's corner (the clipper has no player controls) */
+.clip-sound {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 50%;
+  background: var(--badge-bg);
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
 .clip-playhead {
   position: absolute;
   top: 0;
@@ -3071,9 +4031,11 @@ input.field-input {
     --preview-cap: 62vh;
   }
 
-  /* the gallery is the bin's front door: nothing beside the picture, so it takes more height */
+  /* the gallery is the bin's front door, its takes in a grid below: a landscape take runs the
+     column's full width, a portrait one stops at a bit over half the screen's height so the
+     facts and the grid still show under it -- never smaller than the phone gives it */
   .shot-body.is-wide.is-gallery .preview {
-    --preview-cap: 70vh;
+    --preview-cap: 55vh;
   }
 
   /* a long prompt scrolls inside its box rather than pushing References below the fold: the
@@ -3231,6 +4193,14 @@ input.field-input {
   color: var(--muted);
 }
 
+/* the same line when the rewrite left reference tags out: a warning, not a failure */
+.enhance-dropped {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
 .enhance-undo {
   font-size: 12px;
   padding: 2px 9px;
@@ -3243,6 +4213,44 @@ input.field-input {
   padding: 9px 11px;
   border: var(--b-thin) dashed var(--line);
   border-radius: var(--r-card);
+}
+
+/* the last rewrite's failure: stays put until the next Enhance press */
+.enhance-error {
+  padding: 7px 10px;
+  border: var(--b-thin) solid var(--amber);
+  border-radius: var(--r-card);
+  background: var(--amber-bg);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.enhance-error b {
+  color: var(--amber);
+  margin-right: 4px;
+}
+
+.enhance-reply {
+  margin-top: 8px;
+}
+
+.enhance-reply-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+/* the full rejected rewrite, verbatim; long ones scroll inside the box */
+.enhance-reply-text {
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: var(--ink);
 }
 
 .enhance-actions {
@@ -3260,6 +4268,74 @@ input.field-input {
 }
 
 /* an upload's provenance under the preview, when the uploader said what it did */
+/* the selected take's facts under the strip: one quiet line, same place for every take */
+.take-facts {
+  display: flex;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-top: 4px;
+  min-height: 1.6em;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* the facts on the left, one line, never wrapping into the state cell */
+.take-facts-info {
+  display: flex;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* "current" or the way to make it current: its own cell at the line's right end, so the toggle
+   never moves the facts or anything below (the line is short enough for a phone) */
+.take-facts-state {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+
+/* the winner, and the way to make the take on view the winner */
+.take-winner {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+}
+
+.take-winner-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.take-choose {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.take-facts .is-draft {
+  color: var(--amber);
+}
+
+/* the gallery's line names what made the take; a long workflow name gives way, not the state */
+.take-facts-workflow {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+
 .take-note {
   display: flex;
   flex-wrap: wrap;
@@ -3285,7 +4361,8 @@ input.field-input {
 /* -- private project: the veil over its pictures (layout/veil.tsx) ---------------------------
    The shell carries .is-veiled while the project is private and nothing has lifted it. A still
    keeps its tile (the frame, the marker, the tap) but its picture is transparent: on a desktop
-   it shows under the mouse. A video has no poster and no preloaded frame, and its frame is
+   a small one shows under the mouse, while the bin's large hero still shows only after a click
+   (.is-revealed), so a mouse passing over it gives nothing away. A video has no poster and no preloaded frame, and its frame is
    transparent too except under the mouse or while it plays (.is-playing, set by the host from
    the play/pause events): paused and left, it hides again. On a phone (.is-phone) there is no
    mouse, so every still and video is hidden until the bar's `reveal` pill, which drops the
@@ -3301,8 +4378,23 @@ input.field-input {
 }
 
 .shell.is-veiled .preview.is-playing video,
-.shell.is-veiled .viewer-body.is-playing video {
+.shell.is-veiled .viewer-body.is-playing video,
+/* the hero, still or video: shown by a click, never by a hover (TakePreview, useClickReveal) */
+.shell.is-veiled .preview.is-revealed img,
+.shell.is-veiled .preview.is-revealed video {
   opacity: 1;
+}
+
+/* a hidden private hero video: a cover takes the first click, so it shows the frame instead of
+   starting playback; the player's own controls work once it is shown */
+.preview-reveal {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
 /* a plain gray ground says "hidden", not "missing": the empty tile keeps its dashed border */
@@ -3314,10 +4406,9 @@ input.field-input {
 
 @media (hover: hover) {
   .shell.is-veiled:not(.is-phone) .thumb:hover img,
-  .shell.is-veiled:not(.is-phone) .preview:hover img,
   .shell.is-veiled:not(.is-phone) .change-preview:hover img,
   .shell.is-veiled:not(.is-phone) .viewer-body:hover img,
-  .shell.is-veiled:not(.is-phone) .preview:hover video,
+  .shell.is-veiled:not(.is-phone) .clip-source:hover video,
   .shell.is-veiled:not(.is-phone) .viewer-body:hover video,
   /* the clipper scrubs a paused video from the sliders under it: the mouse on that card
      counts as on the video; off both, the frame hides */
@@ -3346,6 +4437,33 @@ input.field-input {
   color: var(--sb-muted);
 }
 
+/* showing is the state worth noticing, so the open padlock is drawn larger than the shut one */
+.bar-veil.is-open svg,
+.viewer-veil.is-open svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* the viewer's own padlock, left of the action pills: on black it takes the viewer's ink, and
+   the filename beside it gives up whatever width it needs */
+.viewer-veil {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--line-softer);
+}
+
+.viewer-veil.is-open {
+  color: var(--on-ink);
+}
+
 /* the words too: a private project's prompt and negative (the bin's, and the project's global
    ones) read as blank until the cursor is inside the box; the placeholder still shows on an
    empty one, and the caret stays visible so the box does not look dead */
@@ -3353,4 +4471,246 @@ input.field-input {
   color: transparent;
   caret-color: var(--ink);
   background: var(--empty-fg);
+}
+
+/* read-only veiled words (a rejected rewrite) have no cursor to put inside: they show under
+   the mouse on a desktop, and on a tap (focus) on a phone */
+@media (hover: hover) {
+  .shell.is-veiled:not(.is-phone) .veil-read:hover {
+    color: var(--ink);
+    background: none;
+  }
+}
+
+/* ---- audio ---------------------------------------------------------------- */
+
+/* sound with no picture: a waveform across the width (the media's detail thumbnail), a playhead
+   that follows currentTime, a click anywhere on the strip to seek, play/pause and a readout.
+   The strip is a background image, not an <img>, so the veil is handled by the caller (no
+   waveform under it) rather than by the picture rules above. */
+.audio-player {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  color: var(--ink);
+}
+
+.audio-wave {
+  position: relative;
+  height: 96px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: #17171c center / 100% 100% no-repeat;
+  cursor: pointer;
+  outline: none;
+}
+
+.audio-wave:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.audio-wave.is-flat {
+  background: var(--empty-fg);
+}
+
+.audio-wave.is-flat::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 2px solid var(--line);
+}
+
+.audio-wave-played {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: color-mix(in oklab, var(--ink) 18%, transparent);
+  pointer-events: none;
+}
+
+.audio-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ink);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.audio-play {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.audio-play:hover {
+  background: var(--accent-hover);
+}
+
+.audio-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.audio-time-sep {
+  opacity: 0.6;
+}
+
+/* the bin hero: the player fills the wide frame */
+.preview.is-audio {
+  display: flex;
+  align-items: stretch;
+  background: var(--inverse-bg);
+}
+
+.preview.is-audio .audio-player {
+  height: 100%;
+  padding: 10px 12px;
+  justify-content: center;
+}
+
+.preview.is-audio .audio-wave {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+/* the full-screen viewer: wide, not tall */
+.viewer-body .audio-player {
+  width: min(100%, 1100px);
+  padding: 16px;
+}
+
+.viewer-body .audio-wave {
+  height: min(40vh, 320px);
+}
+
+/* Add bins: an audio-led bin cannot be an item; it is listed so the reason is readable */
+.seq-add-row.is-off {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* the take badge sits bottom-left on a picture; on the player that corner is the play button */
+.preview.is-audio .preview-badge {
+  left: auto;
+  right: 8px;
+  top: 8px;
+  bottom: auto;
+}
+
+.preview-open {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: var(--b-thin) solid var(--line);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* a card's reply: files on it as chips above, `+` beside the note */
+.change-note-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.change-note-row {
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.change-note-row .change-note {
+  flex: 1;
+  min-width: 0;
+}
+
+.change-note-attach {
+  width: 32px;
+  height: 32px;
+  font-size: 16px;
+}
+
+/* -- posts: a video with its words, drafted for a channel and held unsent (the bin screen's strip) -- */
+.posts-strip {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: var(--b-thin) solid var(--line-softer);
+}
+
+.post-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 10px;
+}
+
+.post-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.post-row-title {
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.post-row-desc {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.post-row-error {
+  font-size: 13px;
+  color: var(--danger, #c33);
+}
+
+.post-row-link {
+  flex: none;
+  text-decoration: none;
 }

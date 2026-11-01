@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -21,19 +22,26 @@ from typing import Callable
 from .config import BackupSettings
 from .ids import PROJECT, new_id
 from .models import SCHEMA_VERSION, Change, Generation, Message, Project
-from .slug import slugify
+from .slug import handle_base, media_ext, slugify
 
 GENERATIONS_LOG = "generations.jsonl"
 CHANGES_LOG = "changes.jsonl"
 MESSAGES_LOG = "messages.jsonl"
+CHAT_DIR = "chat"
+_CHAT_ID_RE = re.compile(r"^f_[0-9a-f]{8}$")
 
 
 class SchemaVersionError(ValueError):
-    """The file is not a THM (schema_version 3 or 4) project."""
+    """The file is not a THM (schema_version 3 to 6) project."""
 
 
-# schema-3 files (shots and items) are read and upgraded in place; anything older is 1.x
-UPGRADABLE_VERSIONS = (3,)
+# schema-3 files (shots and items) and schema-4 files (dot handles) are read and upgraded in
+# place; anything older is 1.x
+UPGRADABLE_VERSIONS = (3, 4, 5)
+
+# the schema-4 prompt token: a dot, a slug, an optional dot plus digits (thm_core.slug.TOKEN_RE
+# before the handle grew an extension and the prefix became @)
+_LEGACY_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9\-.])\.([a-z0-9][a-z0-9-]*)(?:\.(\d+))?(?![A-Za-z0-9\-])")
 
 
 class ProjectNotFound(FileNotFoundError):
@@ -53,6 +61,20 @@ class _LogCache:
     by_id: dict[str, object] | None
 
 
+def _replace_with_retry(tmp: Path, path: Path, *, tries: int = 8, pause_s: float = 0.05) -> None:
+    """``os.replace`` with a few retries: on Windows a reader that has the file open for an
+    instant (another THM server on the same folder, an indexer) makes the rename fail with
+    ``PermissionError``; it clears within milliseconds, and giving up would lose the save."""
+    for attempt in range(tries):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(pause_s * (attempt + 1))
+
+
 def _peek_version(raw: dict) -> int | None:
     v = raw.get("schema_version")
     if isinstance(v, bool):
@@ -64,16 +86,23 @@ def _peek_version(raw: dict) -> int | None:
     return None
 
 
+def _is_1x(raw: dict) -> bool:
+    """A 1.x project file: it keeps its cut under ``sequences`` and has no record dicts. A 2.0
+    file with sequences (schema 6 and on) always carries ``bins_by_id``; a schema-3 file carries
+    ``shots_by_id``."""
+    return "sequences" in raw and not any(k in raw for k in ("bins_by_id", "shots_by_id", "items_by_id"))
+
+
 def _readable(raw: dict) -> bool:
     version = _peek_version(raw)
-    return (version == SCHEMA_VERSION or version in UPGRADABLE_VERSIONS) and "sequences" not in raw
+    return (version == SCHEMA_VERSION or version in UPGRADABLE_VERSIONS) and not _is_1x(raw)
 
 
 def check_schema_version(raw: dict, path: Path) -> None:
     version = _peek_version(raw)
     if _readable(raw):
         return
-    if version is None or version < SCHEMA_VERSION or "sequences" in raw:
+    if version is None or version < SCHEMA_VERSION or _is_1x(raw):
         shown = version if version is not None else "missing"
         raise SchemaVersionError(
             f"{path.name} is a 1.x project (schema_version {shown}); THM reads "
@@ -141,6 +170,92 @@ def upgrade_v3(raw: dict) -> dict:
     counters.pop("shot_image", None)
     raw["counters"] = counters
     raw["bins_by_id"] = bins
+    raw["schema_version"] = 4
+    return raw
+
+
+def upgrade_v4(raw: dict) -> dict:
+    """Schema 4 to 5, in place: handles grow the media file's extension and prompt tokens
+    change prefix, ``.mara`` to ``@mara.png``.
+
+    Each bin's references are renumbered per (referenced bin, extension) in the order they
+    sit, so a still and a clip that read ``mara`` and ``mara.2`` become ``mara.png`` and
+    ``mara.mp4``. The bin's prompt and negative are rewritten for its own handles only; a dot
+    word nobody was bound to is left as typed.
+    """
+    media = raw.get("media_by_id") or {}
+    for b in (raw.get("bins_by_id") or {}).values():
+        refs = b.get("references") or []
+        counts: dict[tuple[str, str], int] = {}
+        mapping: dict[str, str] = {}
+        for r in refs:
+            old = str(r.get("handle") or "")
+            m = media.get(r.get("media")) or {}
+            ext = media_ext(m.get("path"))
+            key = (str(r.get("bin") or ""), ext)
+            counts[key] = counts.get(key, 0) + 1
+            n = counts[key]
+            base = f"{handle_base(old)}.{ext}"
+            new = base if n == 1 else f"{base}.{n}"
+            r["handle"] = new
+            mapping.setdefault(old, new)
+
+        def _sub(m: re.Match) -> str:
+            handle = m.group(1) + (f".{m.group(2)}" if m.group(2) else "")
+            return f"@{mapping[handle]}" if handle in mapping else m.group(0)
+
+        for field_ in ("prompt", "negative"):
+            text = b.get(field_) or ""
+            if text and mapping:
+                b[field_] = _LEGACY_TOKEN_RE.sub(_sub, text)
+    raw["schema_version"] = 5
+    return raw
+
+
+# the accident this upgrade undoes: the agent's "P18 please stop" / "S03 hood urban bus" names,
+# a series letter and number glued to the title
+_PREFIXED_NAME_RE = re.compile(r"^[PS](\d{1,3})([a-z])?\s+(.+)$")
+
+
+def upgrade_v5(raw: dict) -> dict:
+    """Schema 5 to 6, in place: a bin's name becomes its title alone and its handle base is a
+    frozen ``slug``; a name that carried the agent's series prefix ("P18 please stop") becomes
+    shot 18 titled "please stop".
+
+    The slug is set to exactly what every handle already derived from (``slugify(name)``), so
+    no prompt token changes: old shots keep ``@p18-please-stop.png``, and only bins made from
+    here on read ``@shot-19.png``. A lettered variant (``P21b``) or a second bin with the same
+    number takes the next number above the highest; the project's ``shot`` counter lands there.
+    """
+    bins = raw.get("bins_by_id") or {}
+    for b in bins.values():
+        if not b.get("slug"):
+            b["slug"] = slugify(str(b.get("name") or ""))
+    parsed: list[tuple[dict, str, int, bool]] = []
+    for b in bins.values():
+        m = _PREFIXED_NAME_RE.match(str(b.get("name") or "").strip())
+        if m and b.get("shot") is None:
+            parsed.append((b, m.group(0)[0], int(m.group(1)), bool(m.group(2))))
+            b["name"] = m.group(3).strip()
+    taken = {int(b["shot"]) for b in bins.values() if isinstance(b.get("shot"), int)}
+    high = max(taken, default=0)
+    # two series side by side (P for the narrative, S for an earlier list of test clips): the
+    # P numbers are the ones the user knows, so they are kept and every S bin is numbered above
+    # them; a lone series keeps its numbers. Lettered variants and duplicates go above the max too
+    series = {letter for _, letter, _, _ in parsed}
+    keep = "P" if "P" in series else "S"
+    order = sorted(parsed, key=lambda t: (t[1] != keep or t[3], t[2]))
+    for b, letter, n, lettered in order:
+        if letter != keep or lettered or n in taken:
+            high = max(high, max(taken, default=0)) + 1
+            n = high
+        b["shot"] = n
+        taken.add(n)
+        high = max(high, n)
+    counters = raw.get("counters") or {}
+    if high:
+        counters["shot"] = max(int(counters.get("shot") or 0), high)
+        raw["counters"] = counters
     raw["schema_version"] = SCHEMA_VERSION
     return raw
 
@@ -211,6 +326,16 @@ class ProjectStore:
     def backups_dir(self) -> Path:
         return self.projects_dir / "_backups"
 
+    def chat_dir(self, project: Project | str) -> Path:
+        """Where the files a message carries live: beside the logs, in no bin."""
+        return self.files_dir(project) / CHAT_DIR
+
+    def chat_file(self, project: Project | str, file_id: str) -> Path | None:
+        """The file behind a message-file id (``<id>_<name>`` on disk), or None."""
+        if not _CHAT_ID_RE.match(str(file_id)):
+            return None
+        return next((p for p in self.chat_dir(project).glob(f"{file_id}_*") if p.is_file()), None)
+
     # -- project file --------------------------------------------------------
 
     def new_project(self, name: str, *, slug: str | None = None, **fields) -> Project:
@@ -242,8 +367,13 @@ class ProjectStore:
         if not isinstance(raw, dict):
             raise SchemaVersionError(f"{path.name} is not a project object")
         check_schema_version(raw, path)
-        if _peek_version(raw) in UPGRADABLE_VERSIONS:
+        version = _peek_version(raw)
+        if version == 3:
             upgrade_v3(raw)
+        if version in (3, 4):
+            upgrade_v4(raw)
+        if version in (3, 4, 5):
+            upgrade_v5(raw)
         project = Project.model_validate(raw)
         if not project.slug:
             project.slug = slug
@@ -282,7 +412,7 @@ class ProjectStore:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             self._maybe_backup(path)
-            os.replace(tmp, path)
+            _replace_with_retry(tmp, path)
         except BaseException:
             try:
                 tmp.unlink()

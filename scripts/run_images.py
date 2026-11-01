@@ -1147,12 +1147,16 @@ def run_generation(spec_path, status_file_override=None):
         # image slots are muted above by their own rules; an empty video loader has to leave the graph
         wc.deactivate_empty_reference_loaders(graph, controls=(wc.VIDEO_REFERENCE,))
 
-        # LoRAs ride in the prompt text as <lora:name:strength> tags (or the 1.x __lora:...__
-        # form); they come out before the text reaches the encoder and go in as loader nodes.
-        raw_text = generation_spec.prompt_text_from_spec(spec)
+        # Wildcards are rolled here, once, before anything else reads the text: ComfyUI is sent
+        # a settled prompt, never a {a|b|c}, and each take drawn from the same recipe rolls its
+        # own. The roll comes before the LoRA tags are lifted out, so a wildcard may hold one.
+        submitted = generation_spec.prompt_text_from_spec(spec)
+        raw_text = expand_inline_wildcards(submitted)
+        if raw_text != submitted:
+            print("[WILDCARD] rolled: " + raw_text.replace("\n", " | "))
         lora_specs = generation_spec.lora_specs_from_spec(spec, raw_text)
         text = strip_lora_tags(raw_text)
-        negative = str(spec.get("negative") or "")
+        negative = expand_inline_wildcards(str(spec.get("negative") or ""))
         wc.set_prompt(graph, text)
         wc.set_negative_prompt(graph, negative)
 
@@ -1172,7 +1176,16 @@ def run_generation(spec_path, status_file_override=None):
             steps=int(params["steps"]) if params.get("steps") is not None else None,
         )
         if params.get("width") and params.get("height"):
-            wc.set_dimensions(graph, int(params["width"]), int(params["height"]))
+            # never smaller than asked: round the canvas up to the model's step, crop back after
+            want_w, want_h = int(params["width"]), int(params["height"])
+            render_w, render_h, step = wc.fit_canvas(graph, want_w, want_h)
+            wc.set_dimensions(graph, render_w, render_h)
+            if (render_w, render_h) != (want_w, want_h):
+                crops = wc.inject_fit_crop(graph, want_w, want_h, render_w, render_h)
+                print(f"[SIZE] {want_w}x{want_h} is not a multiple of {step}: rendering {render_w}x{render_h}, "
+                      + (f"cropped back to {want_w}x{want_h} before save" if crops else "no output node takes frames, so the file keeps that size"))
+        # the workflow's own draft branch (a THM-IsDraft switch): on only when asked, always set
+        wc.set_draft(graph, bool(params.get("draft")))
 
         wc.set_save_image_prefix(graph, os.path.join(rel_dir, prefix) if rel_dir else prefix)
         os.makedirs(output_dir, exist_ok=True)

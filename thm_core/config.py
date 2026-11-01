@@ -29,6 +29,10 @@ class ComfySettings:
     # hour at full size, so they get their own, longer limit.
     timeout_seconds: int = 3600
     video_timeout_seconds: int = 4 * 3600
+    # ``[advanced] restart_script``: the user's own script that stops and starts ComfyUI on this
+    # machine (``POST /api/comfy/restart`` runs it); empty means the server cannot restart ComfyUI
+    restart_script: str = ""
+    install_path: str = ""  # ``[comfyui] install_path``: the script's working directory
 
 
 @dataclass
@@ -56,6 +60,8 @@ def load_core_settings(path: str | Path | None = None, *, repo_root: Path = REPO
         output_root=str(comfy.get("output_root") or ""),
         timeout_seconds=int(comfy.get("timeout_seconds") or settings.comfy.timeout_seconds),
         video_timeout_seconds=int(comfy.get("video_timeout_seconds") or settings.comfy.video_timeout_seconds),
+        restart_script=str((data.get("advanced") or {}).get("restart_script") or "").strip(),
+        install_path=str(comfy.get("install_path") or "").strip(),
     )
     workspace = str(paths.get("workspace") or "").strip()
     if workspace:

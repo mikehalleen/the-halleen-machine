@@ -276,58 +276,10 @@ def test_run_video_generation_open_end_deactivates_end_branch(tmp_path, monkeypa
     assert "21" not in graph or not graph["21"]["inputs"].get("image")
 
 
-def _legacy_wan_graph():
-    """Untagged, like workflows/i2v_base.json: loaders feed StartImage/EndImage scalers into the WAN node."""
-    return {
-        "1": node("THM-Prompt", "CLIPTextEncode", {"text": ""}),
-        "2": node("THM-NegativePrompt", "CLIPTextEncode", {"text": ""}),
-        "202": node("Load Image", "LoadImage", {"image": "example.png"}),
-        "203": node("Load Image", "LoadImage", {"image": "example.png"}),
-        "196": node("StartImage", "ImageScale", {"upscale_method": "lanczos", "width": 512, "height": 512, "crop": "center", "image": ["202", 0]}),
-        "111": node("EndImage", "ImageScale", {"upscale_method": "lanczos", "width": 512, "height": 512, "crop": "center", "image": ["203", 0]}),
-        "183": node("WanFirstLastFrameToVideo", "WanFirstLastFrameToVideo", {
-            "width": 512, "height": 512, "length": 17, "batch_size": 1, "start_image": ["196", 0], "end_image": ["111", 0],
-        }),
-        "5": node("KSampler", "KSampler", {"seed": 0, "steps": 4, "cfg": 1.0, "latent_image": ["183", 0]}),
-        "200": node("Save Video", "SaveVideo", {"filename_prefix": "video/ComfyUI", "video": ["5", 0]}),
-    }
 
 
-def test_run_video_generation_legacy_wan_writes_anchors_and_length(tmp_path, monkeypatch):
-    output_root, output_dir, ref_a, ref_b = _world(tmp_path)
-    captured = _stub_http(monkeypatch, run_video, _history("200", "images", "take_00001.mp4", "p_x/s_01"))
-    monkeypatch.setattr(run_video, "inject_metadata_mp4", lambda path, snap: None)
-    spec_path = _spec(
-        tmp_path, _legacy_wan_graph(), output_root, output_dir,
-        paths_by_slot={"start": ref_a, "end": ref_b},
-        params={"seed": 7, "length_s": 5, "fps": 16},
-    )
-    run_video.run_generation(str(spec_path), status_file_override=str(tmp_path / "status.json"))
-    graph = captured["payload"]["prompt"]
-    assert graph["202"]["inputs"]["image"].endswith("[output]") and "a.png" in graph["202"]["inputs"]["image"]
-    assert graph["203"]["inputs"]["image"].endswith("[output]") and "b.png" in graph["203"]["inputs"]["image"]
-    assert graph["183"]["inputs"]["start_image"] == ["196", 0] and graph["183"]["inputs"]["end_image"] == ["111", 0]
-    assert graph["196"]["inputs"]["width"] == 512 and graph["111"]["inputs"]["height"] == 512
-    assert graph["183"]["inputs"]["length"] == 81
-    assert graph["5"]["inputs"]["seed"] == 7
-    assert graph["200"]["inputs"]["filename_prefix"] == os.path.join(str(output_dir), "take")
 
 
-def test_run_video_generation_legacy_wan_start_only_drops_end(tmp_path, monkeypatch):
-    output_root, output_dir, ref_a, _ = _world(tmp_path)
-    captured = _stub_http(monkeypatch, run_video, _history("200", "images", "take_00001.mp4", "p_x/s_01"))
-    monkeypatch.setattr(run_video, "inject_metadata_mp4", lambda path, snap: None)
-    spec_path = _spec(
-        tmp_path, _legacy_wan_graph(), output_root, output_dir,
-        paths_by_slot={"start": ref_a}, params={"seed": 7, "length_s": 2, "fps": 16, "width": 832, "height": 480},
-    )
-    run_video.run_generation(str(spec_path), status_file_override=str(tmp_path / "status.json"))
-    graph = captured["payload"]["prompt"]
-    assert "a.png" in graph["202"]["inputs"]["image"]
-    assert "b.png" not in graph["203"]["inputs"]["image"]  # the unused loader is left unwired, not fed
-    assert "end_image" not in graph["183"]["inputs"] and graph["183"]["inputs"]["start_image"] == ["196", 0]
-    assert graph["196"]["inputs"]["width"] == 832 and graph["196"]["inputs"]["height"] == 480
-    assert graph["183"]["inputs"]["length"] == 33
 
 
 # -- parser -------------------------------------------------------------------

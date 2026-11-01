@@ -7,6 +7,9 @@ import { ClipperRoute } from "./screens/Clipper";
 import { HomeRoute } from "./screens/Home";
 import { ProjectRoute } from "./screens/Project";
 import { NewProjectRoute, ProjectSettingsRoute } from "./screens/ProjectForm";
+import { SequenceRoute } from "./screens/Sequence";
+import { SequenceAddRoute } from "./screens/SequenceAdd";
+import { SequenceExportRoute } from "./screens/SequenceExport";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 5_000, retry: 1, refetchOnWindowFocus: true } },
@@ -32,6 +35,11 @@ export default function App() {
               <Route path="/p/:slug/library" element={<LibraryRedirect />} />
               <Route path="/p/:slug/b/:binId" element={<BinRoute />} />
               <Route path="/p/:slug/b/:binId/clip/:mediaId" element={<ClipperRoute />} />
+              <Route path="/p/:slug/s/:seqId" element={<SequenceRoute />} />
+              <Route path="/p/:slug/s/:seqId/add" element={<SequenceAddRoute />} />
+              <Route path="/p/:slug/s/:seqId/export" element={<SequenceExportRoute />} />
+              {/* the clipper in sequence mode: trims one item, the bin's take stays whole */}
+              <Route path="/p/:slug/s/:seqId/clip/:binId" element={<ClipperRoute />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </BrowserRouter>

@@ -42,7 +42,7 @@ def _upload(world, path: Path, bin_id: str) -> dict:
 def _failed(world, seed: int) -> Generation:
     """A render of Video 1 the server gave up on (a timeout), the way jobs.py leaves it."""
     gen = Generation(id="g_timedout", bin=world.video, kind="video", ts="2026-09-15T10:00:00Z", workflow="vid.json",
-                     prompt_typed=".mara at the rail", prompt_submitted=".mara at the rail",
+                     prompt_typed="@mara.png at the rail", prompt_submitted="@mara.png at the rail",
                      params={"width": 1280, "height": 720, "length_s": 5.0, "seed": seed}, status="failed",
                      warnings=[{"kind": "runner", "handle": "", "detail": "prompt x timed out after 3600s"}])
     world.store.append_generation(world.project, gen)
@@ -66,7 +66,7 @@ def test_upload_of_a_rendered_output_lands_as_a_take_with_its_recipe(world):
 
     rec = world.client.get(f"/api/projects/{world.slug}/media/{media['id']}/recipe").json()
     assert rec["found"] and rec["recovered"] and rec["generation"] == gen_id and rec["workflow"] == "img.json" and rec["seed"] == 4242
-    assert rec["references"] == [world.m1] and rec["handles"] == ["mara"] and rec["prompt"] == "mara on the rail"
+    assert rec["references"] == [world.m1] and rec["handles"] == ["mara.png"] and rec["prompt"] == "mara on the rail"
 
     gen = world.client.get(f"/api/projects/{world.slug}/generations/{gen_id}").json()
     assert gen["status"] == "done" and gen["outputs"] == [media["id"]] and gen["recovered_from"] == media["path"]
@@ -80,19 +80,19 @@ def test_upload_of_a_rendered_output_lands_as_a_take_with_its_recipe(world):
     })
     assert r.status_code == 200, r.text
     detail = world.client.get(f"/api/projects/{world.slug}/bins/{world.image}").json()
-    assert detail["bin"]["prompt"] == "mara on the rail" and [x["handle"] for x in detail["references"]] == ["mara"]
+    assert detail["bin"]["prompt"] == "mara on the rail" and [x["handle"] for x in detail["references"]] == ["mara.png"]
 
 
 def test_upload_completes_the_failed_generation_it_came_from(world):
     _failed(world, seed=777)
-    g = rendered_graph({}, seed=777, prompt=".mara at the rail")
+    g = rendered_graph({}, seed=777, prompt="@mara.png at the rail")
     png = png_with_graph(world.media_dir / "late.png", g)
     out = _upload(world, png, world.video)
     media = out["media"]
     assert media["origin"]["generation"] == "g_timedout" and media["take"] == 1
     gen = world.client.get(f"/api/projects/{world.slug}/generations/g_timedout").json()
     assert gen["status"] == "done" and gen["outputs"] == [media["id"]] and gen["warnings"][-1]["kind"] == "recovered"
-    assert gen["prompt_typed"] == ".mara at the rail" and gen["params"]["seed"] == 777
+    assert gen["prompt_typed"] == "@mara.png at the rail" and gen["params"]["seed"] == 777
     rec = world.client.get(f"/api/projects/{world.slug}/media/{media['id']}/recipe").json()
     assert rec["found"] and rec["generation"] == "g_timedout" and rec["recovered"]
     # the agent's history reads it as the take it is, and says it was recovered
@@ -105,7 +105,7 @@ def test_plain_media_already_in_the_project_recovers_on_read(world):
     """Media that landed as an upload before recovery existed: the recipe read (or the bin's
     generation list) rebuilds the record from the file. Media with no graph stays plain."""
     _failed(world, seed=31)
-    g = rendered_graph({}, seed=31, prompt=".mara at the rail")
+    g = rendered_graph({}, seed=31, prompt="@mara.png at the rail")
     png = png_with_graph(world.media_dir / "old.png", g)
     project = world.store.load(world.slug)
     media = adopt_media(project, png, origin=MediaOrigin(type="upload", bin=world.video))
@@ -116,7 +116,7 @@ def test_plain_media_already_in_the_project_recovers_on_read(world):
     rec = world.client.get(f"/api/projects/{world.slug}/media/{media.id}/recipe").json()
     assert rec["found"] and rec["generation"] == "g_timedout" and rec["recovered"]
     assert world.client.get(f"/api/projects/{world.slug}/media/{media.id}").json()["origin"] == {
-        "type": "generation", "generation": "g_timedout", "bin": world.video, "source": None, "start_s": None, "end_s": None, "at_s": None, "note": None,
+        "type": "generation", "generation": "g_timedout", "bin": world.video, "source": None, "start_s": None, "end_s": None, "at_s": None, "note": None, "exec_seconds": None, "layers": None,
     }
     saved = json.loads(world.store.project_path(world.slug).read_text(encoding="utf-8"))
     assert saved["media_by_id"][media.id]["origin"]["generation"] == "g_timedout" and saved["media_by_id"][media.id]["take"] == 1
@@ -140,7 +140,7 @@ def test_bin_generation_list_sweeps_plain_media(world):
 
 def test_upload_of_a_video_output(world):
     _failed(world, seed=910)
-    g = rendered_graph({}, seed=910, prompt=".mara at the rail", frames=41, fps=8.0)
+    g = rendered_graph({}, seed=910, prompt="@mara.png at the rail", frames=41, fps=8.0)
     mp4 = mp4_with_graph(world.media_dir / "late.mp4", g)
     if mp4 is None:
         pytest.skip("ffmpeg not on PATH")

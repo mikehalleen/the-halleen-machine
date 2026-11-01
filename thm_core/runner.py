@@ -27,7 +27,7 @@ from typing import Any
 
 from .ids import utc_now
 from .media import adopt_media, ensure_thumbnails, media_type_for
-from .models import Bin, Generation, GenerationStatus, Kind, Media, MediaOrigin, Project
+from .models import Bin, Generation, GenerationStatus, Kind, Media, MediaOrigin, Project, stamp_take
 from .workflow_names import resolve_curated_workflow
 
 SCRIPT_BY_KIND = {"image": "run_images.py", "video": "run_video.py"}
@@ -244,11 +244,13 @@ def land_outputs(project: Project, bin_: Bin, gen: Generation, outputs: list[dic
     Thumbnails are best-effort.
     """
     paths, warnings = filter_outputs(gen.kind, outputs)
+    # a bin with no winner yet takes its first take as the winner; after that a take is chosen
+    had_winner = bool(bin_.selected and bin_.selected in bin_.media)
     landed: list[Media] = []
     ts = now or utc_now()
     for path in paths:
         try:
-            media = adopt_media(project, path, origin=MediaOrigin(type="generation", generation=gen.id, bin=bin_.id), now=ts)
+            media = adopt_media(project, path, origin=MediaOrigin(type="generation", generation=gen.id, bin=bin_.id, exec_seconds=gen.exec_seconds), now=ts)
         except (FileNotFoundError, ValueError, OSError) as exc:
             warnings.append(f"could not adopt {path}: {exc}")
             continue
@@ -257,16 +259,23 @@ def land_outputs(project: Project, bin_: Bin, gen: Generation, outputs: list[dic
             warnings.append(f"{Path(path).name} is byte-identical to {label} already in {bin_.name} ({media.id}); not added again")
             continue
         bin_.media.append(media.id)
-        bin_.counters["take"] = int(bin_.counters.get("take", 0)) + 1
-        media.take = bin_.counters["take"]
+        stamp_take(bin_, media)
+        # new from the moment it is in the gallery: the thumbnails below take a while, and a
+        # read in between must never see the take without its flag
+        if media.id not in bin_.unseen:
+            bin_.unseen = [*bin_.unseen, media.id]
         landed.append(media)
         try:
             ensure_thumbnails(media, cache_dir)
         except Exception as exc:  # thumbnails are a cache; never fail a landing over them
             warnings.append(f"thumbnails for {media.id}: {exc}")
     if landed:
-        bin_.selected = landed[-1].id
-        bin_.unseen = [*bin_.unseen, *(m.id for m in landed if m.id not in bin_.unseen)]
+        # a take lands as new, not as the winner: once a bin has one, its selected take changes
+        # only when someone chooses it (the user's second tap, a card approval, the agent's
+        # set_bin_field). The exception is the bin's first: with nothing chosen yet, it leads.
+        if not had_winner:
+            bin_.selected = landed[-1].id
+        bin_.updated = ts
         gen.status = "done"
     else:
         gen.status = "failed"

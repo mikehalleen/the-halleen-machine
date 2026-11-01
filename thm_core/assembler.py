@@ -29,6 +29,9 @@ from .workflow_names import WORKFLOWS_DIR, resolve_curated_workflow, workflow_ki
 # Checked against every node's class_type; the node need not carry THM-PartnerNode.
 API_TOKEN_NOTATION: dict[str, tuple[str | None, str | None]] = {
     "MiniMaxH3ReferenceToVideo": ("<Picture {n}>", "<Video {n}>"),
+    # Seedance 2.x labels its references positionally; the node's own asset rewriter
+    # emits exactly these labels ("Image 1", "Video 2").
+    "ByteDance2ReferenceNode": ("Image {n}", "Video {n}"),
 }
 
 # Notation for a linear ReferenceLatent stack (Klein-style image edit workflows).
@@ -139,6 +142,10 @@ class Capacity:
     slot_node_ids: list[str] = field(default_factory=list)  # image slots, wiring order
     video_slot_node_ids: list[str] = field(default_factory=list)  # THM-VideoReference, node-id order
     addresses_by_token: bool = False
+    # a THM-IsDraft switch: the workflow has a draft setting of its own, turned on per render
+    supports_draft: bool = False
+    # a canvas THM can set (width/height): quarter size halves it; without one there is no quarter
+    supports_size: bool = False
     kind: Kind = "image"  # what the workflow makes: the folder it sits in, else guessed from the graph
     error: str | None = None
 
@@ -159,6 +166,8 @@ def workflow_capacity(workflow_name: str, workflows_dir: Path | None = None) -> 
         slots = caps.wc.discover_image_reference_slots(workflow)
         video_slots_found = caps.wc.discover_video_reference_slots(workflow)
         frames = caps.wc.discover_video_frame_input_support(workflow)
+        draft = caps.wc.supports_draft(workflow)
+        size = caps.wc.supports_size(workflow)
     except Exception as exc:  # a broken JSON must refuse, not crash the command layer
         return Capacity(found=False, error=str(exc))
     profile = load_token_profile(workflow_name, base)
@@ -182,6 +191,8 @@ def workflow_capacity(workflow_name: str, workflows_dir: Path | None = None) -> 
         slot_node_ids=node_ids,
         video_slot_node_ids=video_ids,
         addresses_by_token=profile.addresses_by_token,
+        supports_draft=draft,
+        supports_size=size,
         kind=kind,
     )
 
@@ -292,8 +303,8 @@ def assemble(
         if not r.exists:
             warnings.append(AssemblyWarning("missing_file", r.handle, r.note or "missing file"))
 
-    prompt_submitted = rewrite_tokens(bin_.prompt, mapping, keep_dot=False)
-    negative_submitted = rewrite_tokens(bin_.negative, mapping, keep_dot=False)
+    prompt_submitted = rewrite_tokens(bin_.prompt, mapping, keep_prefix=False)
+    negative_submitted = rewrite_tokens(bin_.negative, mapping, keep_prefix=False)
 
     # the project's global prompts, applied at generation time: positive after the bin's
     # prompt, negative merged with it; both literal, never token-rewritten
@@ -313,11 +324,11 @@ def assemble(
     known = all_handles(bin_.references)
     used = handles_in(bin_.prompt) | handles_in(bin_.negative)
     for h in sorted(used - known):
-        warnings.append(AssemblyWarning("unknown_token", h, f".{h} matches no reference in this bin"))
+        warnings.append(AssemblyWarning("unknown_token", h, f"@{h} matches no reference in this bin"))
     if profile.addresses_by_token:
         for ref in bin_.references:
             if ref.handle not in used:
-                warnings.append(AssemblyWarning("unused_handle", ref.handle, f".{ref.handle} appears nowhere in the prompt"))
+                warnings.append(AssemblyWarning("unused_handle", ref.handle, f"@{ref.handle} appears nowhere in the prompt"))
 
     return AssembledPrompt(
         prompt_typed=bin_.prompt,

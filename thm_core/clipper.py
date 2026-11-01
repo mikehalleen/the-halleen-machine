@@ -42,3 +42,39 @@ def extract_still(source: str, at_s: float, dest: str | Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     cmd = [exe, "-y", "-v", "error", "-i", str(source), "-ss", f"{at_s:.3f}", "-frames:v", "1", str(dest)]
     subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+
+
+def extract_gif(
+    source: str,
+    dest: str | Path,
+    *,
+    start_s: float | None = None,
+    end_s: float | None = None,
+    fps: float | None = None,
+    width: int | None = None,
+) -> None:
+    """Encode ``source`` (or ``[start_s, end_s)`` of it) as a looping animated ``.gif``.
+
+    One pass with a palette built from the clip itself (``palettegen`` / ``paletteuse``), so
+    colour holds up better than ffmpeg's default web palette. ``fps`` and ``width`` scale it
+    down; None keeps the source's rate and size. Audio is dropped: a GIF has none.
+    """
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        raise RuntimeError("ffmpeg not found on PATH")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    pre = []
+    if fps:
+        pre.append(f"fps={fps:g}")
+    if width:
+        pre.append(f"scale={int(width)}:-2:flags=lanczos")
+    head = ",".join(pre) + "," if pre else ""
+    graph = f"[0:v]{head}split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a"
+    cmd = [exe, "-y", "-v", "error", "-i", str(source)]
+    if start_s is not None:
+        cmd += ["-ss", f"{start_s:.3f}"]
+    if end_s is not None:
+        cmd += ["-to", f"{end_s:.3f}"]
+    cmd += ["-filter_complex", graph, "-an", "-loop", "0", "-f", "gif", str(dest)]
+    subprocess.run(cmd, capture_output=True, timeout=300, check=True)

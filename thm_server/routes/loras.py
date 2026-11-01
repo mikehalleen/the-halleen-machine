@@ -7,27 +7,17 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 
+from thm_core.loras import list_lora_names
+
 from ..deps import state
 from ..schemas import LoraFile
 
 router = APIRouter(prefix="/api/loras", tags=["loras"])
 
-LORA_SUFFIXES = (".safetensors", ".pt", ".ckpt")
-
 
 def list_lora_files(loras_dir: Path | None) -> list[LoraFile]:
-    """Every LoRA under ``[paths] loras``, named the way ComfyUI's loader wants it: the path
-    relative to that folder with forward slashes. Empty when the folder is unset or missing."""
-    if loras_dir is None or not Path(loras_dir).is_dir():
-        return []
-    root = Path(loras_dir)
-    out: list[LoraFile] = []
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in LORA_SUFFIXES or path.name.startswith("."):
-            continue
-        out.append(LoraFile(name=path.relative_to(root).as_posix(), size=path.stat().st_size))
-    out.sort(key=lambda f: f.name.lower())
-    return out
+    """Every LoRA under ``[paths] loras`` (see ``list_lora_names``), with its size."""
+    return [LoraFile(name=name, size=(Path(loras_dir) / name).stat().st_size) for name in list_lora_names(loras_dir)]
 
 
 @router.get("", response_model=list[LoraFile])

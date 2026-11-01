@@ -21,7 +21,12 @@ interface Props {
   dashed?: boolean;
   /** A take that landed and nobody has looked at yet: a dot on the tile until it is shown. */
   fresh?: boolean;
+  /** The take a reference is bound to, while re-picking that reference: a grey dot where the
+   * new dot sits (it wins over the new dot). */
+  current?: boolean;
   label?: string;
+  /** The hover title, when it says more than the label (which stays the alt text). */
+  title?: string;
   /** Fill the box the caller lays out instead of taking a fixed square — the inline size would
    * otherwise beat the stylesheet and leave the tile wider than the image inside it. */
   fill?: boolean;
@@ -55,11 +60,25 @@ export function VideoBadge({ duration }: { duration?: number | null }) {
   );
 }
 
+/** The audio marker: a note glyph and the length, in the same corner pill as the video one. The
+ * tile behind it is the file's waveform. */
+export function AudioBadge({ duration }: { duration?: number | null }) {
+  const secs = duration != null && duration > 0 ? (duration >= 10 ? `${Math.round(duration)}s` : `${duration.toFixed(1)}s`) : "";
+  return (
+    <span className="badge-video badge-audio" aria-label={secs ? `audio, ${secs}` : "audio"}>
+      <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+        <path d="M4.5 1.5v6.6a2 2 0 1 0 1.2 1.8V4.2l4-1V7a2 2 0 1 0 1.2 1.8V.8z" fill="currentColor" />
+      </svg>
+      {secs && <span>{secs}</span>}
+    </span>
+  );
+}
+
 /**
  * One thumbnail tile: grid webp, corner marker for video, dashed placeholder when empty or broken.
  * Every tile with media is tappable, even inside a card link: the tap is the tile's, not the card's.
  */
-export function MediaThumb({ slug, id, type, duration, size = 56, ratio, selected, dim, dashed, fresh, label, fill, passive, onClick }: Props) {
+export function MediaThumb({ slug, id, type, duration, size = 56, ratio, selected, dim, dashed, fresh, current, label, title, fill, passive, onClick }: Props) {
   const [broken, setBroken] = useState(false);
   const viewer = useMediaViewer();
   const empty = !id || broken;
@@ -79,7 +98,7 @@ export function MediaThumb({ slug, id, type, duration, size = 56, ratio, selecte
     <div
       className={`thumb ${selected ? "is-selected" : ""} ${empty || dashed ? "is-empty" : ""} ${empty || passive ? "" : "is-tappable"}`}
       style={style}
-      title={label}
+      title={title ?? label}
       role={empty || passive ? undefined : "button"}
       tabIndex={empty || passive ? undefined : 0}
       onClick={passive ? undefined : act}
@@ -89,7 +108,9 @@ export function MediaThumb({ slug, id, type, duration, size = 56, ratio, selecte
     >
       {!empty && <img src={thumbUrl(slug, id!, "grid")} alt={label ?? ""} loading="lazy" onError={() => setBroken(true)} />}
       {!empty && type === "video" && <VideoBadge duration={duration} />}
-      {!empty && fresh && <span className="thumb-new" role="img" aria-label="new, not yet viewed" title="new — not yet viewed" />}
+      {!empty && type === "audio" && <AudioBadge duration={duration} />}
+      {!empty && current && <span className="thumb-new is-current" role="img" aria-label="the current reference" title="current reference" />}
+      {!empty && fresh && !current && <span className="thumb-new" role="img" aria-label="new, not yet viewed" title="new — not yet viewed" />}
     </div>
   );
 }

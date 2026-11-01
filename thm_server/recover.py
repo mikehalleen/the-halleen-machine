@@ -24,9 +24,13 @@ def _has_record(st: ServerState, project: Project, media: Media) -> bool:
     return media.origin.type == "generation" and bool(media.origin.generation) and st.store.read_generation(project, media.origin.generation) is not None
 
 
+# derived files: a graph they carry belongs to what they were cut from, not to them
+DERIVED_ORIGINS = ("export", "clip", "frame", "gif")
+
+
 def recover_media(st: ServerState, slug: str, project: Project, media: Media) -> Recovery | None:
     """Blocking (ffprobe, Pillow); call in a threadpool under the project lock."""
-    if _has_record(st, project, media):
+    if _has_record(st, project, media) or media.origin.type in DERIVED_ORIGINS:
         return None
     key = (slug, media.id, media.sha256 or media.path)
     if key in st.provenance_probed:

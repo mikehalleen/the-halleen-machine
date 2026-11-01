@@ -160,6 +160,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{slug}/media/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Many Seen
+         * @description The agent shows the user these media inside something they were given (an assembly):
+         *     their new markers go, and so do those of everything they were made from.
+         */
+        post: operations["mark_many_seen_api_projects__slug__media_seen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/bins/{bin_id}/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clear Bin Seen
+         * @description The user dismissed every new marker in this bin, whatever the media type.
+         */
+        post: operations["clear_bin_seen_api_projects__slug__bins__bin_id__seen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{slug}/media": {
         parameters: {
             query?: never;
@@ -220,6 +261,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{slug}/generations/{gen_id}/recipe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Generation Recipe
+         * @description The settings of a generation that has no take yet -- rendering now, or saved for later --
+         *     for recall into a bin, so the bin can be used for something else meanwhile and come back.
+         */
+        get: operations["generation_recipe_api_projects__slug__generations__gen_id__recipe_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/media/{slug}/{media_id}/file": {
         parameters: {
             query?: never;
@@ -227,7 +289,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Media File */
+        /**
+         * Media File
+         * @description The original file, byte for byte. ``download=1`` asks the browser to save it under its
+         *     own name and format rather than show it.
+         */
         get: operations["media_file_media__slug___media_id__file_get"];
         put?: never;
         post?: never;
@@ -401,6 +467,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{slug}/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Notes
+         * @description The user's notes the live session has not accounted for: the agent's to-do list. A note
+         *     leaves it only through ``answer_notes``; reading the inbox does not close anything.
+         */
+        get: operations["notes_api_projects__slug__notes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resume
+         * @description The reconnect summary: the mode, the notes still owed, the renders running or queued,
+         *     the ones a restart or reboot cut off in the last day, the agent's last post and the project's
+         *     standing rules. ``connect`` prints it; ``resume`` reads it any time.
+         */
+        get: operations["resume_api_projects__slug__resume_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{slug}/feed": {
         parameters: {
             query?: never;
@@ -481,6 +590,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/comfy-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Comfy Runs
+         * @description The user's recent ComfyUI runs, newest first: what a workflow import can start from.
+         */
+        get: operations["comfy_runs_api_workflows_comfy_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import From Comfy
+         * @description Tag and save a workflow the user ran in ComfyUI: the API graph into the kind folder, the
+         *     UI graph into the samples folder for the user to open in ComfyUI. Nothing is written to ComfyUI.
+         */
+        post: operations["import_from_comfy_api_workflows_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{name}": {
         parameters: {
             query?: never;
@@ -554,29 +704,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/projects/{slug}/held/release": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Release Held
-         * @description Start every generation saved for later, in the order they were saved: each goes through
-         *     the same prepare/launch as a plain Generate, so ComfyUI's queue serializes them. A held
-         *     record whose bin has since been deleted is discarded instead. The user's gesture, so the
-         *     jobs are queued by the user whoever saved them.
-         */
-        post: operations["release_held_api_projects__slug__held_release_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/projects/{slug}/held/{gen_id}/discard": {
         parameters: {
             query?: never;
@@ -591,6 +718,30 @@ export interface paths {
          * @description Drop one saved generation without rendering it. The change that saved it stays as it was.
          */
         post: operations["discard_held_api_projects__slug__held__gen_id__discard_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/held/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Release Held
+         * @description Start every generation saved for later, in every project, oldest save first (FIFO across
+         *     projects: the GPU is one queue whichever project asked). Each goes through the same
+         *     prepare/launch as a plain Generate, so ComfyUI's queue serializes them. A held record whose
+         *     bin has since been deleted is discarded instead; a project with no ComfyUI configured keeps
+         *     its saves held. The user's gesture, so the jobs are queued by the user whoever saved them.
+         */
+        post: operations["release_held_api_held_release_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -645,6 +796,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{slug}/chat-files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Chat File
+         * @description A file for a note, not for the project: no bin, no media record, no change. The id that
+         *     comes back goes in ``post_message``'s ``files``.
+         */
+        post: operations["upload_chat_file_api_projects__slug__chat_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/chat-files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Chat File */
+        get: operations["chat_file_api_projects__slug__chat_files__file_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Remove Chat File
+         * @description Take back a file that was never sent. One a message already carries stays: the feed
+         *     still shows it.
+         */
+        delete: operations["remove_chat_file_api_projects__slug__chat_files__file_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/chat-files/{file_id}/keep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Keep Chat File
+         * @description Make a note's file project media: a copy lands in ``imports/`` and joins the bin like
+         *     any upload (a bin id, a bin name, or the next ``bin-n``). The note keeps its own file.
+         */
+        post: operations["keep_chat_file_api_projects__slug__chat_files__file_id__keep_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{slug}/clips": {
         parameters: {
             query?: never;
@@ -657,6 +872,228 @@ export interface paths {
         /** Create Clip */
         post: operations["create_clip_api_projects__slug__clips_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/media/{media_id}/flip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Flip Media
+         * @description A horizontally flipped copy of a still, as new media in the bin (the source's, unless
+         *     another is named). The original stays as it was; the copy says what it was made from.
+         */
+        post: operations["flip_media_api_projects__slug__media__media_id__flip_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/sequences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sequences */
+        get: operations["list_sequences_api_projects__slug__sequences_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/sequences/{seq_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Sequence */
+        get: operations["get_sequence_api_projects__slug__sequences__seq_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/sequences/{seq_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Item
+         * @description One item with its layer slices and mix, rendered through the same plan and filter graph
+         *     as the export (what the agent hears is what the export will have), with up to ``handles_s``
+         *     of the take either side. The file is scratch: served once, kept in the project's cache, never
+         *     media and never in a bin. Agent-only in practice (the UI has no control for it); an agent
+         *     needs a live session, as for an export.
+         */
+        post: operations["preview_item_api_projects__slug__sequences__seq_id__preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/sequences/{seq_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Status */
+        get: operations["export_status_api_projects__slug__sequences__seq_id__export_get"];
+        put?: never;
+        /**
+         * Start Export
+         * @description Render the sequence to one mp4; it lands in the output bin as the next take. One export
+         *     per sequence at a time; progress is the ``export`` event and the GET above. ``bin`` points
+         *     the sequence at another output bin first (one logged change).
+         */
+        post: operations["start_export_api_projects__slug__sequences__seq_id__export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Posts
+         * @description Every post, newest first; ``bin`` narrows to the posts drafted from one bin.
+         */
+        get: operations["list_posts_api_projects__slug__posts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/posts/{post_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Post */
+        get: operations["get_post_api_projects__slug__posts__post_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/posts/{post_id}/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Upload Status */
+        get: operations["upload_status_api_projects__slug__posts__post_id__upload_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/youtube/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Connect Status */
+        get: operations["connect_status_api_projects__slug__youtube_connect_get"];
+        put?: never;
+        /**
+         * Connect Channel
+         * @description Start the consent for a new channel: answers Google's URL for the browser to open; the
+         *     redirect lands on this machine, so only a browser here can finish it (``pc_only`` otherwise).
+         *     When it lands, the channel is this project's destination.
+         */
+        post: operations["connect_channel_api_projects__slug__youtube_connect_post"];
+        /** Cancel Connect */
+        delete: operations["cancel_connect_api_projects__slug__youtube_connect_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/youtube": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Youtube Status
+         * @description Can this server upload to YouTube (the client file is there), which channels are connected,
+         *     and whether this request could connect a new one (it came from the server's machine).
+         */
+        get: operations["youtube_status_api_publish_youtube_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/youtube/channels/{channel_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Forget Channel
+         * @description Forget a channel's token here (the consent itself is revoked at Google). Projects pointing
+         *     at it keep the id and show the channel as gone until they pick another.
+         */
+        delete: operations["forget_channel_api_publish_youtube_channels__channel_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -717,6 +1154,28 @@ export interface paths {
          * @description The agent's answer. Only the agent, only for its own session, only once.
          */
         post: operations["reply_request_api_projects__slug__enhance_requests__req_id__reply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{slug}/enhance/{req_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Enhance
+         * @description Stop a local rewrite the app is waiting on: the run's flag ends its wait, and ComfyUI is
+         *     told to drop the prompt. The waiting request answers ``enhance_cancelled``. 404 when no
+         *     such run is in flight (it finished, or was never local).
+         */
+        post: operations["cancel_enhance_api_projects__slug__enhance__req_id__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -795,6 +1254,8 @@ export interface components {
             doing?: string | null;
             /** Idle S */
             idle_s?: number | null;
+            /** Gone */
+            gone?: boolean | null;
         };
         /**
          * AgentSession
@@ -815,6 +1276,11 @@ export interface components {
              * @enum {string}
              */
             mode: "auto" | "manual" | "image_review" | "video_review" | "plan";
+            /**
+             * Drafts
+             * @default false
+             */
+            drafts: boolean;
             /** Harness */
             harness?: string | null;
             /** Started */
@@ -823,6 +1289,20 @@ export interface components {
             connected?: string | null;
             /** Ended */
             ended?: string | null;
+            /**
+             * Ended By Private
+             * @default false
+             */
+            ended_by_private: boolean;
+            /** Answered */
+            answered?: {
+                [key: string]: string;
+            };
+            /**
+             * Notes Tracked
+             * @default false
+             */
+            notes_tracked: boolean;
         } & {
             [key: string]: unknown;
         };
@@ -855,6 +1335,13 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+            /** Shot */
+            shot?: number | null;
+            /**
+             * Slug
+             * @default
+             */
+            slug: string;
             /**
              * Workflow
              * @default
@@ -896,6 +1383,11 @@ export interface components {
              * @default
              */
             created: string;
+            /**
+             * Updated
+             * @default
+             */
+            updated: string;
             /** Unseen */
             unseen?: string[];
         } & {
@@ -911,6 +1403,13 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+            /** Shot */
+            shot?: number | null;
+            /**
+             * Slug
+             * @default
+             */
+            slug: string;
             /**
              * Workflow
              * @default
@@ -952,10 +1451,15 @@ export interface components {
              * @default
              */
             created: string;
+            /**
+             * Updated
+             * @default
+             */
+            updated: string;
             /** Unseen */
             unseen?: string[];
             /** Media Types */
-            media_types?: ("image" | "video")[];
+            media_types?: ("image" | "video" | "audio")[];
             /**
              * Take Count
              * @default 0
@@ -999,6 +1503,18 @@ export interface components {
             /** Name */
             name: string;
         };
+        /**
+         * BinSeenOut
+         * @description The bin clear route's answer: the media that stopped being marked new.
+         */
+        BinSeenOut: {
+            /** Bin */
+            bin: string;
+            /** Cleared */
+            cleared: string[];
+            /** Project Version */
+            project_version: number;
+        };
         /** Body_upload_api_projects__slug__uploads_post */
         Body_upload_api_projects__slug__uploads_post: {
             /**
@@ -1014,6 +1530,16 @@ export interface components {
             source?: string | null;
             /** Note */
             note?: string | null;
+            /** Tags */
+            tags?: string | null;
+        };
+        /** Body_upload_chat_file_api_projects__slug__chat_files_post */
+        Body_upload_chat_file_api_projects__slug__chat_files_post: {
+            /**
+             * File
+             * Format: binary
+             */
+            file: string;
         };
         /** CapacityOut */
         CapacityOut: {
@@ -1033,6 +1559,16 @@ export interface components {
             slot_node_ids: string[];
             /** Video Slot Node Ids */
             video_slot_node_ids: string[];
+            /**
+             * Supports Draft
+             * @default false
+             */
+            supports_draft: boolean;
+            /**
+             * Supports Size
+             * @default false
+             */
+            supports_size: boolean;
             /**
              * Kind
              * @default image
@@ -1098,9 +1634,34 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * ChannelOut
+         * @description A YouTube channel connected on this server (its token file is here).
+         */
+        ChannelOut: {
+            /** Id */
+            id: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /**
+             * Handle
+             * @default
+             */
+            handle: string;
+            /**
+             * Connected
+             * @default
+             */
+            connected: string;
+        };
+        /**
          * ClipBody
-         * @description A segment cut or a still frame lifted from an existing video media (design's "clip and
-         *     still"). Lands in ``imports/`` and joins a bin the same way an upload does.
+         * @description A segment cut, a still frame, or an animated GIF made from an existing video media
+         *     (design's "clip and still"). Lands in ``imports/`` and joins a bin the same way an upload
+         *     does. A GIF takes the whole video unless ``start_s``/``end_s`` trim it; ``fps`` and
+         *     ``width`` scale it down (default: the source's own).
          */
         ClipBody: {
             /** Source */
@@ -1109,13 +1670,17 @@ export interface components {
              * Mode
              * @enum {string}
              */
-            mode: "segment" | "still";
+            mode: "segment" | "still" | "gif";
             /** Start S */
             start_s?: number | null;
             /** End S */
             end_s?: number | null;
             /** At S */
             at_s?: number | null;
+            /** Fps */
+            fps?: number | null;
+            /** Width */
+            width?: number | null;
             /** Bin */
             bin?: string | null;
             /** Bin Name */
@@ -1129,6 +1694,53 @@ export interface components {
             messages: components["schemas"]["Message"][];
             /** Project Version */
             project_version: number;
+        };
+        /**
+         * ComfyRun
+         * @description One run in ComfyUI's history that the user started from the ComfyUI frontend (THM's own
+         *     renders are left out), to pick a workflow to import from.
+         */
+        ComfyRun: {
+            /** Id */
+            id: string;
+            /** Created */
+            created?: number | null;
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+            /**
+             * Has Ui
+             * @default false
+             */
+            has_ui: boolean;
+            /**
+             * Nodes
+             * @default 0
+             */
+            nodes: number;
+            /**
+             * Kind
+             * @default image
+             * @enum {string}
+             */
+            kind: "image" | "video";
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
+            /**
+             * Outputs
+             * @default []
+             */
+            outputs: string[];
+            /**
+             * Classes
+             * @default []
+             */
+            classes: string[];
         };
         /** ComfySettings */
         ComfySettings: {
@@ -1161,6 +1773,35 @@ export interface components {
             changes?: components["schemas"]["Change"][];
             /** Generations */
             generations?: components["schemas"]["Generation"][];
+            /** Bin */
+            bin?: string | null;
+            /** Sequence */
+            sequence?: string | null;
+            /** Post */
+            post?: string | null;
+            /** Mode */
+            mode?: string | null;
+        };
+        /**
+         * ConnectStatusOut
+         * @description Where a project's channel consent stands. ``waiting`` carries Google's URL for the browser
+         *     on the server's machine; ``done`` the channel that is now the project's.
+         */
+        ConnectStatusOut: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "idle" | "waiting" | "done" | "failed";
+            /** Auth Url */
+            auth_url?: string | null;
+            channel?: components["schemas"]["ChannelOut"] | null;
+            /** Error */
+            error?: string | null;
+            /** Started */
+            started?: string | null;
+            /** Finished */
+            finished?: string | null;
         };
         /**
          * CreateProjectBody
@@ -1179,9 +1820,11 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "proposed" | "pending" | "approved" | "rejected" | "superseded" | "closed";
+            status: "proposed" | "pending" | "approved" | "rejected" | "superseded" | "closed" | "replied";
             /** Note */
             note?: string | null;
+            /** Files */
+            files?: components["schemas"]["MessageFile"][];
             /** Ts */
             ts?: string | null;
         } & {
@@ -1193,11 +1836,21 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "approve" | "reject" | "reopen" | "close";
+            action: "approve" | "reject" | "reopen" | "close" | "reply";
             /** Note */
             note?: string | null;
             /** Items */
             items?: components["schemas"]["ShotDecision"][] | null;
+            /**
+             * Hold
+             * @default false
+             */
+            hold: boolean;
+            /**
+             * Files
+             * @default []
+             */
+            files: string[];
         };
         /**
          * EnhanceBody
@@ -1231,6 +1884,21 @@ export interface components {
             references?: components["schemas"]["EnhanceReference"][];
             /** Bin */
             bin?: string | null;
+            /**
+             * Request
+             * @default
+             */
+            request: string;
+        };
+        /**
+         * EnhanceCancelOut
+         * @description The cancel route's answer: the run named, and what ComfyUI was told.
+         */
+        EnhanceCancelOut: {
+            /** Request */
+            request: string;
+            /** Detail */
+            detail: string;
         };
         /** EnhanceOut */
         EnhanceOut: {
@@ -1248,6 +1916,11 @@ export interface components {
             system_source: "workflow" | "default";
             /** Elapsed S */
             elapsed_s: number;
+            /**
+             * Dropped Tags
+             * @default []
+             */
+            dropped_tags: string[];
         };
         /** EnhanceReference */
         EnhanceReference: {
@@ -1309,18 +1982,61 @@ export interface components {
             detail?: string | null;
         };
         /**
+         * ExportBody
+         * @description Where this export lands: a bin id to point the sequence at from now on; omitted, the
+         *     sequence's own output bin (made now if it has none yet).
+         */
+        ExportBody: {
+            /** Bin */
+            bin?: string | null;
+        };
+        /**
+         * ExportStatusOut
+         * @description Where a sequence's export stands. ``idle`` when none is running and none has run this
+         *     server process; ``done`` carries the media it made.
+         */
+        ExportStatusOut: {
+            /** Sequence */
+            sequence: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "idle" | "running" | "done" | "failed";
+            /** Progress */
+            progress?: number | null;
+            /** Media */
+            media?: string | null;
+            /** Take */
+            take?: number | null;
+            /** Error */
+            error?: string | null;
+            /** Started */
+            started?: string | null;
+            /** Finished */
+            finished?: string | null;
+        };
+        /**
          * FeedEntry
          * @description One line of the session feed: a message plus, for change and decision lines, the change it is about,
          *     the media that change produced or bound (for the card preview), and the bin it targets. A
-         *     propose_shots change carries its items as ``shots``.
+         *     propose_shots change carries its items as ``shots``; a generate change its render as ``render``.
          */
         FeedEntry: {
             message: components["schemas"]["Message"];
+            /** Answer */
+            answer?: string | null;
+            /**
+             * Open
+             * @default false
+             */
+            open: boolean;
             change?: components["schemas"]["Change"] | null;
             media?: components["schemas"]["Media"] | null;
             bin?: components["schemas"]["BinRef"] | null;
             /** Shots */
             shots?: components["schemas"]["ShotOut"][] | null;
+            render?: components["schemas"]["RenderRef"] | null;
         };
         /** FeedOut */
         FeedOut: {
@@ -1328,6 +2044,14 @@ export interface components {
             entries: components["schemas"]["FeedEntry"][];
             /** Cursor */
             cursor: number;
+        };
+        /**
+         * FlipBody
+         * @description Where a flipped copy lands: the named bin, else the bin the source landed in.
+         */
+        FlipBody: {
+            /** Bin */
+            bin?: string | null;
         };
         /** Generation */
         Generation: {
@@ -1386,6 +2110,8 @@ export interface components {
             warnings?: {
                 [key: string]: unknown;
             }[];
+            /** Exec Seconds */
+            exec_seconds?: number | null;
             /** Recovered From */
             recovered_from?: string | null;
         } & {
@@ -1424,6 +2150,11 @@ export interface components {
             projects_dir: string;
             /** Workflows Dir */
             workflows_dir: string;
+            /**
+             * Comfy Url
+             * @default
+             */
+            comfy_url: string;
         };
         /** InboxOut */
         InboxOut: {
@@ -1431,6 +2162,63 @@ export interface components {
             messages: components["schemas"]["Message"][];
             /** Cursor */
             cursor: number;
+            /** Mode */
+            mode?: string | null;
+        };
+        /**
+         * InterruptedOut
+         * @description A render that stopped because ComfyUI or the machine went away, with no take: re-run it
+         *     (``recall --generate`` on its bin's last take, or ``generate``) or let it go.
+         */
+        InterruptedOut: {
+            /** Generation */
+            generation: string;
+            /** Bin */
+            bin: string;
+            /**
+             * Bin Name
+             * @default
+             */
+            bin_name: string;
+            /** Ts */
+            ts: string;
+            /**
+             * Why
+             * @default
+             */
+            why: string;
+        };
+        /**
+         * ItemMix
+         * @description How one item's sound sits against the layers: its own clip level, a dB offset (or a mute,
+         *     None) per layer id, the fade on its own audio at both edges, and how fast a layer's gain
+         *     ramps at the item's edges. ``reviewed_start_frame`` is where the item started when the agent
+         *     last QC'd it against the layers; a move since then means it needs another listen.
+         */
+        ItemMix: {
+            /**
+             * Clip Db
+             * @default 0
+             */
+            clip_db: number;
+            /** Layers */
+            layers?: {
+                [key: string]: number | null;
+            };
+            /**
+             * Edge Fade Ms
+             * @default 10
+             */
+            edge_fade_ms: number;
+            /**
+             * Ramp Ms
+             * @default 30
+             */
+            ramp_ms: number;
+            /** Reviewed Start Frame */
+            reviewed_start_frame?: number | null;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * JobOut
@@ -1486,6 +2274,50 @@ export interface components {
             bin_name: string;
             /** Queued By */
             queued_by?: ("user" | "agent") | null;
+            /**
+             * Stalled
+             * @description running, but its progress has not moved for a while: ComfyUI may be hung. The feed got an alert line when it tripped; the bar says STALLED while it lasts
+             * @default false
+             */
+            stalled: boolean;
+            /**
+             * Retried
+             * @description queued again after ComfyUI (or the machine, or this server) lost it; once only
+             * @default false
+             */
+            retried: boolean;
+        };
+        /**
+         * KeepFileBody
+         * @description Where a note's file goes when it becomes project media: a bin id, a bin name (found or
+         *     minted), or neither for the next ``bin-n``.
+         */
+        KeepFileBody: {
+            /** Bin */
+            bin?: string | null;
+            /** Bin Name */
+            bin_name?: string | null;
+        };
+        /**
+         * LayerUnderItem
+         * @description What one layer does under one item: the span of its source heard there (None = silent
+         *     here: not started yet, or run out), and the item's offset on it (None = muted here).
+         */
+        LayerUnderItem: {
+            /** Source In S */
+            source_in_s?: number | null;
+            /** Source Out S */
+            source_out_s?: number | null;
+            /**
+             * Db
+             * @default 0
+             */
+            db: number | null;
+            /**
+             * Muted
+             * @default false
+             */
+            muted: boolean;
         };
         /**
          * Lora
@@ -1525,7 +2357,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "image" | "video";
+            type: "image" | "video" | "audio";
             /** Path */
             path: string;
             /** Sha256 */
@@ -1540,6 +2372,10 @@ export interface components {
             fps?: number | null;
             /** Frames */
             frames?: number | null;
+            /** Sample Rate */
+            sample_rate?: number | null;
+            /** Channels */
+            channels?: number | null;
             /**
              * Created
              * @default
@@ -1558,7 +2394,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "generation" | "upload" | "clip" | "frame";
+            type: "generation" | "upload" | "clip" | "frame" | "gif" | "export";
             /** Generation */
             generation?: string | null;
             /** Bin */
@@ -1573,6 +2409,12 @@ export interface components {
             at_s?: number | null;
             /** Note */
             note?: string | null;
+            /** Exec Seconds */
+            exec_seconds?: number | null;
+            /** Layers */
+            layers?: {
+                [key: string]: unknown;
+            }[] | null;
         } & {
             [key: string]: unknown;
         };
@@ -1605,6 +2447,8 @@ export interface components {
             text: string;
             /** Attachments */
             attachments?: string[];
+            /** Files */
+            files?: components["schemas"]["MessageFile"][];
             context?: components["schemas"]["MessageContext"] | null;
             /** Change */
             change?: string | null;
@@ -1618,12 +2462,13 @@ export interface components {
         /**
          * MessageContext
          * @description What the user was looking at when they wrote the note: the bin on screen and its lead
-         *     media. "This take" / "this video" in the text means these ids. Names ride along so the feed
+         *     media, or the sequence on screen and, when a row is open, that item's bin and take. "This
+         *     take" / "this shot" / "this cut" in the text means these ids. Names ride along so the feed
          *     and the agent's inbox line read without a lookup.
          */
         MessageContext: {
             /** Bin */
-            bin: string;
+            bin?: string | null;
             /**
              * Bin Name
              * @default
@@ -1636,8 +2481,187 @@ export interface components {
              * @default
              */
             media_label: string;
+            /** Sequence */
+            sequence?: string | null;
+            /**
+             * Sequence Name
+             * @default
+             */
+            sequence_name: string;
+            /** Position */
+            position?: number | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * MessageFile
+         * @description A file the note itself carries: a marked-up screenshot, a picture from somewhere else.
+         *     It lives beside the message log (``<slug>-files/chat/``), in no bin, and is not project
+         *     media: no library, no picker, no reference can reach it until someone keeps it into a bin.
+         */
+        MessageFile: {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /**
+             * Type
+             * @default image
+             * @enum {string}
+             */
+            type: "image" | "video" | "audio";
+        } & {
+            [key: string]: unknown;
+        };
+        /** MovedItemOut */
+        MovedItemOut: {
+            /** Sequence */
+            sequence: string;
+            /** Sequence Name */
+            sequence_name: string;
+            /** Bin */
+            bin: string;
+            /** Name */
+            name: string;
+            /** Position */
+            position: number;
+            /** Reviewed Start Frame */
+            reviewed_start_frame: number;
+            /** Start Frame */
+            start_frame: number;
+        };
+        /**
+         * NotesOut
+         * @description The user's notes the live session still owes an answer to, oldest first.
+         */
+        NotesOut: {
+            /** Notes */
+            notes: components["schemas"]["Message"][];
+        };
+        /**
+         * PostOut
+         * @description A post as the screens and the agent read it: the record plus the bin's name and the video
+         *     it names, so a list needs no second fetch. Ids only otherwise: nothing here that a private
+         *     project's routes would not already serve.
+         */
+        PostOut: {
+            /** Id */
+            id: string;
+            /**
+             * Platform
+             * @default youtube
+             * @constant
+             */
+            platform: "youtube";
+            /** Bin */
+            bin: string;
+            /** Media */
+            media: string;
+            /**
+             * Channel
+             * @default
+             */
+            channel: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Tags */
+            tags?: string[];
+            /**
+             * Privacy
+             * @default private
+             * @enum {string}
+             */
+            privacy: "private" | "unlisted" | "public";
+            /**
+             * Synthetic
+             * @default true
+             */
+            synthetic: boolean;
+            /**
+             * Made For Kids
+             * @default false
+             */
+            made_for_kids: boolean;
+            /** Thumbnail */
+            thumbnail?: string | null;
+            /** Publish At */
+            publish_at?: string | null;
+            /** Extra */
+            extra?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Status
+             * @default draft
+             * @enum {string}
+             */
+            status: "draft" | "uploading" | "uploaded" | "failed";
+            /** Remote Id */
+            remote_id?: string | null;
+            /** Remote Url */
+            remote_url?: string | null;
+            /** Studio Url */
+            studio_url?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Uploaded */
+            uploaded?: string | null;
+            /**
+             * Created
+             * @default
+             */
+            created: string;
+            /**
+             * Updated
+             * @default
+             */
+            updated: string;
+            /**
+             * By
+             * @default user
+             * @enum {string}
+             */
+            by: "user" | "agent";
+            /**
+             * Bin Name
+             * @default
+             */
+            bin_name: string;
+            media_record?: components["schemas"]["Media"] | null;
+            thumbnail_record?: components["schemas"]["Media"] | null;
+            /**
+             * Channel Handle
+             * @default
+             */
+            channel_handle: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * PreviewBody
+         * @description One item rendered with its layer slices and mix, through the export's own plan and graph,
+         *     plus up to ``handles_s`` of the take before and after it. A scratch file for the agent's QC
+         *     listen: not media, in no bin.
+         */
+        PreviewBody: {
+            /** Bin */
+            bin: string;
+            /**
+             * Handles S
+             * @default 0
+             */
+            handles_s: number;
         };
         /** ProjectCard */
         ProjectCard: {
@@ -1676,6 +2700,11 @@ export interface components {
              */
             video_workflow: string;
             agent_session?: components["schemas"]["AgentSession"] | null;
+            /**
+             * Agent Gone
+             * @default false
+             */
+            agent_gone: boolean;
             blocker?: components["schemas"]["Message"] | null;
             /**
              * Pending Changes
@@ -1683,11 +2712,21 @@ export interface components {
              */
             pending_changes: number;
             /**
+             * Open Notes
+             * @default 0
+             */
+            open_notes: number;
+            /**
              * Generating
              * @default 0
              */
             generating: number;
             generating_job?: components["schemas"]["JobOut"] | null;
+            /**
+             * Held
+             * @default 0
+             */
+            held: number;
         };
         /**
          * ProjectDefaults
@@ -1766,19 +2805,39 @@ export interface components {
              */
             private: boolean;
             /**
+             * Youtube Channel
+             * @default
+             */
+            youtube_channel: string;
+            youtube_channel_record?: components["schemas"]["ChannelOut"] | null;
+            /**
              * Configured
              * @default false
              */
             configured: boolean;
             agent_session: components["schemas"]["AgentSession"] | null;
+            /**
+             * Agent Gone
+             * @default false
+             */
+            agent_gone: boolean;
             /** Bins */
             bins: components["schemas"]["BinCard"][];
+            /** Sequences */
+            sequences?: components["schemas"]["SequenceCard"][];
+            /** Posts */
+            posts?: components["schemas"]["PostOut"][];
             /** Tags */
             tags: string[];
             /** Media Count */
             media_count: number;
             /** Pending Changes */
             pending_changes: number;
+            /**
+             * Open Notes
+             * @default 0
+             */
+            open_notes: number;
             /** Version */
             version: number;
             blocker?: components["schemas"]["Message"] | null;
@@ -1787,6 +2846,36 @@ export interface components {
              * @default 0
              */
             session_changes: number;
+        };
+        /**
+         * ProjectRule
+         * @description A standing answer the user gave once, kept on the project so it outlives any one agent
+         *     session: what to do with a kind of QC finding ("colour drift over 10: re-roll"), or a
+         *     continuity fact ("Tommy's empty plate is in every shot where the bar is visible").
+         */
+        ProjectRule: {
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @default other
+             * @enum {string}
+             */
+            kind: "qc" | "continuity" | "other";
+            /** Text */
+            text: string;
+            /**
+             * Created
+             * @default
+             */
+            created: string;
+            /**
+             * By
+             * @default user
+             */
+            by: string;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * ProjectSettingsBody
@@ -1813,6 +2902,35 @@ export interface components {
             video_negative?: string | null;
             /** Private */
             private?: boolean | null;
+            /** Youtube Channel */
+            youtube_channel?: string | null;
+        };
+        /**
+         * PublishStatusOut
+         * @description Whether the server can upload to a platform, the one-line fix when it cannot, and the
+         *     channels connected so far. ``can_connect``: this request came from the server's own machine,
+         *     where a new channel's consent can finish (the redirect is loopback).
+         */
+        PublishStatusOut: {
+            /**
+             * Platform
+             * @constant
+             */
+            platform: "youtube";
+            /** Configured */
+            configured: boolean;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Channels */
+            channels?: components["schemas"]["ChannelOut"][];
+            /**
+             * Can Connect
+             * @default false
+             */
+            can_connect: boolean;
         };
         /** QcMark */
         QcMark: {
@@ -1907,6 +3025,20 @@ export interface components {
             seed?: number | null;
             /** Length S */
             length_s?: number | null;
+            /** Width */
+            width?: number | null;
+            /** Height */
+            height?: number | null;
+            /**
+             * Draft
+             * @default false
+             */
+            draft: boolean;
+            /**
+             * Quarter
+             * @default false
+             */
+            quarter: boolean;
             /** Exec Seconds */
             exec_seconds?: number | null;
             /**
@@ -1948,6 +3080,13 @@ export interface components {
             /** Missing */
             missing: boolean;
         };
+        /** RemoveFileOut */
+        RemoveFileOut: {
+            /** File */
+            file: string;
+            /** Deleted */
+            deleted: boolean;
+        };
         /**
          * RemoveUploadOut
          * @description The media left the bin; `deleted` says whether the upload itself was dropped as unused.
@@ -1963,6 +3102,60 @@ export interface components {
             project_version: number;
         };
         /**
+         * RenderRef
+         * @description The render a generate change started, by id and last known status: a card shown before
+         *     its take lands reads as rendering (the live job carries the progress), failed or cancelled.
+         */
+        RenderRef: {
+            /** Generation */
+            generation: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "held" | "queued" | "running" | "done" | "failed" | "cancelled";
+        };
+        /**
+         * ResumeOut
+         * @description Everything a reconnecting agent needs in one read, so a resume after a crash or a reboot
+         *     starts from the project's state, not from memory.
+         */
+        ResumeOut: {
+            /** Mode */
+            mode?: string | null;
+            /** Open Notes */
+            open_notes?: components["schemas"]["Message"][];
+            /** Jobs */
+            jobs?: components["schemas"]["JobOut"][];
+            /** Interrupted */
+            interrupted?: components["schemas"]["InterruptedOut"][];
+            last_agent_post?: components["schemas"]["Message"] | null;
+            /** Rules */
+            rules?: components["schemas"]["ProjectRule"][];
+            /** Moved */
+            moved?: components["schemas"]["MovedItemOut"][];
+        };
+        /** SeenManyIn */
+        SeenManyIn: {
+            /**
+             * Media
+             * @default []
+             */
+            media: string[];
+            /**
+             * All
+             * @default false
+             */
+            all: boolean;
+        };
+        /** SeenManyOut */
+        SeenManyOut: {
+            /** Cleared */
+            cleared: string[];
+            /** Project Version */
+            project_version: number;
+        };
+        /**
          * SeenOut
          * @description The seen route's answer: which bins stopped marking the media as new.
          */
@@ -1973,6 +3166,144 @@ export interface components {
             cleared: string[];
             /** Project Version */
             project_version: number;
+        };
+        /**
+         * SequenceCard
+         * @description A sequence on the project screen: name, how many items, how long.
+         */
+        SequenceCard: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Output Bin */
+            output_bin?: string | null;
+            /** Items */
+            items: number;
+            /** Total S */
+            total_s: number;
+            thumb?: components["schemas"]["Media"] | null;
+            /** Bins */
+            bins?: string[];
+            /**
+             * Fresh
+             * @default 0
+             */
+            fresh: number;
+        };
+        /**
+         * SequenceItemOut
+         * @description One row of the sequence screen, joined to its bin and the take that plays.
+         */
+        SequenceItemOut: {
+            /** Bin */
+            bin: string;
+            /** Position */
+            position: number;
+            /** Shot */
+            shot?: number | null;
+            /** Name */
+            name: string;
+            /** Tags */
+            tags?: string[];
+            media?: components["schemas"]["Media"] | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "video" | "still" | "title";
+            /** Duration S */
+            duration_s: number;
+            /** Start S */
+            start_s: number;
+            /**
+             * Head S
+             * @default 0
+             */
+            head_s: number;
+            /**
+             * Tail S
+             * @default 0
+             */
+            tail_s: number;
+            /** Still S */
+            still_s?: number | null;
+            /**
+             * Trim Dropped
+             * @default false
+             */
+            trim_dropped: boolean;
+            /** Agent */
+            agent?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Start Frame
+             * @default 0
+             */
+            start_frame: number;
+            /**
+             * Frames
+             * @default 0
+             */
+            frames: number;
+            mix?: components["schemas"]["ItemMix"] | null;
+            /** Layers */
+            layers?: {
+                [key: string]: components["schemas"]["LayerUnderItem"];
+            };
+            /**
+             * Layer Moved
+             * @default false
+             */
+            layer_moved: boolean;
+        };
+        /** SequenceOut */
+        SequenceOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Output Bin */
+            output_bin?: string | null;
+            /**
+             * Output Bin Name
+             * @default
+             */
+            output_bin_name: string;
+            /** Items */
+            items: components["schemas"]["SequenceItemOut"][];
+            /** Agent */
+            agent?: {
+                [key: string]: unknown;
+            };
+            /** Layers */
+            layers?: components["schemas"]["SoundLayer"][];
+            /**
+             * Fps
+             * @default 24
+             */
+            fps: number;
+            /**
+             * Total Frames
+             * @default 0
+             */
+            total_frames: number;
+            /** Total S */
+            total_s: number;
+            /** Without Take */
+            without_take: number;
+            last_export?: components["schemas"]["Media"] | null;
+            /**
+             * Created
+             * @default
+             */
+            created: string;
+            /**
+             * Updated
+             * @default
+             */
+            updated: string;
         };
         /**
          * ShotDecision
@@ -1990,6 +3321,23 @@ export interface components {
             description?: string | null;
         };
         /**
+         * ShotNeedOut
+         * @description A reference the shot waits on: where it comes from, what it is, and whether that bin
+         *     holds a take yet (``ready``, with the take it would be).
+         */
+        ShotNeedOut: {
+            /** Bin */
+            bin: string | null;
+            /** Bin Name */
+            bin_name: string;
+            /** What */
+            what: string;
+            /** Ready */
+            ready: boolean;
+            /** Media */
+            media?: string | null;
+        };
+        /**
          * ShotOut
          * @description One item of a propose_shots card as the feed shows it: the proposal, and after the decision
          *     the outcome (dropped, edited, the bin it made, the child change that rendered).
@@ -1999,6 +3347,8 @@ export interface components {
             index: number;
             /** Name */
             name: string;
+            /** Shot */
+            shot?: number | null;
             /** Description */
             description: string;
             /** Has Prompt */
@@ -2011,8 +3361,29 @@ export interface components {
             length_s: number | null;
             /** Quarter */
             quarter: boolean;
+            /**
+             * Draft
+             * @default false
+             */
+            draft: boolean;
+            /** Full Quality */
+            full_quality: boolean;
+            /** Takes */
+            takes: number;
+            /** Held */
+            held: boolean;
             /** References */
             references: components["schemas"]["ShotRefOut"][];
+            /**
+             * References From Bin
+             * @default false
+             */
+            references_from_bin: boolean;
+            /**
+             * Needs
+             * @default []
+             */
+            needs: components["schemas"]["ShotNeedOut"][];
             /** Dropped */
             dropped: boolean;
             /** Edited */
@@ -2031,9 +3402,55 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "image" | "video";
+            type: "image" | "video" | "audio";
             /** Label */
             label: string;
+        };
+        /**
+         * SoundLayer
+         * @description An audio source that runs continuously under the sequence: a song, a walla bed, room
+         *     tone. Agent-only, no UI control; the export lays it down in one piece (never cut and joined)
+         *     from ``source_in_s`` starting at sequence frame ``start_frame``, until the picture ends or
+         *     the source runs out. Per-item level changes live on the item (``ItemMix.layers``).
+         */
+        SoundLayer: {
+            /** Id */
+            id: string;
+            /** Media */
+            media: string;
+            /**
+             * Source In S
+             * @default 0
+             */
+            source_in_s: number;
+            /**
+             * Start Frame
+             * @default 0
+             */
+            start_frame: number;
+            /**
+             * End
+             * @default picture
+             * @enum {string}
+             */
+            end: "picture" | "source";
+            /**
+             * Gain Db
+             * @default 0
+             */
+            gain_db: number;
+            /**
+             * Fade In S
+             * @default 0
+             */
+            fade_in_s: number;
+            /**
+             * Fade Out S
+             * @default 0
+             */
+            fade_out_s: number;
+        } & {
+            [key: string]: unknown;
         };
         /** ThumbRef */
         ThumbRef: {
@@ -2043,7 +3460,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "image" | "video";
+            type: "image" | "video" | "audio";
         };
         /** UploadOut */
         UploadOut: {
@@ -2053,6 +3470,34 @@ export interface components {
             /** Project Version */
             project_version: number;
         };
+        /**
+         * UploadStatusOut
+         * @description Where a post's upload stands. ``idle`` when none is running and none has run this server
+         *     process (the post's own ``status`` says what happened before); ``done`` carries the ids.
+         */
+        UploadStatusOut: {
+            /** Post */
+            post: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "idle" | "running" | "done" | "failed";
+            /** Progress */
+            progress?: number | null;
+            /** Remote Id */
+            remote_id?: string | null;
+            /** Remote Url */
+            remote_url?: string | null;
+            /** Studio Url */
+            studio_url?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Started */
+            started?: string | null;
+            /** Finished */
+            finished?: string | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -2061,6 +3506,129 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * WorkflowImportIn
+         * @description Import a workflow the user has working in ComfyUI. The source is a run in ComfyUI's
+         *     history (``run``: its id or a prefix; the newest when neither source is given) or an output
+         *     PNG (``png_b64``) carrying the graphs. ``tags`` / ``untag`` correct the proposal by node id.
+         *     ``system_prompt`` is the enhancer instructions for this model; required when the graph has
+         *     no built-in enhancer to take them from.
+         */
+        WorkflowImportIn: {
+            /** Name */
+            name: string;
+            /** Run */
+            run?: string | null;
+            /** Png B64 */
+            png_b64?: string | null;
+            /** Kind */
+            kind?: ("image" | "video") | null;
+            /**
+             * Tags
+             * @default {}
+             */
+            tags: {
+                [key: string]: string;
+            };
+            /**
+             * Untag
+             * @default []
+             */
+            untag: string[];
+            /** System Prompt */
+            system_prompt?: string | null;
+            /**
+             * Keep Builtin Enhancer
+             * @default false
+             */
+            keep_builtin_enhancer: boolean;
+            /**
+             * Lora Marker
+             * @default true
+             */
+            lora_marker: boolean;
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /**
+             * Replace
+             * @default false
+             */
+            replace: boolean;
+        };
+        /** WorkflowImportOut */
+        WorkflowImportOut: {
+            /** Name */
+            name: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "image" | "video";
+            /** Source */
+            source: string;
+            /** Dry Run */
+            dry_run: boolean;
+            /**
+             * Files
+             * @default {}
+             */
+            files: {
+                [key: string]: string;
+            };
+            /**
+             * Tags
+             * @default []
+             */
+            tags: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Kept
+             * @default []
+             */
+            kept: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Baked
+             * @default []
+             */
+            baked: string[];
+            /**
+             * Enhancer
+             * @default {}
+             */
+            enhancer: {
+                [key: string]: unknown;
+            };
+            /**
+             * Lora
+             * @default {}
+             */
+            lora: {
+                [key: string]: unknown;
+            };
+            /**
+             * Notes
+             * @default []
+             */
+            notes: string[];
+            /**
+             * Capabilities
+             * @default {}
+             */
+            capabilities: {
+                [key: string]: unknown;
+            };
+            /**
+             * Has Ui
+             * @default false
+             */
+            has_ui: boolean;
         };
         /** WorkflowInfo */
         WorkflowInfo: {
@@ -2085,6 +3653,16 @@ export interface components {
             has_lora: boolean;
             /** Has Negative */
             has_negative: boolean;
+            /**
+             * Supports Draft
+             * @default false
+             */
+            supports_draft: boolean;
+            /**
+             * Supports Size
+             * @default false
+             */
+            supports_size: boolean;
             /**
              * Is Default
              * @default false
@@ -2422,11 +4000,78 @@ export interface operations {
             };
         };
     };
+    mark_many_seen_api_projects__slug__media_seen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeenManyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeenManyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_bin_seen_api_projects__slug__bins__bin_id__seen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                bin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BinSeenOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_media_api_projects__slug__media_get: {
         parameters: {
             query?: {
                 bin?: string | null;
-                type?: ("image" | "video") | null;
+                type?: ("image" | "video" | "audio") | null;
                 cursor?: string | null;
                 limit?: number;
             };
@@ -2522,9 +4167,43 @@ export interface operations {
             };
         };
     };
-    media_file_media__slug___media_id__file_get: {
+    generation_recipe_api_projects__slug__generations__gen_id__recipe_get: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                gen_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    media_file_media__slug___media_id__file_get: {
+        parameters: {
+            query?: {
+                download?: boolean;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -2852,6 +4531,68 @@ export interface operations {
             };
         };
     };
+    notes_api_projects__slug__notes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_api_projects__slug__resume_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResumeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     feed_api_projects__slug__feed_get: {
         parameters: {
             query?: {
@@ -2971,6 +4712,70 @@ export interface operations {
             };
         };
     };
+    comfy_runs_api_workflows_comfy_runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComfyRun"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_from_comfy_api_workflows_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowImportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowImportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_workflow_api_workflows__name__get: {
         parameters: {
             query?: never;
@@ -3085,37 +4890,6 @@ export interface operations {
             };
         };
     };
-    release_held_api_projects__slug__held_release_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                slug: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobOut"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     discard_held_api_projects__slug__held__gen_id__discard_post: {
         parameters: {
             query?: never;
@@ -3144,6 +4918,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    release_held_api_held_release_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobOut"][];
                 };
             };
         };
@@ -3217,6 +5011,141 @@ export interface operations {
             };
         };
     };
+    upload_chat_file_api_projects__slug__chat_files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_chat_file_api_projects__slug__chat_files_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageFile"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_file_api_projects__slug__chat_files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_chat_file_api_projects__slug__chat_files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoveFileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    keep_chat_file_api_projects__slug__chat_files__file_id__keep_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KeepFileBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_clip_api_projects__slug__clips_post: {
         parameters: {
             query?: never;
@@ -3239,6 +5168,450 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UploadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    flip_media_api_projects__slug__media__media_id__flip_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                media_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FlipBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sequences_api_projects__slug__sequences_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SequenceOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sequence_api_projects__slug__sequences__seq_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                seq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SequenceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_item_api_projects__slug__sequences__seq_id__preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                seq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_status_api_projects__slug__sequences__seq_id__export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                seq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_export_api_projects__slug__sequences__seq_id__export_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                seq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExportBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_posts_api_projects__slug__posts_get: {
+        parameters: {
+            query?: {
+                bin?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_post_api_projects__slug__posts__post_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                post_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_status_api_projects__slug__posts__post_id__upload_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                post_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    connect_status_api_projects__slug__youtube_connect_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    connect_channel_api_projects__slug__youtube_connect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_connect_api_projects__slug__youtube_connect_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    youtube_status_api_publish_youtube_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishStatusOut"];
+                };
+            };
+        };
+    };
+    forget_channel_api_publish_youtube_channels__channel_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                channel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishStatusOut"];
                 };
             };
             /** @description Validation Error */
@@ -3338,6 +5711,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EnhanceRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_enhance_api_projects__slug__enhance__req_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                req_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnhanceCancelOut"];
                 };
             };
             /** @description Validation Error */

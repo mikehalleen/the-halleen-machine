@@ -45,7 +45,12 @@ class ProjectRegistry:
     def get(self, slug: str) -> Project:
         mtime = self._stat_ns(slug)
         entry = self._cache.get(slug)
-        if entry is not None and entry.mtime_ns == mtime:
+        if entry is not None and (entry.mtime_ns == mtime or self.lock(slug).locked()):
+            # While a write holds the lock, the cached object is the truth and the file may be
+            # half-way through a multi-save command (an upload that makes its bin first): a
+            # reader that reloaded here would put that half-written state in the cache, the
+            # writer's ``touch`` would bless it, and the next write would save it over the
+            # writer's own changes. Hand edits on disk are picked up once the lock is free.
             return entry.project
         project = self.store.load(slug)
         self._versions[slug] = self._versions.get(slug, 0) + 1

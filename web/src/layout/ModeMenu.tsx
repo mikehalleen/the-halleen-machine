@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionMode } from "../api/types";
-import { MODES, modeLabel } from "./modes";
+import { DRAFTS_HINT, MODES, modeLabel } from "./modes";
 
 interface Props {
   mode: SessionMode;
   onChange: (mode: SessionMode) => void;
+  /** On a phone the draft-mode switch rides in the menu, under the modes, to save header room. */
+  drafts?: { on: boolean; onChange: (on: boolean) => void };
   disabled?: boolean;
   /** The panel header's slightly larger padding. */
   header?: boolean;
@@ -15,7 +17,7 @@ interface Props {
  * header), since mode changes often. Opens a small fixed-position list, so the bar's
  * overflow:hidden cannot clip it.
  */
-export function ModeMenu({ mode, onChange, disabled, header }: Props) {
+export function ModeMenu({ mode, onChange, drafts, disabled, header }: Props) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
   const button = useRef<HTMLButtonElement>(null);
@@ -60,7 +62,11 @@ export function ModeMenu({ mode, onChange, disabled, header }: Props) {
         aria-expanded={open}
         title="how much the agent asks"
       >
-        {modeLabel(mode)} <span aria-hidden="true">⌄</span>
+        <span className="mode-pill-text">
+          {modeLabel(mode)}
+          {drafts?.on ? " · draft" : ""}
+        </span>{" "}
+        <span aria-hidden="true">⌄</span>
       </button>
       {open && (
         <div ref={menu} className="mode-menu" role="listbox" aria-label="Session mode" style={{ top: pos.top, right: pos.right }}>
@@ -82,6 +88,12 @@ export function ModeMenu({ mode, onChange, disabled, header }: Props) {
               <span title={m.hint}>{m.label}</span>
             </button>
           ))}
+          {drafts && (
+            <label className="mode-drafts" title={DRAFTS_HINT}>
+              <input type="checkbox" checked={drafts.on} onChange={(e) => drafts.onChange(e.target.checked)} />
+              draft mode
+            </label>
+          )}
         </div>
       )}
     </>

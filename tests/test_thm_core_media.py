@@ -51,6 +51,8 @@ def test_media_type_for_extensions():
     assert media_type_for(Path("b.MOV")) == "video"
     assert media_type_for("c.txt") is None
     assert media_type_for("noext") is None
+    for ext in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".MP3"):
+        assert media_type_for(f"song{ext}") == "audio", ext
 
 
 def test_probe_image_size(pngs):

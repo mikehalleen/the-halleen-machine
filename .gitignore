@@ -1,7 +1,6 @@
 config.toml
 venv/
 .venv/
-the-machine-ui-venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -17,6 +16,18 @@ web/node_modules/
 
 # agent CLI session state
 thm-agent/.state/
+
+# the agent supervisor: its logs and pid files
+thm_runner/logs/
+thm_runner/*.pid
+
+# per-tool venvs and model caches (thm-tools/<name>/): installed per machine
+thm-tools/*/.venv/
+thm-tools/*/models/
+
+# maintainer-only: the dev -> staging sync, and local agent settings
+_release/
+.claude/
 
 # Comfy API key for partner nodes (secret, never commit)
 .comfy_api_key

@@ -5,13 +5,21 @@ queued at the front so a rewrite does not wait behind a render. ``agent`` hands 
 two texts to the live agent session: the request sits in a server-side queue, the agent's
 watch loop sees it, a subagent writes the prompt, and the agent posts it back while the
 app's request is still waiting.
+
+A local run can be cancelled while the app waits: the body names the request, the run is
+kept in ``ServerState.enhance_local`` under that name, and the cancel route flags it and
+drops the prompt in ComfyUI (deleted from the queue, or interrupted when it is the one
+running). The waiting request then fails with ``enhance_cancelled``.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import asyncio
 import logging
 import random
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -28,6 +36,7 @@ from thm_core.enhancer import (
     build_enhancer_graph,
     build_user_message,
     clean_output,
+    dropped_tags,
     enhancer_available,
     enhancer_path,
     extract_text,
@@ -42,7 +51,7 @@ from thm_core.workflow_names import resolve_curated_workflow
 from ..deps import ServerState, actor_context, state
 from ..errors import ApiError
 from ..publish import publish_result
-from ..schemas import EnhanceBody, EnhanceOut, EnhanceReplyBody, EnhanceRequestOut, EnhanceStatusOut
+from ..schemas import EnhanceBody, EnhanceCancelOut, EnhanceOut, EnhanceReplyBody, EnhanceRequestOut, EnhanceStatusOut
 from scripts import comfy_progress  # the runners' prompt tracker: phase, step/steps, queue position
 
 log = logging.getLogger("thm.enhance")
@@ -113,9 +122,48 @@ def _rejection_detail(r: httpx.Response) -> str:
 Progress = Callable[[dict[str, Any]], None]
 
 
-def run_graph_once(client: httpx.Client, api_base: str, graph: dict[str, Any], slug: str, deadline: float, on_progress: Progress | None = None) -> str:
+@dataclass
+class LocalRun:
+    """One local rewrite in flight, so a cancel can find it: the flag its wait loop watches, and
+    the ComfyUI prompt to drop once it has been posted."""
+
+    id: str
+    slug: str
+    api_base: str
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    prompt_id: str | None = None
+
+
+def _cancelled() -> ApiError:
+    return ApiError(409, "enhance_cancelled", "the rewrite was cancelled")
+
+
+def drop_prompt(run: LocalRun, *, timeout_s: float = 3.0) -> str:
+    """Tell ComfyUI to let a cancelled run's prompt go: deleted while it waits in the queue,
+    interrupted while it is the one executing. One line for the answer; never raises."""
+    if not run.prompt_id:
+        return "not yet posted to ComfyUI"
+    try:
+        with httpx.Client(timeout=timeout_s) as client:
+            queue = client.get(f"{run.api_base}/queue").json()
+            where = comfy_progress.queue_state(queue, run.prompt_id) if isinstance(queue, dict) else None
+            if where == "pending":
+                client.post(f"{run.api_base}/queue", json={"delete": [run.prompt_id]})
+                return "removed from ComfyUI's queue"
+            if where == "running":
+                client.post(f"{run.api_base}/interrupt")
+                return "interrupted in ComfyUI"
+            return "already finished in ComfyUI"
+    except Exception as exc:
+        return f"ComfyUI not told ({type(exc).__name__})"
+
+
+def run_graph_once(
+    client: httpx.Client, api_base: str, graph: dict[str, Any], slug: str, deadline: float, on_progress: Progress | None = None, run: LocalRun | None = None
+) -> str:
     """Queue the graph at the front, wait for its history entry, return the raw generated text.
-    ``on_progress`` gets the tracker's snapshots (phase, step/steps, queue position) as they change."""
+    ``on_progress`` gets the tracker's snapshots (phase, step/steps, queue position) as they change;
+    ``run``, when given, learns the prompt id and can end the wait early through its flag."""
     with comfy_progress.PromptTracker(api_base, graph, on_progress) as tracker:
         payload = {
             "prompt": graph,
@@ -129,7 +177,14 @@ def run_graph_once(client: httpx.Client, api_base: str, graph: dict[str, Any], s
         prompt_id = str(r.json().get("prompt_id") or "")
         if not prompt_id:
             raise ApiError(502, "comfy_rejected", "ComfyUI returned no prompt_id")
-        entry = tracker.wait(prompt_id, max(0.0, deadline - time.monotonic()), history_poll_s=POLL_S)
+        if run is not None:
+            run.prompt_id = prompt_id
+        entry = tracker.wait(
+            prompt_id, max(0.0, deadline - time.monotonic()), history_poll_s=POLL_S, stop=run.cancelled.is_set if run is not None else None
+        )
+    # cancelled: whether the wait stopped on the flag or ComfyUI's interrupted entry arrived first
+    if run is not None and run.cancelled.is_set():
+        raise _cancelled()
     if entry is None:
         raise ApiError(504, "enhance_timeout", f"no answer from the enhancer within {int(ENHANCE_TIMEOUT_S)}s")
     err = history_error(entry)
@@ -138,7 +193,7 @@ def run_graph_once(client: httpx.Client, api_base: str, graph: dict[str, Any], s
     return extract_text(entry, graph) or ""
 
 
-def run_local(project: Project, st: ServerState, body: EnhanceBody, on_progress: Progress | None = None) -> EnhanceOut:
+def run_local(project: Project, st: ServerState, body: EnhanceBody, on_progress: Progress | None = None, run: LocalRun | None = None) -> EnhanceOut:
     wdir = Path(st.settings.workflows_dir)
     enhancer = load_workflow(enhancer_path(wdir))
     if not enhancer:
@@ -160,22 +215,29 @@ def run_local(project: Project, st: ServerState, body: EnhanceBody, on_progress:
     started = time.monotonic()
     deadline = started + ENHANCE_TIMEOUT_S
     problem = "no attempt made"
+    replies: list[str] = []  # every unusable reply, so the user can see what the model wrote
     try:
         with httpx.Client(timeout=30.0) as client:
             # one re-roll if the first reply is unusable
             for seed in (first_seed, random.randint(1, 2**31 - 1)):
+                if run is not None and run.cancelled.is_set():
+                    raise _cancelled()  # no re-roll for a rewrite nobody wants any more
                 try:
                     graph = build_enhancer_graph(enhancer, system_prompt, message, seed=seed)
                 except ValueError as exc:
                     raise ApiError(503, "enhancer_unavailable", str(exc)) from None
-                text = clean_output(run_graph_once(client, api_base, graph, project.slug, deadline, on_progress))
+                text = clean_output(run_graph_once(client, api_base, graph, project.slug, deadline, on_progress, run))
                 problem = output_problem(text, system_prompt, body.prompt)
+                replies.append(text)
                 if problem is None:
-                    return EnhanceOut(prompt=text, engine="local", system_source=source, elapsed_s=round(time.monotonic() - started, 1))
+                    return EnhanceOut(
+                        prompt=text, engine="local", system_source=source, elapsed_s=round(time.monotonic() - started, 1),
+                        dropped_tags=dropped_tags(text, body.prompt),
+                    )
                 log.info("enhance reply unusable (%s): %r", problem, text[:120])
     except httpx.HTTPError as exc:
         raise ApiError(502, "comfy_unreachable", f"ComfyUI at {api_base}: {type(exc).__name__}") from None
-    raise ApiError(502, "enhance_failed", f"the enhancer's reply was unusable ({problem}) -- try again or adjust the note")
+    raise ApiError(502, "enhance_failed", f"the enhancer's reply was unusable ({problem}) -- try again or adjust the note", {"replies": replies})
 
 
 # -- the agent engine -------------------------------------------------------------
@@ -213,6 +275,8 @@ class AgentRequest:
 async def post_to_feed(st: ServerState, slug: str, text: str, ctx: CommandContext) -> None:
     """Record one side of the exchange in the session feed, exactly as a typed message would land."""
     kind = "user" if ctx.actor == "user" else "agent"
+    # the agent's rewrite is not a chat reply: it never waits on the inbox
+    ctx = replace(ctx, bypass_gates=True) if ctx.actor == "agent" else ctx
     async with st.registry.lock(slug):
         project = st.registry.get(slug)
         result = await run_in_threadpool(execute, st.store, project, PostMessage(text=text, kind=kind), ctx, env=st.env)
@@ -286,9 +350,12 @@ async def run_agent(project: Project, st: ServerState, body: EnhanceBody) -> Enh
     problem = output_problem(text, system_prompt, body.prompt)
     if problem:
         publish_agent(st, req, "failed")
-        raise ApiError(502, "enhance_failed", f"the agent's reply was unusable ({problem})")
+        raise ApiError(502, "enhance_failed", f"the agent's reply was unusable ({problem})", {"replies": [text]})
     publish_agent(st, req, "done")
-    return EnhanceOut(prompt=text, engine="agent", system_source=source, elapsed_s=round(time.monotonic() - started, 1))
+    return EnhanceOut(
+        prompt=text, engine="agent", system_source=source, elapsed_s=round(time.monotonic() - started, 1),
+        dropped_tags=dropped_tags(text, body.prompt),
+    )
 
 
 @router.get("/requests", response_model=list[EnhanceRequestOut])
@@ -346,6 +413,21 @@ async def reply_request(slug: str, req_id: str, body: EnhanceReplyBody, request:
     return req.out()
 
 
+@router.post("/{req_id}/cancel", response_model=EnhanceCancelOut)
+async def cancel_enhance(slug: str, req_id: str, request: Request):
+    """Stop a local rewrite the app is waiting on: the run's flag ends its wait, and ComfyUI is
+    told to drop the prompt. The waiting request answers ``enhance_cancelled``. 404 when no
+    such run is in flight (it finished, or was never local)."""
+    st = state(request)
+    st.registry.get(slug)
+    run = st.enhance_local.get(req_id)
+    if run is None or run.slug != slug:
+        raise ApiError(404, "unknown_request", f"no local rewrite {req_id} in flight (it may have finished)")
+    run.cancelled.set()
+    detail = await run_in_threadpool(drop_prompt, run)
+    return EnhanceCancelOut(request=req_id, detail=detail)
+
+
 @router.get("/status", response_model=EnhanceStatusOut)
 async def get_status(slug: str, request: Request):
     st = state(request)
@@ -364,18 +446,26 @@ async def enhance(slug: str, body: EnhanceBody, request: Request):
             raise ApiError(409, "no_agent_session", "the agent engine needs a live agent session")
         return await run_agent(project, st, body)
     # the local engine runs off-loop; its progress reaches the app as ``enhance`` SSE events,
-    # the same phase/step fields a render job carries, so the button can count along
+    # the same phase/step fields a render job carries, so the button can count along. The run
+    # is registered under the app's request id while it lasts, so a cancel can find it.
     loop = asyncio.get_running_loop()
     keys = ("phase", "step", "steps", "pass_no", "passes", "queue_ahead", "queue_ahead_ours", "task")
+    run = LocalRun(id=body.request.strip() or f"enh_{uuid.uuid4().hex[:8]}", slug=slug, api_base=comfy_api_base(project, st))
 
     def publish(status: str, fields: dict[str, Any] | None = None) -> None:
-        data = {"status": status, "engine": "local", **{k: (fields or {}).get(k) for k in keys}}
+        data = {"status": status, "engine": "local", "request": run.id, **{k: (fields or {}).get(k) for k in keys}}
         loop.call_soon_threadsafe(st.bus.publish_event, slug, "enhance", data)
 
+    st.enhance_local[run.id] = run
     try:
-        out = await run_in_threadpool(run_local, project, st, body, lambda f: publish("running", f))
+        out = await run_in_threadpool(run_local, project, st, body, lambda f: publish("running", f), run)
+    except ApiError as exc:
+        publish("cancelled" if exc.code == "enhance_cancelled" else "failed")
+        raise
     except BaseException:
         publish("failed")
         raise
+    finally:
+        st.enhance_local.pop(run.id, None)
     publish("done")
     return out

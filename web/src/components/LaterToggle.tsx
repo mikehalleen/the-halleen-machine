@@ -48,6 +48,16 @@ export function useLater(): [boolean, (on: boolean) => void] {
 /** The glyph the held state wears everywhere: the toggle, the strip tile, the bar pill. */
 export const LATER_GLYPH = "◷";
 
+/** The toggle's clock, drawn: the ◷ character falls back to a tiny glyph in phone fonts. */
+function LaterIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+      <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M10 5.2V10l3.2 2.2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 interface Props {
   disabled?: boolean;
 }
@@ -60,16 +70,16 @@ export function LaterToggle({ disabled }: Props) {
       type="button"
       className={`btn-outline btn-later ${later ? "is-on" : ""}`}
       aria-pressed={later}
-      aria-label="save for later"
+      aria-label="generate later"
       disabled={disabled}
       onClick={() => setLater(!later)}
       title={
         later
-          ? "save for later is on — Generate snapshots the recipe as it stands; start the saved group from the bar when you're done"
-          : "save for later: snapshot this recipe now, render it when you start the saved group"
+          ? "generate later is on — Generate snapshots the recipe as it stands; start the waiting group from the bar when you're done"
+          : "generate later: snapshot this recipe now, generate it when you start the waiting group"
       }
     >
-      {LATER_GLYPH}
+      <LaterIcon />
     </button>
   );
 }

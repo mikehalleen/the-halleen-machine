@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ChangeEvent, type KeyboardEvent, type TextareaHTMLAttributes } from "react";
+import { useLayoutEffect, useRef, type ChangeEvent, type KeyboardEvent, type RefObject, type TextareaHTMLAttributes } from "react";
 
 interface Props extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "onChange" | "value"> {
   value: string;
@@ -8,6 +8,8 @@ interface Props extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "onCha
   maxRows?: number;
   /** Enter submits through this; Shift+Enter or Ctrl+Enter inserts a line break instead. */
   onSubmitKey?: () => void;
+  /** The caller's handle on the element, for callers that write at the caret (the `@` menu). */
+  inputRef?: RefObject<HTMLTextAreaElement>;
 }
 
 /**
@@ -16,8 +18,9 @@ interface Props extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "onCha
  * agent notes, the prompts, the enhance note) submit on Return and take Shift+Return or
  * Ctrl+Return as the line break.
  */
-export function AutoTextarea({ value, onChange, minRows = 2, maxRows = 12, className = "", onSubmitKey, onKeyDown, ...rest }: Props) {
-  const ref = useRef<HTMLTextAreaElement>(null);
+export function AutoTextarea({ value, onChange, minRows = 2, maxRows = 12, className = "", onSubmitKey, onKeyDown, inputRef, ...rest }: Props) {
+  const own = useRef<HTMLTextAreaElement>(null);
+  const ref = inputRef ?? own;
   const fit = () => {
     const el = ref.current;
     if (!el) return;

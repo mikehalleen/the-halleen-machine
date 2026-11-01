@@ -1,4 +1,4 @@
-# The Halleen Machine 2.0 - fresh start for manual testing.
+# The Halleen Machine 2.0 - start (or restart) the server.
 #
 # Kills whatever is already listening on the THM port (so a stale server process
 # from an earlier session can never serve outdated code), then starts serve.py in
@@ -11,11 +11,13 @@
 #   .\start_server.ps1 -NoBuild        # never rebuild, just restart the API
 #   .\start_server.ps1 -Build          # rebuild even if it looks like a plain install
 #   .\start_server.ps1 -Port 8011
+#   .\start_server.ps1 -Agent          # also start the headless agent supervisor (needs Claude Code)
 
 param(
     [int]$Port = 8010,
     [switch]$NoBuild,
-    [switch]$Build
+    [switch]$Build,
+    [switch]$Agent   # start the headless agent supervisor (thm_runner/supervisor.py); off by default, connect your own agent
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,12 +52,12 @@ if ($procs.Count) {
     Write-Host "None found."
 }
 
-$canBuild = Test-Path "$PSScriptRoot\web\node_modules"
+$canBuild = Test-Path (Join-Path $PSScriptRoot "web\node_modules")
 if ($NoBuild) {
     Write-Host "Skipping web build (-NoBuild); serving web\dist as-is."
 } elseif ($Build -or $canBuild) {
     Write-Host "Building the web client..."
-    Push-Location "$PSScriptRoot\web"
+    Push-Location (Join-Path $PSScriptRoot "web")
     try {
         npm run build
         if ($LASTEXITCODE -ne 0) { throw "npm run build failed with exit code $LASTEXITCODE" }
@@ -63,13 +65,36 @@ if ($NoBuild) {
         Pop-Location
     }
 } else {
-    Write-Host "web
-ode_modules not found; serving the prebuilt web\dist. (cd web; npm install; npm run build) to rebuild the UI."
+    Write-Host "No web\node_modules; serving the prebuilt web\dist. To rebuild the UI: cd web; npm install; npm run build"
 }
 
 $Py = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
-if (-not (Test-Path $Py)) { $Py = Join-Path $PSScriptRoot "the-machine-ui-venv\Scripts\python.exe" }
 if (-not (Test-Path $Py)) { $Py = "python" }
+
+if ($Agent) {
+    # The supervisor keeps one headless Claude Code agent on this server: it waits for the server
+    # to answer, connects the agent to every waiting or unattended session, and restarts it when
+    # it exits. It replaces the previous supervisor (pid files under thm_runner/) and runs
+    # detached from this window; its log is thm_runner/logs/supervisor.log, the agent's stream
+    # thm_runner/logs/agent-<stamp>.log.
+    New-Item -ItemType Directory -Force (Join-Path $PSScriptRoot "thm_runner\logs") | Out-Null
+    $SupLog = Join-Path $PSScriptRoot "thm_runner\logs\supervisor.log"
+    Write-Host "Starting the agent supervisor (log: $SupLog)"
+    Start-Process -FilePath $Py -ArgumentList @("thm_runner\supervisor.py", "--server", "http://127.0.0.1:$Port") `
+        -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput $SupLog -RedirectStandardError (Join-Path $PSScriptRoot "thm_runner\logs\supervisor.err.log")
+} else {
+    # A supervisor left over from an earlier -Agent run would reattach its agent to this server.
+    foreach ($name in "supervisor", "agent") {
+        $pidFile = Join-Path $PSScriptRoot "thm_runner\$name.pid"
+        if (Test-Path $pidFile) {
+            $oldPid = (Get-Content $pidFile -Raw).Trim()
+            if ($oldPid) {
+                try { Stop-Process -Id ([int]$oldPid) -Force -ErrorAction Stop; Write-Host "Stopped previous $name (pid $oldPid)." } catch {}
+            }
+            Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 Write-Host "Starting: $Py serve.py --port $Port"
 $env:PYTHONUNBUFFERED = "1"

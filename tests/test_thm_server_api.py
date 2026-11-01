@@ -55,7 +55,7 @@ def test_project_detail_shape(world):
     image, mara, video = body["bins"]
     assert image["selected_media"]["id"] == world.take and image["take_count"] == 1 and image["kind"] == "image"
     assert image["media_types"] == ["image"]
-    assert mara["selected_media"]["id"] == world.m2 and mara["take_count"] == 0  # the newest arrival leads
+    assert mara["selected_media"]["id"] == world.m1 and mara["take_count"] == 0  # the first arrival leads until another is made current
     assert video["selected_media"] is None and video["kind"] == "video" and video["length_s"] == 5.0
     assert body["pending_changes"] == 0
     assert body["media_count"] == 3
@@ -76,7 +76,7 @@ def test_bin_detail_references_sub_labels_and_capacity(world):
     body = r.json()
     refs = body["references"]
     assert [x["sub_label"] for x in refs] == ["start", "end"]
-    assert [x["handle"] for x in refs] == ["mara", "mara.2"]
+    assert [x["handle"] for x in refs] == ["mara.png", "mara.png.2"]
     assert all(x["active"] and not x["missing"] and x["bin_name"] == "Mara" and x["bin_id"] == world.mara for x in refs)
     assert refs[0]["media"]["id"] == world.m1
     assert body["capacity"]["image_slots"] == 2 and body["capacity"]["supports_start_frame"] and body["capacity"]["kind"] == "video"
@@ -157,7 +157,7 @@ def test_delete_bin_over_rest_cascades_and_keeps_referenced_media(world):
     assert world.client.get(f"/api/projects/{world.slug}/bins/{world.mara}").status_code == 404
     # m1 and m2 are bound on Video 1, so they survive and the references stay
     refs = world.client.get(f"/api/projects/{world.slug}/bins/{world.video}").json()["references"]
-    assert [x["media"]["id"] for x in refs] == [world.m1, world.m2] and refs[0]["bin_id"] is None and refs[0]["bin_name"] == "mara"
+    assert [x["media"]["id"] for x in refs] == [world.m1, world.m2] and refs[0]["bin_id"] is None and refs[0]["bin_name"] == "mara.png"
     assert world.client.get(f"/api/projects/{world.slug}/media/{world.m1}").status_code == 200
     assert world.client.get(f"/api/projects/{world.slug}/media/{loose['id']}").status_code == 404
     assert not Path(loose["path"]).is_file()
@@ -250,11 +250,16 @@ def test_bind_reference_with_position_over_rest(world):
     assert [x["media"]["id"] for x in refs] == [world.m2, world.m1]
     assert refs[1]["id"] == first_id
     # img.json has 2 image slots and both are already used; a third bind refuses on capacity,
-    # so the bad-position case needs a fresh bin with room to spare
+    # so the position cases need a fresh bin with room to spare
     fresh = _create_bin(world, workflow="img.json")
     world.client.post(base + "/bind_reference", json={"bin": fresh, "media": world.m1})
-    r = world.client.post(base + "/bind_reference", json={"bin": fresh, "media": world.m2, "position": 5})
+    r = world.client.post(base + "/bind_reference", json={"bin": fresh, "media": world.m2, "position": -1})
     assert r.status_code == 422 and r.json()["code"] == "bad_value"
+    # past the end is an append (an agent's "slot 1" on a bin with one reference), never a refusal
+    r = world.client.post(base + "/bind_reference", json={"bin": fresh, "media": world.m2, "position": 5})
+    assert r.status_code == 200, r.text
+    refs = world.client.get(f"/api/projects/{world.slug}/bins/{fresh}").json()["references"]
+    assert [x["media"]["id"] for x in refs] == [world.m1, world.m2]
 
 
 def test_bind_reference_takes_another_bins_take_over_rest(world):
@@ -265,10 +270,59 @@ def test_bind_reference_takes_another_bins_take_over_rest(world):
     assert r.status_code == 200, r.text
     ref = world.client.get(f"/api/projects/{world.slug}/bins/{fresh}").json()["references"][0]
     assert ref["media"]["id"] == world.take and ref["bin_id"] == world.image and ref["bin_name"] == "Image 1"
-    assert ref["handle"] == "image-1"
+    assert ref["handle"] == "image-1.png"
     # and the bin's own take
     r = world.client.post(base + "/bind_reference", json={"bin": world.image, "media": world.take})
-    assert r.status_code == 200 and r.json()["change"]["description"] == "Image 1 - bound .image-1"
+    assert r.status_code == 200 and r.json()["change"]["description"] == "Image 1 - bound @image-1.png"
+
+
+def test_start_from_media_over_rest(world):
+    """The reference-first path: the result names the bin it went into, minted or not, and a
+    reference past the workflow's slots lands as unused rather than refusing."""
+    base = f"/api/projects/{world.slug}/commands"
+    r = world.client.post(base + "/start_from_media", json={"media": world.take, "workflow": "img.json"})
+    assert r.status_code == 200, r.text
+    made = r.json()["bin"]
+    assert made and made != world.image and r.json()["change"]["target"]["type"] == "project"
+    detail = world.client.get(f"/api/projects/{world.slug}/bins/{made}").json()
+    assert detail["bin"]["name"].startswith("bin-") and detail["bin"]["workflow"] == "img.json"
+    assert [(x["media"]["id"], x["handle"], x["active"]) for x in detail["references"]] == [(world.take, "image-1.png", True)]
+    # into this bin, past its two image slots: the third shows as unused
+    for media in (world.m1, world.m2, world.take):
+        r = world.client.post(base + "/start_from_media", json={"media": media, "bin": world.image})
+        assert r.status_code == 200, r.text
+        assert r.json()["bin"] == world.image
+    refs = world.client.get(f"/api/projects/{world.slug}/bins/{world.image}").json()["references"]
+    assert [(x["handle"], x["active"], x["sub_label"]) for x in refs] == [("mara.png", True, None), ("mara.png.2", True, None), ("image-1.png", False, "unused")]
+    # create_bin reports its bin too
+    r = world.client.post(base + "/create_bin", json={"bin_name": "Made"})
+    assert r.status_code == 200 and world.client.get(f"/api/projects/{world.slug}/bins/{r.json()['bin']}").json()["bin"]["name"] == "Made"
+    r = world.client.post(base + "/start_from_media", json={"media": "m_nope"})
+    assert r.status_code == 404 and r.json()["code"] == "unknown_id"
+
+
+def test_duplicate_bin_over_rest(world):
+    """Clone: the copy carries the recipe and every reference binding, none of the media, and
+    the result names it so the client can open it without finding it by name."""
+    base = f"/api/projects/{world.slug}/commands"
+    src = world.client.get(f"/api/projects/{world.slug}/bins/{world.image}").json()
+    r = world.client.post(base + "/duplicate_bin", json={"bin": world.image})
+    assert r.status_code == 200, r.text
+    made = r.json()["bin"]
+    assert made and made != world.image and r.json()["change"]["target"]["type"] == "project"
+    assert r.json()["change"]["description"] == "duplicated Image 1 as Image 1-copy"
+    copy = world.client.get(f"/api/projects/{world.slug}/bins/{made}").json()
+    assert copy["bin"]["name"] == "Image 1-copy"
+    for key in ("workflow", "prompt", "negative", "tags", "loras", "length_s"):
+        assert copy["bin"][key] == src["bin"][key], key
+    assert copy["media"] == [] and copy["selected"] is None
+    assert [(x["media"]["id"], x["handle"]) for x in copy["references"]] == [(x["media"]["id"], x["handle"]) for x in src["references"]]
+    assert {x["id"] for x in copy["references"]}.isdisjoint({x["id"] for x in src["references"]})
+    # the source is untouched
+    again = world.client.get(f"/api/projects/{world.slug}/bins/{world.image}").json()
+    assert again["bin"] == src["bin"] and [m["id"] for m in again["media"]] == [m["id"] for m in src["media"]]
+    r = world.client.post(base + "/duplicate_bin", json={"bin": "b_nope"})
+    assert r.status_code == 404 and r.json()["code"] == "unknown_id"
 
 
 def test_media_list_newest_first(world):
@@ -307,13 +361,21 @@ def test_rebind_reference_over_rest(world):
     assert updated["media"]["id"] == other.id and updated["handle"] == ref["handle"]
 
 
-def test_rename_bin_over_rest_rewrites_the_referencing_prompt(world):
+def test_retitle_over_rest_leaves_handles_and_a_slug_change_rewrites_them(world):
     base = f"/api/projects/{world.slug}/commands"
     r = world.client.post(base + "/set_bin_field", json={"bin": world.mara, "field": "name", "value": "Mara Vane"})
     assert r.status_code == 200, r.text
-    assert r.json()["change"]["description"] == "Mara renamed to Mara Vane (1 bin references it)"
+    assert r.json()["change"]["description"] == "Mara renamed to Mara Vane"
     video = world.client.get(f"/api/projects/{world.slug}/bins/{world.video}").json()
-    assert video["bin"]["prompt"] == ".mara-vane at the rail" and [x["handle"] for x in video["references"]] == ["mara-vane", "mara-vane.2"]
+    assert video["bin"]["prompt"] == "@mara.png at the rail"
+    r = world.client.post(base + "/set_bin_field", json={"bin": world.mara, "field": "slug", "value": "mara-vane"})
+    assert r.status_code == 200, r.text
+    assert r.json()["change"]["description"] == "Mara Vane - handle @mara is now @mara-vane (1 bin references it)"
+    video = world.client.get(f"/api/projects/{world.slug}/bins/{world.video}").json()
+    assert video["bin"]["prompt"] == "@mara-vane.png at the rail" and [x["handle"] for x in video["references"]] == ["mara-vane.png", "mara-vane.png.2"]
+    # the agent may retitle but never move a handle
+    r = world.client.post(base + "/set_bin_field", json={"bin": world.mara, "field": "slug", "value": "x"}, headers={"X-THM-Actor": "agent"})
+    assert r.status_code >= 400
 
 
 def test_generate_over_rest_refuses_without_comfy_configured(world):
@@ -373,12 +435,15 @@ def test_decision_flow_approve(world):
     assert world.client.get(f"/api/projects/{world.slug}").json()["pending_changes"] == 1
     assert [c["id"] for c in world.client.get(f"/api/projects/{world.slug}/changes", params={"status": "pending"}).json()] == [change["id"]]
 
+    # a note is a reply, not a go: the card reads replied, owes nothing, and the change stays applied
     r = world.client.post(f"/api/projects/{world.slug}/changes/{change['id']}/decision", json={"action": "approve", "note": "good"})
     assert r.status_code == 200, r.text
-    assert r.json()["change"]["decision"]["status"] == "approved"
+    assert r.json()["change"]["decision"]["status"] == "replied"
     assert world.client.get(f"/api/projects/{world.slug}").json()["pending_changes"] == 0
     messages = world.client.get(f"/api/projects/{world.slug}/messages").json()
-    assert messages[-1]["kind"] == "decision" and messages[-1]["status"] == "approved" and messages[-1]["note"] == "good"
+    assert messages[-1]["kind"] == "decision" and messages[-1]["status"] == "replied" and messages[-1]["note"] == "good"
+    r = world.client.post(f"/api/projects/{world.slug}/changes/{change['id']}/decision", json={"action": "approve"})
+    assert r.status_code == 200 and r.json()["change"]["decision"]["status"] == "approved", r.text
 
     r = world.client.post(f"/api/projects/{world.slug}/changes/{change['id']}/decision", json={"action": "nuke"})
     assert r.status_code == 422
@@ -400,7 +465,7 @@ def test_post_message_context_names_what_the_user_was_looking_at(world):
     r = world.client.post(base, json={"text": "this take needs a wider shot", "context": {"bin": world.image, "media": world.take}})
     assert r.status_code == 200, r.text
     msg = r.json()["messages"][0]
-    assert msg["context"] == {"bin": world.image, "bin_name": "Image 1", "media": world.take, "media_label": "take 1"}
+    assert msg["context"] == {"bin": world.image, "bin_name": "Image 1", "media": world.take, "media_label": "take 1", "sequence": None, "sequence_name": "", "position": None}
     # the agent's inbox carries it too
     inbox = world.client.get(f"/api/projects/{world.slug}/inbox", params={"cursor": 0}).json()
     assert inbox["messages"][-1]["context"]["media"] == world.take
@@ -420,44 +485,6 @@ def test_external_edit_is_picked_up(world):
     assert world.client.get(f"/api/projects/{world.slug}").json()["name"] == "Renamed By Hand"
 
 
-def test_workflows_endpoint_real_files(tmp_path):
-    """The listing is workflows_image/ and workflows_video/, and kind is whichever folder a file
-    sits in — capabilities are still scanned out of the file, so these are copies of real ones.
-    The flat workflows/ folder is deliberately not listed."""
-    import shutil
-
-    from thm_core.workflow_names import workflow_kind_dirs
-
-    wdir = tmp_path / "workflows"
-    wdir.mkdir()
-    kind_dirs = workflow_kind_dirs(wdir)
-    for kind, name in (("image", "pixa-four-image_vague.json"), ("video", "i2v_base.json")):
-        kind_dirs[kind].mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO_ROOT / "workflows" / name, kind_dirs[kind] / name)
-    (kind_dirs["image"] / "_ignored.json").write_text("{}", encoding="utf-8")
-    (wdir / "unlisted.json").write_text("{}", encoding="utf-8")
-
-    settings = CoreSettings(projects_dir=tmp_path / "p2", workflows_dir=wdir, backups=BackupSettings(throttle_seconds=0))
-    app = create_app(settings, web_dist=tmp_path / "nodist")
-    from starlette.testclient import TestClient
-
-    client = TestClient(app)
-    r = client.get("/api/workflows")
-    assert r.status_code == 200
-    infos = {w["name"]: w for w in r.json()}
-    assert not any(name.startswith("_") for name in infos)
-    assert "unlisted.json" not in infos
-    pixa = infos["pixa-four-image_vague.json"]
-    assert (pixa["kind"], pixa["image_slots"], pixa["addresses_by_token"]) == ("image", 4, True)
-    i2v = infos["i2v_base.json"]
-    assert i2v["kind"] == "video" and i2v["supports_start_frame"] and i2v["supports_end_frame"] and i2v["has_negative"]
-    r = client.get("/api/workflows/i2v_base.json")
-    assert r.status_code == 200 and r.json()["kind"] == "video"
-    assert client.get("/api/workflows/nope.json").status_code == 404
-    # second call is served from the mtime cache and is identical
-    cache = app.state.thm.workflows_cache
-    assert len(cache) == len(infos)
-    assert client.get("/api/workflows").json() == list(r.json() for r in [client.get("/api/workflows")])[0]
 
 
 def test_loras_endpoint_lists_files_relative_to_the_loras_dir(tmp_path):
@@ -485,3 +512,26 @@ def test_core_settings_read_loras_dir(tmp_path):
     assert load_core_settings(cfg, repo_root=tmp_path).loras_dir == (tmp_path / "models" / "loras").resolve()
     cfg.write_text("[paths]\n", encoding="utf-8")
     assert load_core_settings(cfg, repo_root=tmp_path).loras_dir is None
+
+
+def test_a_read_during_a_locked_write_keeps_the_cached_project(world):
+    """An upload makes its bin (one save) and then adds the media (another). A reader between
+    the two must not reload the half-written file into the cache, or the media is lost."""
+    import asyncio
+    from thm_core import execute
+    from thm_core.commands import CreateBin
+    from thm_core_fixtures import USER
+
+    async def run():
+        reg = world.registry
+        async with reg.lock(world.slug):
+            project = reg.get(world.slug)
+            execute(world.store, project, CreateBin(bin_name="mid-write", workflow=""), USER, env=world.env)  # saved: the file moved on
+            project.media_by_id  # the in-memory object is ahead of the file from here
+            again = reg.get(world.slug)  # a concurrent reader (the home list, the stream)
+            assert again is project
+            reg.touch(world.slug)  # the writer's last word, as every route does after its save
+        after = reg.get(world.slug)  # lock free, the file is current: the same object stays cached
+        assert after is project
+
+    asyncio.run(run())

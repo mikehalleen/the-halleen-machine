@@ -26,6 +26,13 @@ from thm_client import ThmClient, ThmError, check_tokens, prompt_diff, unknown_p
 BASE = "http://thm.test"
 
 
+def _age(act, seconds):
+    """Make a project's agent read as not heard for ``seconds``: the last call, and every session it named."""
+    act.at -= seconds
+    for k in act.sessions:
+        act.sessions[k] -= seconds
+
+
 def _transport(client: TestClient):
     def send(method, url, body, headers):
         assert url.startswith(BASE)
@@ -79,10 +86,10 @@ def test_token_regex_matches_the_core():
 
 
 def test_check_tokens_and_params():
-    refs = [{"handle": "mara"}, {"handle": "mara.2"}, {"handle": "band-og"}]
-    res = check_tokens(".mara waves at .ghost, .band-og behind; end.next is not a token", "..mara .Mara", refs, True)
-    assert res == {"unknown": ["ghost"], "unused": ["mara.2"], "used": ["band-og", "mara"]}
-    assert check_tokens(".mara", "", refs, False)["unused"] == []
+    refs = [{"handle": "mara.png"}, {"handle": "mara.png.2"}, {"handle": "band-og.mp4"}]
+    res = check_tokens("@mara.png waves at @ghost.png, @band-og.mp4 behind; end.next is not a token", "@@mara.png @Mara.png @mara", refs, True)
+    assert res == {"unknown": ["ghost.png"], "unused": ["mara.png.2"], "used": ["band-og.mp4", "mara.png"]}
+    assert check_tokens("@mara.png", "", refs, False)["unused"] == []
     assert unknown_params("image", {"seed": 1, "fps": 24, "cfg": 3}) == ["fps"]
     assert unknown_params("video", {"quarter": True, "cfg": 3, "step": 4}) == ["cfg", "step"]
     assert unknown_params(None, {"seed": 1}) == ["seed"] and unknown_params("image", None) == []
@@ -106,17 +113,17 @@ def test_history_joins_takes_with_qc_and_diffs_prompts(tmp_path, capsys):
     with TestClient(_app(world, tmp_path, varying_launcher())) as http:
         agent = _live_agent(http, world, mode="auto")  # a review mode stops at the first take for the verdict
         slug = world.slug
-        agent.command(slug, "set_bin_field", {"bin": world.video, "field": "prompt", "value": ".mara at the rail\nwide"})
+        agent.command(slug, "set_bin_field", {"bin": world.video, "field": "prompt", "value": "@mara.png at the rail\nwide"})
         first = agent.wait_generation(slug, agent.generate(slug, world.video)["generation"]["id"], poll_s=0.01, timeout_s=10)
         agent.command(slug, "mark_take", {"media": first["outputs"][0], "status": "fail", "note": "changed: nothing. broke: mara faces away"})
-        agent.command(slug, "set_bin_field", {"bin": world.video, "field": "prompt", "value": ".mara at the rail, facing camera\nwide"})
+        agent.command(slug, "set_bin_field", {"bin": world.video, "field": "prompt", "value": "@mara.png at the rail, facing camera\nwide"})
         second = agent.wait_generation(slug, agent.generate(slug, world.video, params={"seed": 7, "quarter": True})["generation"]["id"], poll_s=0.01, timeout_s=10)
         agent.command(slug, "mark_take", {"media": second["outputs"][0], "status": "pass", "note": "changed: faces camera. fixed: eyeline"})
 
         rows = agent.history(slug, world.video)
         assert [r["take"] for r in rows] == [2, 1]
         assert rows[0]["qc"]["status"] == "pass" and rows[0]["seed"] == 7 and rows[0]["quarter"] is True and rows[0]["length_s"] == 5.0
-        assert "-.mara at the rail" in rows[0]["prompt_diff"] and "+.mara at the rail, facing camera" in rows[0]["prompt_diff"]
+        assert "-@mara.png at the rail" in rows[0]["prompt_diff"] and "+@mara.png at the rail, facing camera" in rows[0]["prompt_diff"]
         assert rows[1]["prompt_diff"] == "" and rows[1]["qc"]["note"].startswith("changed: nothing")
         assert agent.history(slug, world.video, limit=1)[0]["generation"] == second["id"]
         assert agent.history(slug, world.image)[0]["take"] == 1  # the seeded take
@@ -127,7 +134,7 @@ def test_history_joins_takes_with_qc_and_diffs_prompts(tmp_path, capsys):
 
         rc = cli.main(["--server", BASE, "--project", slug, "history", "--bin", world.video], transport=_transport(http))
         out = capsys.readouterr().out
-        assert rc == 0 and "take 2" in out and "qc=pass" in out and "+.mara at the rail, facing camera" in out and "note: changed: faces camera" in out
+        assert rc == 0 and "take 2" in out and "qc=pass" in out and "+@mara.png at the rail, facing camera" in out and "note: changed: faces camera" in out
 
 
 def test_history_shows_a_failed_render(tmp_path):
@@ -159,19 +166,26 @@ def test_check_and_preflight_warn_on_stderr_without_refusing(tmp_path, capsys):
     with TestClient(_app(world, tmp_path, varying_launcher())) as http:
         agent = _live_agent(http, world)
         slug, send = world.slug, _transport(http)
-        rc = cli.main(["--server", BASE, "--project", slug, "cmd", "set_bin_field", "--payload", json.dumps({"bin": world.video, "field": "prompt", "value": ".ghost and .mara"})], transport=send)
+        rc = cli.main(["--server", BASE, "--project", slug, "cmd", "set_bin_field", "--payload", json.dumps({"bin": world.video, "field": "prompt", "value": "@ghost.png and @mara.png"})], transport=send)
         out = capsys.readouterr()
-        assert rc == 0 and "warning: unknown_token .ghost" in out.out  # the server's own warning, printed by describe_result
+        assert rc == 0 and "warning: unknown_token @ghost.png" in out.out  # the server's own warning, printed by describe_result
         rc = cli.main(["--server", BASE, "--project", slug, "check", "--bin", world.video], transport=send)
         out = capsys.readouterr().out
         # vid.json is positional (start/end), so an unmentioned handle is not "unused" there
-        assert rc == 0 and "unknown .ghost" in out and "unused" not in out and ".mara ordinal=1 start" in out and ".mara.2 ordinal=2 end" in out
+        assert rc == 0 and "unknown @ghost.png" in out and "unused" not in out and "@mara.png ordinal=1 start" in out and "@mara.png.2 ordinal=2 end" in out
+        cli.main(["--server", BASE, "--project", slug, "inbox"], transport=send)
+        capsys.readouterr()
+        # a mention no reference answers to stops the render (it would go out pointing at nothing)
+        rc = cli.main(["--server", BASE, "--project", slug, "generate", "--bin", world.video, "--params", json.dumps({"cfg": 3})], transport=send)
+        out = capsys.readouterr()
+        assert rc != 0 and "unknown_handle" in (out.out + out.err) and "@ghost.png" in (out.out + out.err)
+        cli.main(["--server", BASE, "--project", slug, "cmd", "set_bin_field", "--payload", json.dumps({"bin": world.video, "field": "prompt", "value": "@mara.png"})], transport=send)
         cli.main(["--server", BASE, "--project", slug, "inbox"], transport=send)
         capsys.readouterr()
         rc = cli.main(["--server", BASE, "--project", slug, "generate", "--bin", world.video, "--params", json.dumps({"cfg": 3})], transport=send)
         out = capsys.readouterr()
         assert rc == 0 and "generation g_" in out.out
-        assert "warning: unknown_token .ghost" in out.err and "warning: unknown param 'cfg'" in out.err and "video runner" in out.err
+        assert "warning: unknown param 'cfg'" in out.err and "video runner" in out.err
         assert agent.jobs(slug)
 
 
@@ -198,10 +212,15 @@ def test_mode_sessions_and_watch_across_projects(tmp_path, capsys):
         with pytest.raises(SystemExit):
             cli.main(["--server", BASE, "--project", slug, "mode", "later"], transport=send)
         rc = cli.main(["--server", BASE, "--project", slug, "mode", "image_review", "--requested"], transport=send)
-        assert rc == 0 and "session mode image_review" in capsys.readouterr().out
+        assert rc == 0 and "session mode media cards" in capsys.readouterr().out
         rc = cli.main(["--server", BASE, "sessions"], transport=send)
         assert rc == 0 and "mode=image_review" in capsys.readouterr().out
 
+        # the kickoff note was read, not dealt with: it is still owed, so the watch hands it back
+        woke = ThmClient(BASE, transport=send).wait_for_any({slug: cli.load_state(slug)["cursor"]}, poll_s=0, timeout_s=0, sleep=lambda s: None)
+        assert woke["why"] == "1 open note(s)" and woke["messages"][0]["text"] == "go"
+        rc = cli.main(["--server", BASE, "--project", slug, "answer", woke["messages"][0]["id"], "--did", "first stills queued"], transport=send)
+        assert rc == 0 and "closed 1 note(s); 0 still open" in capsys.readouterr().out
         with pytest.raises(TimeoutError):
             ThmClient(BASE, transport=send).wait_for_any({slug: cli.load_state(slug)["cursor"]}, poll_s=0, timeout_s=0, sleep=lambda s: None)
         _user_post(http, slug, "post_message", {"text": "try a wider shot", "kind": "user"})
@@ -210,11 +229,49 @@ def test_mode_sessions_and_watch_across_projects(tmp_path, capsys):
         assert rc == 0 and f"project {slug}: 1 new item(s)" in out and "try a wider shot" in out and f"--project {slug} inbox" in out
 
 
+def test_watch_wakes_on_a_live_session_whose_agent_is_gone(tmp_path, capsys):
+    """A harness that closed without ``end`` leaves a live session nobody is on: the server marks
+    it ``agent_gone`` and the next agent's watch hands it over like a waiting one. The agent that
+    holds the session (its state file names it) is not that: its watch polls as the session,
+    which keeps it attended through any quiet spell."""
+    from thm_server import agent_activity
+
+    world = seeded_world(tmp_path)
+    with TestClient(_app(world, tmp_path, varying_launcher())) as http:
+        send = _transport(http)
+        slug = world.slug
+        _user_post(http, slug, "start_session", {"notes": "go"})
+        agent = ThmClient(BASE, transport=send)
+        agent.connect(slug, "claude-code")
+        cli.save_state(slug, session=agent.session, cursor=agent.inbox(slug)[1])
+        agent.answer_notes(slug, [m["id"] for m in agent.open_notes(slug)], "read")
+        with pytest.raises(TimeoutError):
+            ThmClient(BASE, transport=send).wait_for_any({slug: cli.load_state(slug)["cursor"]}, poll_s=0, timeout_s=0, sleep=lambda s: None)
+        _age(http.app.state.thm.agent_activity[slug], agent_activity.GONE_S + 1)
+        rc = cli.main(["--server", BASE, "sessions"], transport=send)
+        assert rc == 0 and "AGENT GONE" in capsys.readouterr().out
+        # the holder's own watch: a quiet return, and the poll was heard as the session
+        rc = cli.main(["--server", BASE, "--json", "watch", "--poll", "0", "--timeout", "0.2"], transport=send)
+        assert rc == 0 and json.loads(capsys.readouterr().out)["why"] == "quiet"
+        rc = cli.main(["--server", BASE, "sessions"], transport=send)
+        assert rc == 0 and "AGENT GONE" not in capsys.readouterr().out
+        # another harness (no session in its state) finds it gone after the next quiet spell
+        _age(http.app.state.thm.agent_activity[slug], agent_activity.GONE_S + 1)
+        cli.save_state(slug, session=None)
+        rc = cli.main(["--server", BASE, "--json", "watch", "--poll", "0", "--timeout", "1"], transport=send)
+        woke = json.loads(capsys.readouterr().out)
+        assert rc == 0 and woke == {"slug": slug, "why": "agent gone", "session": agent.session, "messages": []}
+        # connecting again takes the session over and is a sign of life: nothing is gone
+        ThmClient(BASE, transport=send).connect(slug, "claude-code")
+        rc = cli.main(["--server", BASE, "sessions"], transport=send)
+        assert rc == 0 and "AGENT GONE" not in capsys.readouterr().out
+
+
 def test_end_with_summary_posts_before_ending(tmp_path, capsys):
     world = seeded_world(tmp_path)
     with TestClient(_app(world, tmp_path, varying_launcher())) as http:
         agent = _live_agent(http, world)
-        cli.save_state(world.slug, session=agent.session)
+        cli.save_state(world.slug, session=agent.session, cursor=agent.cursor)
         rc = cli.main(["--server", BASE, "--project", world.slug, "end", "--summary", "take 2 is the pick; the wide is open", "--attach", world.take], transport=_transport(http))
         assert rc == 0 and "summary posted" in capsys.readouterr().out
         feed = agent.feed(world.slug)["entries"]
@@ -229,7 +286,7 @@ def test_auto_session_end_to_end_owes_no_click(tmp_path):
         agent = _live_agent(http, world, mode="auto")
         slug = world.slug
         before = agent.feed(slug)["cursor"]
-        r = agent.command(slug, "set_bin_field", {"bin": world.video, "field": "prompt", "value": ".mara, wide"})
+        r = agent.command(slug, "set_bin_field", {"bin": world.video, "field": "prompt", "value": "@mara.png, wide"})
         gen = agent.wait_generation(slug, agent.generate(slug, world.video)["generation"]["id"], poll_s=0.01, timeout_s=10)
         agent.command(slug, "mark_take", {"media": gen["outputs"][0], "status": "pass", "note": "clean"})
         assert r["change"]["decision"] is None and agent.feed(slug)["cursor"] > before  # lines, not cards
@@ -256,7 +313,8 @@ def test_agent_upload_with_provenance(tmp_path, capsys):
         assert rc == 0 and "uploaded m_" in out and "Image 1" in out
         detail = agent.bin(world.slug, world.image)
         newest = detail["media"][0]
-        assert newest["origin"]["source"] == world.take and newest["origin"]["note"] == "audio removed, ffmpeg -an" and detail["selected"] == newest["id"]
+        assert newest["origin"]["source"] == world.take and newest["origin"]["note"] == "audio removed, ffmpeg -an"
+        assert detail["selected"] != newest["id"]  # an arrival is new; the bin's current take stays until chosen
         rc = cli.main(["--server", BASE, "--project", world.slug, "bin", world.image], transport=_transport(http))
         assert rc == 0 and "(audio removed, ffmpeg -an)" in capsys.readouterr().out
         with pytest.raises(ThmError) as refused:
@@ -314,7 +372,7 @@ def test_propose_shots_verb_round_trip(tmp_path, capsys):
         cli.save_state(slug, session=agent.session, cursor=agent.cursor)
         shots = tmp_path / "shots.json"
         shots.write_text(json.dumps({"title": "round 3", "items": [
-            {"name": "S01 neon", "description": "hood mount, neon rain", "prompt": ".mara in the rain", "workflow": "vid.json", "references": [world.m1], "length_s": 4, "quarter": True},
+            {"name": "S01 neon", "description": "hood mount, neon rain", "prompt": "@mara.png in the rain", "workflow": "vid.json", "references": [world.m1], "length_s": 4, "quarter": True},
             {"name": "S02 desert", "description": "a rabbit past the hood", "workflow": "vid.json", "references": [world.m1]},
             {"bin": world.image, "description": "the same still, again", "workflow": "img.json"},
         ]}), encoding="utf-8")
@@ -337,8 +395,12 @@ def test_propose_shots_verb_round_trip(tmp_path, capsys):
         out = capsys.readouterr().out
         assert rc == 0 and "shot S01 neon [proposed]" in out and "1 shot(s) on the card" in out
 
-        # one card each: kept with a note, rewritten, closed
+        # one card each: replied then kept, rewritten, closed
         r = http.post(f"/api/projects/{slug}/changes/{card_ids[0]}/decision", json={"action": "approve", "note": "go"})
+        assert r.status_code == 200 and r.json()["change"]["decision"]["status"] == "replied", r.text
+        assert cli.main(["--server", BASE, "--project", slug, "propose-shots", "--show", card_ids[0]], transport=send) == 0
+        assert "[replied]" in capsys.readouterr().out
+        r = http.post(f"/api/projects/{slug}/changes/{card_ids[0]}/decision", json={"action": "approve"})
         assert r.status_code == 200, r.text
         r = http.post(f"/api/projects/{slug}/changes/{card_ids[1]}/decision", json={"action": "approve", "items": [{"index": 0, "description": "a jackrabbit"}]})
         assert r.status_code == 200, r.text
@@ -348,7 +410,7 @@ def test_propose_shots_verb_round_trip(tmp_path, capsys):
         for cid in card_ids:
             assert cli.main(["--server", BASE, "--project", slug, "propose-shots", "--show", cid], transport=send) == 0
             outs.append(capsys.readouterr().out)
-        assert "[approved]" in outs[0] and "note: go" in outs[0] and "1. S01 neon: kept -- bin b_" in outs[0] and "render c_" in outs[0]
+        assert "[approved]" in outs[0] and "1. S01 neon: kept -- bin b_" in outs[0] and "render c_" in outs[0]
         assert '1. S02 desert: edited to "a jackrabbit" -- bin b_' in outs[1]
         assert "[closed]" in outs[2] and "1. Image 1: closed, nothing made" in outs[2]
 
@@ -368,3 +430,146 @@ def test_describe_messages_shows_what_a_note_is_about():
     line = cli.describe_messages([{"ts": "t", "kind": "user", "text": "this take is soft", "context": {"bin": "b_1", "bin_name": "Ed", "media": "m_9", "media_label": "take 3"}}])
     assert line.endswith('[about: bin b_1 "Ed" - media m_9 (take 3)]')
     assert "[about:" not in cli.describe_messages([{"ts": "t", "kind": "user", "text": "hi"}])
+
+
+def test_a_mode_change_refuses_the_next_step_and_wakes_the_wait(tmp_path, capsys):
+    """The user switches mode between two renders of a series: the agent's next changing
+    command is refused with mode_changed (nothing runs), its watch wakes on the change, and once
+    it has seen the new mode the next step is judged by that mode."""
+    world = seeded_world(tmp_path)
+    with TestClient(_app(world, tmp_path, varying_launcher())) as http:
+        send = _transport(http)
+        slug = world.slug
+        agent = _live_agent(http, world, mode="auto")
+        cli.save_state(slug, session=agent.session, cursor=agent.cursor, mode=agent.mode)
+        assert agent.mode == "auto"
+        # the user flips to manual
+        _user_post(http, slug, "set_session_mode", {"mode": "manual"})
+        # the watch wakes on it, before the agent has read anything
+        woke = ThmClient(BASE, transport=send).wait_for_inbox(slug, cursor=agent.cursor, kinds=(), mode="auto", poll_s=0, timeout_s=1, sleep=lambda s: None)
+        assert [w["kind"] for w in woke] == ["mode"] and woke[0]["mode"] == "manual"
+        # the next changing command, carrying the old mode, is refused and does nothing
+        before = world.client.get(f"/api/projects/{slug}/bins/{world.image}").json()["bin"]["prompt"]
+        rc = cli.main(["--server", BASE, "--project", slug, "cmd", "set_bin_field", "--payload", json.dumps({"bin": world.image, "field": "prompt", "value": "changed"})], transport=send)
+        err = capsys.readouterr().err
+        assert rc == 1 and "mode_changed" in err and "MODE CHANGED to manual" in err
+        assert world.client.get(f"/api/projects/{slug}/bins/{world.image}").json()["bin"]["prompt"] == before
+        # not seen until the inbox is read: a post chained after it is refused too
+        assert cli.load_state(slug)["mode"] == "auto"
+        rc = cli.main(["--server", BASE, "--project", slug, "post", "say go and I'll render it"], transport=send)
+        assert rc == 1 and "MODE CHANGED to manual" in capsys.readouterr().err
+        rc = cli.main(["--server", BASE, "--project", slug, "inbox"], transport=send)
+        capsys.readouterr()
+        assert rc == 0 and cli.load_state(slug)["mode"] == "manual"
+        # seen now: the retry is judged by manual (an edit is fine there)
+        rc = cli.main(["--server", BASE, "--project", slug, "cmd", "set_bin_field", "--payload", json.dumps({"bin": world.image, "field": "prompt", "value": "changed"})], transport=send)
+        out = capsys.readouterr().out
+        assert rc == 0 and "mode manual" in out
+        # answering a note is never held by it
+        _user_post(http, slug, "set_session_mode", {"mode": "auto"})
+        agent.inbox(slug)
+        agent.mode = "manual"
+        agent.answer_notes(slug, [m["id"] for m in agent.open_notes(slug)], "read")
+
+
+def test_watch_returns_when_a_listed_render_finishes(tmp_path):
+    """One wait while renders run: a listed job finishing wakes it, as a note would."""
+    world = seeded_world(tmp_path)
+    with TestClient(_app(world, tmp_path, varying_launcher())) as http:
+        send = _transport(http)
+        slug = world.slug
+        agent = _live_agent(http, world, mode="auto")
+        agent.answer_notes(slug, [m["id"] for m in agent.open_notes(slug)], "read")
+        gen = agent.generate(slug, world.image)["generation"]["id"]
+        woke = ThmClient(BASE, transport=send).wait_for_inbox(slug, cursor=agent.cursor, jobs=(gen,), poll_s=0.02, timeout_s=10)
+        job = [w for w in woke if w["kind"] == "job"]
+        assert job and job[0]["id"] == gen and job[0]["status"] in ("done", "failed")
+
+
+def test_a_wait_rides_out_an_unreachable_server():
+    """A restart mid-wait is waited out, not reported: the poll retries until it answers."""
+    calls = {"n": 0}
+
+    def flaky(method, url, body, headers):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise ConnectionRefusedError("server restarting")
+        if "/inbox" in url:
+            return 200, json.dumps({"messages": [{"kind": "user", "id": "m1", "text": "hi"}], "cursor": 1, "mode": "auto"}).encode(), {}
+        return 200, b"[]", {}
+
+    woke = ThmClient(BASE, transport=flaky).wait_for_inbox("p", cursor=0, poll_s=0, timeout_s=5, sleep=lambda s: None)
+    assert woke and woke[0]["text"] == "hi" and calls["n"] >= 3
+
+
+def test_rules_and_the_resume_summary(tmp_path, capsys):
+    """A rule the user settled once is on the project for every later session; connect prints
+    the resume summary (mode, open notes, rules) so a reconnect starts from state."""
+    world = seeded_world(tmp_path)
+    with TestClient(_app(world, tmp_path, varying_launcher())) as http:
+        send = _transport(http)
+        slug = world.slug
+        _user_post(http, slug, "start_session", {"notes": "go", "mode": "manual"})
+        rc = cli.main(["--server", BASE, "--project", slug, "connect", "--harness", "claude-code"], transport=send)
+        out = capsys.readouterr().out
+        assert rc == 0 and "RESUME" in out and "mode manual" in out and "open notes: 1" in out and "project rules: 0" in out
+        cli.main(["--server", BASE, "--project", slug, "inbox"], transport=send)
+        capsys.readouterr()
+        rc = cli.main(["--server", BASE, "--project", slug, "cmd", "add_project_rule", "--payload", json.dumps({"kind": "continuity", "text": "Tommy's empty plate is in every shot where the bar shows"})], transport=send)
+        assert rc == 0
+        capsys.readouterr()
+        rc = cli.main(["--server", BASE, "--project", slug, "rules"], transport=send)
+        out = capsys.readouterr().out
+        assert rc == 0 and "[continuity] Tommy's empty plate" in out
+        rule_id = out.split()[0]
+        rc = cli.main(["--server", BASE, "--project", slug, "cmd", "remove_project_rule", "--payload", json.dumps({"rule": rule_id})], transport=send)
+        capsys.readouterr()
+        rc = cli.main(["--server", BASE, "--project", slug, "resume"], transport=send)
+        assert rc == 0 and "project rules: 0" in capsys.readouterr().out
+
+
+def test_after_a_restart_the_owner_gets_its_session_back(tmp_path, capsys):
+    """A restart forgets every heartbeat: the live session reads gone, and the owning agent's
+    own read calls must not then lock it out. Its connect (naming its session) takes it straight
+    back; another agent is still refused while the owner is heard."""
+    from thm_server import agent_activity
+
+    world = seeded_world(tmp_path)
+    with TestClient(_app(world, tmp_path, varying_launcher())) as http:
+        send = _transport(http)
+        slug = world.slug
+        _user_post(http, slug, "start_session", {"notes": "go"})
+        owner = ThmClient(BASE, transport=send)
+        owner.connect(slug, "claude-code")
+        cli.save_state(slug, session=owner.session, cursor=owner.inbox(slug)[1])
+        owner.answer_notes(slug, [m["id"] for m in owner.open_notes(slug)], "read")
+        # the server restarts: nothing heard on any session -- the owner's watch, polling as its
+        # session, is itself the sign of life: no wake, nothing to reconnect
+        http.app.state.thm.agent_activity.clear()
+        rc = cli.main(["--server", BASE, "watch", "--poll", "0", "--timeout", "0.2"], transport=send)
+        out = capsys.readouterr().out
+        assert rc == 0 and "quiet" in out and "YOUR session" not in out
+        assert not agent_activity.gone(http.app.state.thm, slug, http.app.state.thm.registry.get(slug).agent_session)
+        # a watch from a state that does not hold the session reads it as gone after a restart
+        http.app.state.thm.agent_activity.clear()
+        held = cli.load_state(slug)["session"]
+        cli.save_state(slug, session=None)
+        rc = cli.main(["--server", BASE, "watch", "--poll", "0", "--timeout", "1"], transport=send)
+        out = capsys.readouterr().out
+        assert rc == 0 and "agent gone" in out
+        cli.save_state(slug, session=held)
+        # the owner looks around (read calls carrying its session), then connects: straight back
+        rc = cli.main(["--server", BASE, "--project", slug, "notes"], transport=send)
+        capsys.readouterr()
+        rc = cli.main(["--server", BASE, "--project", slug, "connect", "--harness", "claude-code"], transport=send)
+        assert rc == 0, capsys.readouterr().err
+        capsys.readouterr()
+        # a different agent, while the owner is being heard, is refused
+        other = ThmClient(BASE, transport=send)
+        with pytest.raises(thm_client.ThmError) as exc:
+            other.connect(slug, "claude-code")
+        assert exc.value.code == "session_active"
+        # and a stranger's calls (no session id) never count as the owner being here
+        http.app.state.thm.agent_activity[slug].sessions.clear()
+        other.project(slug)
+        assert agent_activity.gone(http.app.state.thm, slug, http.app.state.thm.registry.get(slug).agent_session)

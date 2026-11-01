@@ -32,8 +32,8 @@ from . import ids
 from .assembler import Capacity, TokenProfile, load_token_profile, workflow_capacity
 from .ids import utc_now
 from .media import media_type_for
-from .models import Bin, Generation, GenerationReference, Lora, Media, MediaOrigin, Project, Reference
-from .slug import assign_handle
+from .models import Bin, Generation, GenerationReference, Lora, Media, MediaOrigin, Project, Reference, stamp_take
+from .slug import assign_handle, media_ext
 from .store import ProjectStore
 from .workflow_names import resolve_curated_workflow, workflow_kind_dirs
 
@@ -452,8 +452,8 @@ def _bin_holding(project: Project, media: Media) -> Bin | None:
 
 
 def _untokenize(text: str, fmt: str | None, handles: list[str | None]) -> str:
-    """``<Picture 2>`` back to ``.mara.2``: the ordinal is the position in the slot order, the
-    same order the assembler numbered them in. Tokens with no handle stay as written."""
+    """``<Picture 2>`` back to ``@mara.png.2``: the ordinal is the position in the slot order,
+    the same order the assembler numbered them in. Tokens with no handle stay as written."""
     if not text or not fmt or "{n}" not in fmt:
         return text
     pattern = "(?<![A-Za-z0-9])" + re.escape(fmt).replace(r"\{n\}", r"(\d+)") + "(?![A-Za-z0-9])"
@@ -461,7 +461,7 @@ def _untokenize(text: str, fmt: str | None, handles: list[str | None]) -> str:
     def swap(m: re.Match) -> str:
         n = int(m.group(1))
         handle = handles[n - 1] if 0 < n <= len(handles) else None
-        return f".{handle}" if handle else m.group(0)
+        return f"@{handle}" if handle else m.group(0)
 
     return re.sub(pattern, swap, text)
 
@@ -594,7 +594,7 @@ def reconstruct(
                 ref_id, handle = bound.id, bound.handle
             else:
                 ref_bin = _bin_holding(project, found) or Bin(id=found.origin.bin or found.id, name="ref")
-                handle = assign_handle(scratch, ref_bin)
+                handle = assign_handle(scratch, ref_bin, media_ext(found.path))
                 ref_id = ""
                 scratch.references.append(Reference(id="", media=found.id, bin=ref_bin.id, handle=handle))
             references.append(GenerationReference(ref=ref_id, media=found.id, handle=handle, slot=slot, ordinal=n))
@@ -708,7 +708,6 @@ def recover_generation(
         media.origin = MediaOrigin(type="generation", generation=gen.id, bin=home, source=media.origin.source, note=media.origin.note)
     bin_ = project.bins_by_id.get(gen.bin)
     if bin_ is not None and media.id in bin_.media and media.take is None:
-        bin_.counters["take"] = int(bin_.counters.get("take", 0)) + 1
-        media.take = bin_.counters["take"]
+        stamp_take(bin_, media)
     store.append_generation(project, gen)
     return rec

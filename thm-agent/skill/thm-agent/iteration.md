@@ -24,6 +24,31 @@ on van-halen and it stands as the default for every project:
 Do not skip rungs on a new look. Skip to full size only when a bin is already
 holding and you are varying one clause on a known-good seed.
 
+**Rung 3 is a commitment, not the next step.** A full-size render ties the GPU
+up for a long time, and a set of them is an overnight job. The user runs draft
+sessions and full-size runs at different times, on purpose: the draft session
+is interactive -- notes every few minutes, takes checked as they land, bins
+retuned -- and the full-size run is started when they are ready to walk away.
+So the climb to rung 3 is never implied by anything short of the words. In
+particular:
+
+- an approved draft take, an approved bin, an approved assembly of drafts, a
+  "that's the final" on a quarter take: none of these is an instruction to
+  render full size. They say the *recipe* is settled, not that the time is now;
+- while the user is giving small changes at a quick cadence, stay at quarter
+  size with `draft` on (where the workflow has it) for every render, even on a bin
+  whose configuration they just approved -- a full-size render in the middle of
+  that blocks the drafts they are iterating on behind it;
+- full size starts only on an explicit instruction naming it ("go full size",
+  "run the finals", "render overnight"), and then as a batch: everything that is
+  settled, proposed together, so the long run happens once. In `draft` mode this
+  is enforced (a full-quality render is a card with Yes / Later / No); in every
+  other mode it is your judgement, and the judgement is: when in doubt, propose
+  it and let the user press Later.
+
+If you cannot tell whether the user is iterating or done for the day, you are
+iterating.
+
 ## One axis per attempt
 
 Change one thing between takes: one prompt clause, one reference, the seed, or
@@ -114,7 +139,7 @@ QC status and note, and the prompt diff against the previous take. It tells
 you which clauses have already been tried, which seeds have already rolled,
 and what the last note left open. A reprompt that repeats a clause history
 shows already failed is a wasted render. `recipe <media>` for the one take you
-want to reproduce exactly; `recall_generation` puts the bin back to that
+want to reproduce exactly; `recall <media>` (the CLI verb over `recall_generation`) puts the bin back to that
 recipe when the user wants to branch from an earlier take.
 
 ## A held seed is visible, or it is a trap

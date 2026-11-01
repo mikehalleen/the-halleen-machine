@@ -19,6 +19,7 @@ from thm_core.enhancer import (
     enhancer_available,
     extract_text,
     history_error,
+    dropped_tags,
     output_problem,
     system_prompt_for,
 )
@@ -47,17 +48,17 @@ def test_system_prompt_from_workflow_else_default(tmp_path):
     assert system_prompt_for(empty, "image")[1] == "default"
 
 
-def test_defaults_keep_dot_tags_rule():
+def test_defaults_keep_at_tags_rule():
     for kind in ("image", "video"):
-        assert ".band-og" in DEFAULT_SYSTEM_PROMPTS[kind] and "return only the new prompt" in DEFAULT_SYSTEM_PROMPTS[kind]
+        assert "@band-og.mp4" in DEFAULT_SYSTEM_PROMPTS[kind] and "return only the new prompt" in DEFAULT_SYSTEM_PROMPTS[kind]
         assert "formatter, not a writer" in DEFAULT_SYSTEM_PROMPTS[kind]
 
 
 def test_user_message_shape():
-    msg = build_user_message("a dog .ed runs", "focus on the face", [("ed", "image"), ("stage", "video")])
+    msg = build_user_message("a dog @ed.png runs", "focus on the face", [("ed", "image"), ("stage", "video")])
     assert "NOTE\n\nfocus on the face" in msg
     assert "(image)" not in msg  # tags are not restated: the model parrots them back
-    assert msg.rstrip().endswith("PROMPT\n\na dog .ed runs")
+    assert msg.rstrip().endswith("PROMPT\n\na dog @ed.png runs")
     assert "improve the prompt as it stands" in build_user_message("p", "", [])
 
 
@@ -66,19 +67,22 @@ def test_output_problem_flags_echo_empty_and_dropped_tags():
     assert output_problem("", sysp, "x") == "empty"
     assert output_problem(sysp[:80], sysp, "x") == "echoed the instructions or refused"
     assert output_problem("Wait - you want me to", sysp, "x") == "echoed the instructions or refused"
-    assert output_problem("a cat on a mat", sysp, "a cat .tom on a mat .stage.2") == "dropped reference tag(s) .stage.2, .tom"
-    assert output_problem("a cat .tom on a mat .stage.2, moody", sysp, "a cat .tom on a mat .stage.2") is None
+    # a dropped tag is a warning on a usable rewrite, not a failure
+    assert output_problem("a cat on a mat", sysp, "a cat @tom.png on a mat @stage.mp4.2") is None
+    assert dropped_tags("a cat on a mat", "a cat @tom.png on a mat @stage.mp4.2") == ["@stage.mp4.2", "@tom.png"]
+    assert dropped_tags("a cat @tom.png on a mat @stage.mp4.2, moody", "a cat @tom.png on a mat @stage.mp4.2") == []
+    assert output_problem("a cat @tom.png on a mat @stage.mp4.2, moody", sysp, "a cat @tom.png on a mat @stage.mp4.2") is None
     # a mandated boilerplate line carried verbatim from the instructions is not an echo; three are
     mandated = "no added cuts, no subtitles, no watermarks, no on-screen or burned-in text."
     sysp_fmt = "Compile the prompt.\nClose with the negatives paragraph plus:\n" + mandated + "\nThe second rule of the format is here.\nThe third rule of the format is here too.\n"
-    assert output_problem("a cat .tom on a mat. " + mandated, sysp_fmt, "a cat .tom") is None
-    assert output_problem(sysp_fmt.replace("Compile the prompt.\n", "a cat .tom\n"), sysp_fmt, "a cat .tom") == "echoed the instructions or refused"
+    assert output_problem("a cat @tom.png on a mat. " + mandated, sysp_fmt, "a cat @tom.png") is None
+    assert output_problem(sysp_fmt.replace("Compile the prompt.\n", "a cat @tom.png\n"), sysp_fmt, "a cat @tom.png") == "echoed the instructions or refused"
     # the narrated-input shape cleans down to the rewrite and passes
-    narrated = "**User note: focus**\n\n**Original prompt:** portrait of .ed\n\n---\n\n**Rewritten prompt:**\n\nClose-up of .ed, moody.\n\n---\n\nNote: x"
-    assert clean_output(narrated) == "Close-up of .ed, moody."
-    assert clean_output("**Final Answer**\n\nportrait of .ed") == "portrait of .ed"
-    assert clean_output("*Rewritten prompt:*\n\nPortrait of .ed") == "Portrait of .ed"
-    assert clean_output("Here is the rewritten prompt based on your instructions:\n\nA bass player .mike-og") == "A bass player .mike-og"
+    narrated = "**User note: focus**\n\n**Original prompt:** portrait of @ed.png\n\n---\n\n**Rewritten prompt:**\n\nClose-up of @ed.png, moody.\n\n---\n\nNote: x"
+    assert clean_output(narrated) == "Close-up of @ed.png, moody."
+    assert clean_output("**Final Answer**\n\nportrait of @ed.png") == "portrait of @ed.png"
+    assert clean_output("*Rewritten prompt:*\n\nPortrait of @ed.png") == "Portrait of @ed.png"
+    assert clean_output("Here is the rewritten prompt based on your instructions:\n\nA bass player @mike-og.png") == "A bass player @mike-og.png"
     assert clean_output("You are a prompt rewriter for models").startswith("You are a prompt rewriter")
 
 
@@ -119,7 +123,7 @@ def test_clean_output_strips_model_wrappers():
     assert clean_output("**Prompt:**  \nA cat") == "A cat"
     assert clean_output("assistant\nA cat") == "A cat"
     assert clean_output('```\n"A cat"\n```') == "A cat"
-    assert clean_output("A cat .ed sits") == "A cat .ed sits"
+    assert clean_output("A cat @ed.png sits") == "A cat @ed.png sits"
 
 
 def test_runner_strips_enhancer_carrier_nodes():
@@ -192,7 +196,7 @@ def test_agent_engine_round_trip_over_rest(tmp_path):
     assert world.client.get(f"/api/projects/{slug}/enhance/requests", headers=agent).json() == []
 
     answer: dict = {}
-    body = {"kind": "image", "prompt": "a cat .tom on a mat", "note": "more fur", "engine": "agent"}
+    body = {"kind": "image", "prompt": "a cat @tom.png on a mat", "note": "more fur", "engine": "agent"}
     t = threading.Thread(target=lambda: answer.update(world.client.post(f"/api/projects/{slug}/enhance", json=body).json()))
     t.start()
     for _ in range(100):
@@ -204,23 +208,23 @@ def test_agent_engine_round_trip_over_rest(tmp_path):
         _t.sleep(0.02)
     assert len(pending) == 1
     req = pending[0]
-    assert req["kind"] == "image" and "NOTE\n\nmore fur" in req["message"] and "PROMPT\n\na cat .tom on a mat" in req["message"]
+    assert req["kind"] == "image" and "NOTE\n\nmore fur" in req["message"] and "PROMPT\n\na cat @tom.png on a mat" in req["message"]
     assert "formatter, not a writer" in req["system_prompt"]
 
     # the user cannot answer; an empty answer is refused
     assert world.client.post(f"/api/projects/{slug}/enhance/requests/{req['id']}/reply", json={"prompt": "x"}).status_code == 403
     assert world.client.post(f"/api/projects/{slug}/enhance/requests/{req['id']}/reply", json={}, headers=agent).status_code == 400
-    r = world.client.post(f"/api/projects/{slug}/enhance/requests/{req['id']}/reply", json={"prompt": "  A fluffy cat .tom curled on a mat.  "}, headers=agent)
+    r = world.client.post(f"/api/projects/{slug}/enhance/requests/{req['id']}/reply", json={"prompt": "  A fluffy cat @tom.png curled on a mat.  "}, headers=agent)
     assert r.status_code == 200
     t.join(5)
-    assert answer["engine"] == "agent" and answer["prompt"] == "A fluffy cat .tom curled on a mat." and answer["system_source"] == "default"
+    assert answer["engine"] == "agent" and answer["prompt"] == "A fluffy cat @tom.png curled on a mat." and answer["system_source"] == "default"
     # answered requests are gone
     assert world.client.get(f"/api/projects/{slug}/enhance/requests", headers=agent).json() == []
     # both sides of the exchange sit in the feed as ordinary messages
     feed = world.client.get(f"/api/projects/{slug}/feed").json()["entries"]
     asked = [e["message"] for e in feed if e["message"]["kind"] == "user" and e["message"]["text"].startswith("Rewrite ")]
-    answered = [e["message"] for e in feed if e["message"]["kind"] == "agent" and e["message"]["text"] == "A fluffy cat .tom curled on a mat."]
-    assert len(asked) == 1 and "Note: more fur" in asked[0]["text"] and "Prompt: a cat .tom on a mat" in asked[0]["text"]
+    answered = [e["message"] for e in feed if e["message"]["kind"] == "agent" and e["message"]["text"] == "A fluffy cat @tom.png curled on a mat."]
+    assert len(asked) == 1 and "Note: more fur" in asked[0]["text"] and "Prompt: a cat @tom.png on a mat" in asked[0]["text"]
     assert len(answered) == 1
     assert world.client.post(f"/api/projects/{slug}/enhance/requests/{req['id']}/reply", json={"prompt": "again"}, headers=agent).status_code == 404
 
@@ -253,5 +257,10 @@ def test_agent_engine_error_reply_and_tag_check(tmp_path):
         t.join(5)
         return out
 
-    assert ask("x .ed y", {"error": "no session budget"})["code"] == "enhance_failed"
-    assert "dropped reference tag" in ask("x .ed y", {"prompt": "a rewrite without the tag"})["detail"]
+    assert ask("x @ed.png y", {"error": "no session budget"})["code"] == "enhance_failed"
+    # a rewrite that drops a tag lands, and says which
+    dropped = ask("x @ed.png y", {"prompt": "a rewrite without the tag"})
+    assert dropped["prompt"] == "a rewrite without the tag" and dropped["dropped_tags"] == ["@ed.png"]
+    # a rejected rewrite rides along on the error, so the sheet can show what the enhancer wrote
+    empty = ask("x @ed.png y", {"prompt": "short"})
+    assert empty["code"] == "enhance_failed" and empty["extra"]["replies"] == ["short"]

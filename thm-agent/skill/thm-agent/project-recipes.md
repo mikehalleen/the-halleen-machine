@@ -67,7 +67,7 @@ Negatives: `third person, pink bob, pink hair woman, extra dancer, three dancers
 <lora:crashtest-dance-v2_high_noise:1.0> <lora:Wan-high-waist-dance-V5.safetensors:1.0> dance style tiktok, hip hop. Real-time full dance speed, never slow motion. The five-member crew dances hard as one, big full-amplitude moves, energy building through the clip. The camera orbits fast around the crew on the hardest hits, powder bursting upward. The choreography keeps ESCALATING into a huge high-flying finale: all five LAUNCH into big synchronized AERIAL JUMPS, explosive airborne leaps with knees tucked and arms flung wide, hanging in the air on the biggest hit, magenta and teal powder erupting beneath them as they fly; the energy peaks at the very END and the last frame catches the whole crew AIRBORNE mid-leap. Every dancer keeps the same face, hair and clothing as the first frame, five distinct people, no duplicates.
 ```
 
-Crew wide still (Klein, the scale-dummy plate bound as `.warehouse`, seq1 id20):
+Crew wide still (Klein, the scale-dummy plate bound as `@warehouse.png`, seq1 id20):
 
 ```
 ((exactly five dancers and no one else, five different people, each outfit worn by exactly one dancer, no duplicates, no bystander, nobody in the background)) the five-member dance crew in a graffiti-covered warehouse, standing in a loose formation, grooving: a tall Black woman with two afro puffs in a teal puffer vest and silver joggers, a buzz-cut bearded man in a bright orange bomber, a pink-bob woman in a black-and-yellow moto jacket and yellow trousers, a lanky man in a black bucket hat and a silver puffer, and a woman with long box braids in a red bomber and rainbow leggings. wide shot, fierce confident expressions, aggressive metal dance energy, at natural realistic human scale, dramatic colored lighting, sharp focus
@@ -89,7 +89,7 @@ Crew wide still (Klein, the scale-dummy plate bound as `.warehouse`, seq1 id20):
 
 **Prompt reference now**: `guide ltx2.5` and `guide wan2.2_14B`; the vendor's current LTX-2 prompting guide (audio and dialogue section), fetched with permission.
 
-**Reference setup**: per-creator bins tagged `character` (rehearsal-fit close portraits), a `THM Logo` bin tagged `character` bound as `.logo` where the chest mark must be faithful, studio angle bins tagged `location`, an uploaded app screenshot in its own bin bound as `.app` for the phone screen. The talking video bin binds the chest-up still at position 1 only.
+**Reference setup**: per-creator bins tagged `character` (rehearsal-fit close portraits), a `THM Logo` bin tagged `character` bound as `@logo.png` where the chest mark must be faithful, studio angle bins tagged `location`, an uploaded app screenshot in its own bin bound as `@app.png` for the phone screen. The talking video bin binds the chest-up still at position 1 only.
 
 **Prompt skeleton** (talk in place, seq13 vid7):
 
@@ -102,12 +102,12 @@ Negatives: `hallway, doors, new room, changing room, room morphing, outfit chang
 Chest-up start still (Klein, seq13 id42):
 
 ```
-chest-up medium close-up, vertical framing, a tall Black woman dancer with two high afro puffs and silver hoop earrings (.nova), wearing her fitted teal ribbed crop tank with the large orange square logo with a bold white H, talking to the camera mid-word, relaxed confident expression, holding her phone loosely in one hand at chest height, the other arm relaxed at her side, the floor-to-ceiling mirrored wall of the fantasy dance studio behind her reflecting the open floor (.studio), violet and amber glow, sharp focus on her face, the mirror behind her reflects only the empty studio floor and her own back, nobody else anywhere, matte natural skin with soft even texture, no shine
+chest-up medium close-up, vertical framing, a tall Black woman dancer with two high afro puffs and silver hoop earrings (@nova.png), wearing her fitted teal ribbed crop tank with the large orange square logo with a bold white H, talking to the camera mid-word, relaxed confident expression, holding her phone loosely in one hand at chest height, the other arm relaxed at her side, the floor-to-ceiling mirrored wall of the fantasy dance studio behind her reflecting the open floor (@studio.png), violet and amber glow, sharp focus on her face, the mirror behind her reflects only the empty studio floor and her own back, nobody else anywhere, matte natural skin with soft even texture, no shine
 ```
 
 Walk-away sign-off (seq17 vid9): `the man slides his phone into his jacket pocket, finishes his line, then turns and walks OUT of the frame to the side, leaving an empty rooftop, one continuous take, no cuts. Audio: a warm, easygoing man's voice with a light New York accent, casual and laid-back, speaking at a natural quick pace, says, 'Back in my pocket. The machine keeps working for me.'`
 
-Klein phone grip (seq7 id65 still + vid3): still `holding her smartphone up in one hand turned SCREEN-SIDE FLAT toward the camera so only the phone screen is visible, the screen showing the app interface (.app)`; negatives `phone back, rear camera, camera lenses, camera bump, back of phone, selfie view, first-person POV, disembodied hand, viewer's hand, palm facing camera`; motion `she smoothly EXTENDS her arm and PUSHES the phone forward toward the camera in one continuous confident gesture, the phone growing until it FILLS MOST OF THE FRAME in a sharp close-up by the final frame, screen flat toward the viewer, the back of her hand and fingertips gripping the edges`.
+Klein phone grip (seq7 id65 still + vid3): still `holding her smartphone up in one hand turned SCREEN-SIDE FLAT toward the camera so only the phone screen is visible, the screen showing the app interface (@app.png)`; negatives `phone back, rear camera, camera lenses, camera bump, back of phone, selfie view, first-person POV, disembodied hand, viewer's hand, palm facing camera`; motion `she smoothly EXTENDS her arm and PUSHES the phone forward toward the camera in one continuous confident gesture, the phone growing until it FILLS MOST OF THE FRAME in a sharp close-up by the final frame, screen flat toward the viewer, the back of her hand and fingertips gripping the edges`.
 
 **Params**: talking clips length_s 4-5, full size (LTX is cheap at full res); dance beats length_s 4-5 on WAN, quarter for drafts; fps 16 on the LTX-2 graph then, 24 on `ltx2.5` (whole seconds land on the 8n+1 grid); the same voice string reused verbatim per speaker across every clip.
 
@@ -125,15 +125,15 @@ Klein phone grip (seq7 id65 still + vid3): still `holding her smartphone up in o
 
 **Prompt reference now**: `guide klein` and `guide ltx2.5`; the vendor's current FLUX Klein editing guide, fetched with permission.
 
-**Reference setup**: staged pinning, one bin per stage, each bin's selected media bound into the next: a `product-shape` bin (explore pump / tube / jar with no references, spread seeds) -> a `product-color` bin binding the chosen shape and varying only the color clause -> a `product-label` bin binding the chosen color and trying 2-3 text treatments. The winner is the bin tagged `character` whose selected media is bound as `.lotion` in every composite. Creator: identity bin (no references, spread seeds) -> outfit bin (binds the face, varies the outfit clause) -> pose bins (full body, several angles). Location: archetype bin -> angle bins (corner, straight-on shelf, down-aisle) each tagged `location`, and a placeholder-marker plate with a red can at the product's spot.
+**Reference setup**: staged pinning, one bin per stage, each bin's selected media bound into the next: a `product-shape` bin (explore pump / tube / jar with no references, spread seeds) -> a `product-color` bin binding the chosen shape and varying only the color clause -> a `product-label` bin binding the chosen color and trying 2-3 text treatments. The winner is the bin tagged `character` whose selected media is bound as `@lotion.png` in every composite. Creator: identity bin (no references, spread seeds) -> outfit bin (binds the face, varies the outfit clause) -> pose bins (full body, several angles). Location: archetype bin -> angle bins (corner, straight-on shelf, down-aisle) each tagged `location`, and a placeholder-marker plate with a red can at the product's spot.
 
 **Prompt skeleton** (composite still with spatial blocking and inline exclusions):
 
 ```
-medium shot, woman shopper .mara stands (directly in front of the shelf .shelf) which contains several rows of product .lotion, right hand holding one bottle of .lotion at chest height with the label facing the camera, left arm relaxed at her side, left arm must NOT reach toward camera, no left hand at bottom-right corner, no second hand, matte natural skin finish, sharp focus on the label
+medium shot, woman shopper @mara.png stands (directly in front of the shelf @shelf.png) which contains several rows of product @lotion.png, right hand holding one bottle of @lotion.png at chest height with the label facing the camera, left arm relaxed at her side, left arm must NOT reach toward camera, no left hand at bottom-right corner, no second hand, matte natural skin finish, sharp focus on the label
 ```
 
-Placeholder-marker composite: `the bottle .lotion standing on the counter positioned exactly where the red can was (the red can is removed and completely gone), loose close-up centered on the marker`.
+Placeholder-marker composite: `the bottle @lotion.png standing on the counter positioned exactly where the red can was (the red can is removed and completely gone), loose close-up centered on the marker`.
 
 Product plate negatives: `gibberish text, nonsense letters, illegible logo, blurry text, real brand names, wrong bottle type`. Creator skin: positive `matte natural skin finish`, negatives `oily skin, skin shine, dewy highlight, specular highlight`. Location plate negatives: `people, character, face, hands, shoppers` plus `empty environment, no people` in the positive.
 
@@ -158,7 +158,7 @@ Product plate negatives: `gibberish text, nonsense letters, illegible logo, blur
 **Prompt skeleton** (rear tracking start still, seq5 id5):
 
 ```
-low tracking three-quarter rear view close behind the two dinosaurs at full sprint down the shopping district street .shopping, the green spinosaurus .spino and the blue tyrannosaur .rex side by side seen from behind and slightly to the side, both facing away to the right down the street, both with hind legs extended in a full running stride and bodies pitched forward, thick dust clouds kicking up from their feet, motion blur on their legs and tails, storefronts on both sides, spectators filming from the curb, no vehicles
+low tracking three-quarter rear view close behind the two dinosaurs at full sprint down the shopping district street @shopping.png, the green spinosaurus @spino.png and the blue tyrannosaur @rex.png side by side seen from behind and slightly to the side, both facing away to the right down the street, both with hind legs extended in a full running stride and bodies pitched forward, thick dust clouds kicking up from their feet, motion blur on their legs and tails, storefronts on both sides, spectators filming from the curb, no vehicles
 ```
 
 Negatives: `standing still, walking, calm pose, facing camera, nose to nose, facing each other, no dust`
@@ -244,24 +244,24 @@ Standard negatives: `music, musical score, soundtrack, song, singing, melody, in
 
 **Prompt reference now**: `guide minimax_h3_r2v_enhancer` for the baked enhancer prompt (the structured form is mandatory, including the closing negatives line); the vendor's current MiniMax Hailuo prompting guide, fetched with permission.
 
-**Reference setup**: source frames in upload bins (`ed-og`, `mike-og`, `dave-og`, `band-og`); actor headshots in their own bins (`jgl`, `keanu`, `justin`, `untitled`); casting bins (`Ed`, `Mike`, `Dave`) on `klein` binding the source frame plus one actor reference each, costume from text; the video bin binds the close casting portraits (`.mike`, `.mike.2`, `.ed`, `.dave`) and the source clip `.band-og`, and unbinds the wide band still that had leaked its frozen pose.
+**Reference setup**: source frames in upload bins (`ed-og`, `mike-og`, `dave-og`, `band-og`); actor headshots in their own bins (`jgl`, `keanu`, `justin`, `untitled`); casting bins (`Ed`, `Mike`, `Dave`) on `klein` binding the source frame plus one actor reference each, costume from text; the video bin binds the close casting portraits (`@mike.png`, `@mike.png.2`, `@ed.png`, `@dave.png`) and the source clip `@band-og.mp4`, and unbinds the wide band still that had leaked its frozen pose.
 
 **Prompt skeleton** (Video 6, the passing take-22/26 structure, trimmed):
 
 ```
 subject_definitions:
-<Subject 1> (.mike, .mike.2): the bassist, center: the man in .mike and .mike.2, the same person, round face, clean-shaven with only light stubble, no beard, thick dark curly hair, heavy brows, dark eyes, stocky build. From the stills only the face, hair, build and his plain sunburst solid-body electric bass with a maple neck; not the green vest, not the black t-shirt, not the headphones, not the studio, not the stills' stage lighting. He wears a sleeveless maroon tank top with gold embroidery and white flared trousers.
-<Subject 2> (.ed): the guitarist, right: the man in .ed, lean face, strong jaw, straight nose, dark eyes, thick dark brows, clean-shaven, long black wavy hair past his shoulders. From .ed only the face and hair; not the dark jacket, not the wood-panel room, not the pointing pose, not the daylight. He wears a blue-and-white striped shirt open to the waist and red flared trousers. His guitar is strictly this and nothing else: a white solid-body electric guitar with a double-cutaway body, the whole body covered in bold black diagonal tape stripes, a plain maple neck, single-coil pickups, no pickguard. It stays that exact guitar in every frame.
-<Video 1> (.band-og): a performance and camera reference only: a handheld concert clip in which the bassist, bass slung low at his hips, thrusts his right arm straight out and points his index finger into the lens while shouting with his mouth wide open, then drops the arm and his right hand goes back to plucking over the pickups; the guitarist lifts his picking hand off the strings, raises it to head height with the fingers spread in a claw, palm to the camera, mouth open, leaning forward, then bends over the guitar; and the singer bursts in with the microphone in his right hand, eyes wide, mouth open, until his face fills the frame, then whips his head away; the camera pushes in and whips between them. Nothing visible in the clip is reused as pixels: not its people, not their faces, not their clothes, not its stage, not its colors, not its low-resolution vintage look.
-<Subject 3> (.dave): the singer, off camera until the end of the shot: the man in .dave, long wavy blond hair past his shoulders, clean-shaven, blue eyes, lean bare torso. From .dave only the face, hair and build; not the black leather jacket, not the arena and crowd behind him. He wears a shiny silver shirt open to the waist over a bare chest with a studded belt and black-and-white striped spandex trousers, and holds a microphone.
+<Subject 1> (@mike.png, @mike.png.2): the bassist, center: the man in @mike.png and @mike.png.2, the same person, round face, clean-shaven with only light stubble, no beard, thick dark curly hair, heavy brows, dark eyes, stocky build. From the stills only the face, hair, build and his plain sunburst solid-body electric bass with a maple neck; not the green vest, not the black t-shirt, not the headphones, not the studio, not the stills' stage lighting. He wears a sleeveless maroon tank top with gold embroidery and white flared trousers.
+<Subject 2> (@ed.png): the guitarist, right: the man in @ed.png, lean face, strong jaw, straight nose, dark eyes, thick dark brows, clean-shaven, long black wavy hair past his shoulders. From @ed.png only the face and hair; not the dark jacket, not the wood-panel room, not the pointing pose, not the daylight. He wears a blue-and-white striped shirt open to the waist and red flared trousers. His guitar is strictly this and nothing else: a white solid-body electric guitar with a double-cutaway body, the whole body covered in bold black diagonal tape stripes, a plain maple neck, single-coil pickups, no pickguard. It stays that exact guitar in every frame.
+<Video 1> (@band-og.mp4): a performance and camera reference only: a handheld concert clip in which the bassist, bass slung low at his hips, thrusts his right arm straight out and points his index finger into the lens while shouting with his mouth wide open, then drops the arm and his right hand goes back to plucking over the pickups; the guitarist lifts his picking hand off the strings, raises it to head height with the fingers spread in a claw, palm to the camera, mouth open, leaning forward, then bends over the guitar; and the singer bursts in with the microphone in his right hand, eyes wide, mouth open, until his face fills the frame, then whips his head away; the camera pushes in and whips between them. Nothing visible in the clip is reused as pixels: not its people, not their faces, not their clothes, not its stage, not its colors, not its low-resolution vintage look.
+<Subject 3> (@dave.png): the singer, off camera until the end of the shot: the man in @dave.png, long wavy blond hair past his shoulders, clean-shaven, blue eyes, lean bare torso. From @dave.png only the face, hair and build; not the black leather jacket, not the arena and crowd behind him. He wears a shiny silver shirt open to the waist over a bare chest with a studded belt and black-and-white striped spandex trousers, and holds a microphone.
 
 summary:
 [reference generation] <Subject 1> and <Subject 2> open the shot as a two-man front line on a concert stage, playing hard at a restless handheld camera, and <Subject 3> enters only at the end, lunging into the lens from off camera; there is exactly one singer, in sharp, high-resolution, modern-looking footage, re-performing the moves, hand positions, finger motion, body positions, facial expressions, pacing and camera of <Video 1> beat for beat as described below, with the playing continuing before and after those beats to fill the longer shot. <Video 1> is not a frame, not an edit source and not a source of appearance.
 
 retention_analysis:
-<Subject 1> (throughout): fully_preserved - the bassist's clean-shaven facial identity, hair, build and plain sunburst bass from .mike and .mike.2 are retained in every frame, including when he shouts; the stills' vest, t-shirt, headphones, studio and lighting are not retained. No beard.
-<Subject 2> (throughout): fully_preserved - the guitarist's facial identity and hair from .ed are retained in every frame, in motion and in profile, and the white black-striped guitar is retained exactly in every frame; the still's jacket, room, pose and daylight are not retained.
-<Subject 3> (end of shot only): fully_preserved - the singer's facial identity and hair from .dave are retained from the moment he enters, including when his face fills the frame; he does not appear before that and there is never more than one of him; the black leather jacket and the arena of the .dave still are not retained.
+<Subject 1> (throughout): fully_preserved - the bassist's clean-shaven facial identity, hair, build and plain sunburst bass from @mike.png and @mike.png.2 are retained in every frame, including when he shouts; the stills' vest, t-shirt, headphones, studio and lighting are not retained. No beard.
+<Subject 2> (throughout): fully_preserved - the guitarist's facial identity and hair from @ed.png are retained in every frame, in motion and in profile, and the white black-striped guitar is retained exactly in every frame; the still's jacket, room, pose and daylight are not retained.
+<Subject 3> (end of shot only): fully_preserved - the singer's facial identity and hair from @dave.png are retained from the moment he enters, including when his face fills the frame; he does not appear before that and there is never more than one of him; the black leather jacket and the arena of the @dave.png still are not retained.
 <Video 1> (throughout): weak_reference - only the sequence of moves, the pacing and the handheld camera are retained, re-performed by <Subject 3>, <Subject 1> and <Subject 2>; the people, faces, wardrobe, stage, colors, framing as pixels and vintage low-resolution look of the clip are not retained. Where <Video 1> and the subjects differ in any visible way, the subjects win.
 
 detailed_description:
@@ -276,9 +276,50 @@ non_diegetic_music:
 
 **Params**: ladder quarter 3 s -> quarter 5 s -> full size 5 s (1280x720) -> full size 8 s for the fretboard push-in; a full-size take is a new render and gets full QC (12 sampled frames, identity per frame); length_s must not equal the bound clip's length (3 s = the 2.9 s clip replayed with the original faces).
 
-**What it fixed**: actor casting in Klein with one actor reference per source frame and costume from text (`skin tone and coloring retained from .mike-og, nose preserved ... like a very well done lifelike prosthetic`); the description-only round (no clip bound, the band's wardrobe written out) was the first time all three faces read as their stills; the clip re-bound as `weak_reference` with every beat written out re-performed the source without replaying it; a 6 s single-subject clip (`Eddie in Japan`) outweighed any still until it was unbound and the solo written from the reference; the close casting portrait replaced the wide take as `.mike` and finally gave Mike a face; the white key described positively killed the red wash; the fretboard push-in with per-finger description made the solo real; the quarter -> longer -> full-size ladder proved structure before spending full renders.
+**What it fixed**: actor casting in Klein with one actor reference per source frame and costume from text (`skin tone and coloring retained from @mike-og.png, nose preserved ... like a very well done lifelike prosthetic`); the description-only round (no clip bound, the band's wardrobe written out) was the first time all three faces read as their stills; the clip re-bound as `weak_reference` with every beat written out re-performed the source without replaying it; a 6 s single-subject clip (`Eddie in Japan`) outweighed any still until it was unbound and the solo written from the reference; the close casting portrait replaced the wide take as `@mike.png` and finally gave Mike a face; the white key described positively killed the red wash; the fretboard push-in with per-finger description made the solo real; the quarter -> longer -> full-size ladder proved structure before spending full renders.
 
 **Where it does not apply**: two-hand tapping never rendered in two passes; a bound clip drifts back into its own pixels after its length runs out (trim the tail or write the extra beats); `subject_definitions` is an H3 form only, never sent to WAN or LTX.
+
+### Seedance 2.5 on the reptile beat (first run of `api_seedance2_5_r2v`, 3 takes)
+
+**Same beat as the MiniMax take 26**, rewritten from the H3 six-section form into Seedance 2.5's
+own shape: a narrow label per reference, then the runtime as gapless whole-second beats. Both
+versions live in the bin; this did not replace the H3 pick.
+
+Reference labels that worked (handles rewrite to `Image 1/2/3` at submit):
+
+```
+@human.png defines the man only: his face, grey-brown hair, clear-framed glasses, short greying
+beard, grey t-shirt and blue jeans. Do not use its eyewear shop, its shelves of glasses or its
+indoor light.
+@hard-to-destroy-reptile.png defines two things: the setting and framing, ... ; and the creature,
+... at exactly the size it is in that image, its body filling about half the width of the tank.
+The red stick figure drawn on that image is a note, not part of the scene, and never appears.
+@hard-to-destroy-reptile.png.2 defines the creature's body markings only: the exposed red rib
+stripes along its flanks. Do not use its plain white background.
+```
+
+**What each take taught**:
+- Take 1 (fail): 4-6 s and 6-8 s beats carrying three actions each -> the model dropped the jaw
+  seal and the gulp, the man flickered in and out of the mouth, and the creature climbed out of
+  the tank at twice plate scale. This is the vendor's documented overstuffed-range failure.
+- Take 2 (in progress): the swallow split into five **one-second beats, one action each** (seize,
+  body fully inside, jaws sealed, gulp, sink) fixed the body going in and, with `at exactly the
+  size it is in that image` plus `stays inside the tank ... never climbs onto the grass`, fixed
+  the scale and the escape. The jaws still never closed.
+- Take 3 (pass): **closed as a held state, not a moment**. `the upper jaw comes down onto the
+  lower jaw, the lips meet along the whole length of the snout, and the teeth disappear behind
+  them`, then every later beat restates `mouth shut, the snout one smooth closed line`, and a
+  standing line: `From seven seconds to the end the mouth is shut in every frame: no teeth, no
+  tongue and no inside of the mouth are visible again.` Shut by 7.1 s and shut to the end.
+
+**The model prior to beat**: Seedance 2.5 swallows like a crocodile, throwing the head back and
+gulping with the mouth wide open. An action verb ("the jaws snap shut") loses to it; a held
+visible state wins. Expect the mouth to hang open for a second or so before the close.
+
+**Params**: 10 s (the bin's `length_s` drives the node), no negative field, `quarter` is a no-op,
+output came back 1470x630 (baked 720p, adaptive ratio) with an AAC audio track the agent cannot
+judge.
 
 ## memes (newtoold: the Matt Damon grows-old morph)
 
@@ -286,7 +327,7 @@ non_diegetic_music:
 
 **Models then**: video `minimax_h3_r2v_enhancer.json`; the old-Matt end still from `klein.json` (a portrait of the bearded Matt composited over the young frame).
 
-**Reference setup that worked** (bin `newtoold`, take 10): `.youngmatt` = first frame of the source clip (position 1), `.oldmatt` = the Klein end still (position 2), and the source clip **trimmed to its first 1.72 s** (ffmpeg `-t 1.72 -an`, uploaded with `--from` the full clip, cut before the film's older actor is recognizable) bound as `<Video 1>` weak_reference for morph style, pace and grain only. The user asked for exactly this: MiniMax because it can reference the original; weaken the previous actor.
+**Reference setup that worked** (bin `newtoold`, take 10): `@youngmatt.png` = first frame of the source clip (position 1), `@oldmatt.png` = the Klein end still (position 2), and the source clip **trimmed to its first 1.72 s** (ffmpeg `-t 1.72 -an`, uploaded with `--from` the full clip, cut before the film's older actor is recognizable) bound as `<Video 1>` weak_reference for morph style, pace and grain only. The user asked for exactly this: MiniMax because it can reference the original; weaken the previous actor.
 
 **What failed first, so nobody repeats it**:
 - The full clip bound (takes 1-3): replays its second half, the film's older actor appears at 2.9 s; declaring it weak_reference with every face excluded changed nothing on a fixed seed.
@@ -294,10 +335,10 @@ non_diegetic_music:
 - A Klein midpoint keyframe (bin `midmatt`, 6 takes): Klein re-composed the frame and swapped the face for another man every time, with two references or one.
 - LTX 2.5 with start and end frames (bin `newtoold-ltx`): uniform face morph with a translucent halo on the hair edge and the shirt lagging (fixed by tying the shirt to the face in the prose); the user ruled LTX out for this bin.
 
-**Prompt skeleton** (H3 six-section form; `.youngmatt.2` is the trimmed clip's handle):
+**Prompt skeleton** (H3 six-section form; `@youngmatt.mp4` is the trimmed clip's handle):
 
 ```
-<Video 1> (.youngmatt.2) - the opening of the original film clip: the young man holding still as a slow crossfade-and-warp morph begins to age him. Used only for the style, pace and film grain of that morph and the locked framing. Not a source of any face other than the young man's, and the clip ends before it reaches any older face.
+<Video 1> (@youngmatt.mp4) - the opening of the original film clip: the young man holding still as a slow crossfade-and-warp morph begins to age him. Used only for the style, pace and film grain of that morph and the locked framing. Not a source of any face other than the young man's, and the clip ends before it reaches any older face.
 summary: [keyframe completion] + [reference generation] A single static shot morphs from <Picture 1> to <Picture 2> in exactly the style of the morph that begins in <Video 1>: one continuous crossfade-and-warp in which the whole face changes together, carried past the end of the clip all the way to <Subject 2>.
 retention_analysis: <Video 1> (whole clip): weak_reference - only the style of the morph (a smooth crossfade-and-warp where every feature changes at once), its slow even pace, the locked static camera and the 35mm film grain are retained; excluded: its pixels as a source, its wardrobe and any face other than the young man's; the older face the original film morphs into never appears.
 detailed_description: ... His face begins to morph exactly as it does in <Video 1> ... and that same morph continues in the same style past where the clip ends until it arrives at <Subject 2>. Hair, skin, jaw, beard and shirt all move together from young to old in the same frames ... there is no third face and no detour through any other older man. ... No face from the original film other than the young man's, no feature changing before another, no sudden jump, no camera movement, no added cuts, no subtitles, no watermarks, no on-screen or burned-in text.
@@ -309,3 +350,25 @@ overall_soundscape: Silent. No ambience, no physical sound, no audio track at al
 **What it fixed**: the wrong older face (cut him out of the reference clip instead of writing him out of the prompt); the feature-by-feature aging (the clip's own morph style, copied as weak_reference, gives the crossfade-and-warp where everything changes together; no stills-only prompt achieved it).
 
 **Where it does not apply**: a bound clip's second half will replay no matter what the text says, so trim, do not describe; a young hold of about 1.75 s and an old hold of about 2.25 s remain, like the original; audio was never judged.
+
+## scary (Hard to destroy reptile: the creature-eats-the-man beat)
+
+**Project**: short horror clips, a designed creature composited into its environment still, one beat per clip.
+
+**Models then / now**: video `minimax_h3_r2v_enhancer.json` at 10 s, quarter for every draft; stills from `klein.json`.
+
+**Prompt reference**: `guide minimax_h3_r2v_enhancer` (the H3 six-section form is the bin prompt; the `*_enhancer` workflows do not compile it for you).
+
+**Reference setup that worked** (bin `Hard to destroy reptile`, take 23): `@human.png` (a selfie) as `<Subject 1>` with the shop excluded in words; `@hard-to-destroy-reptile.png` (the creature in its tank) as `<Subject 2>` AND as `<Picture 1>`, the composition anchor; `@hard-to-destroy-reptile.png.2` (the design sheet) cited inside Subject 2 for "body markings only". A red stick-figure the user drew on the still to mark a position is excluded in words ("a note, not part of the scene") and the position is written out; a "remove the red mark" instruction did nothing on 19 takes.
+
+**The swallow that passed** (three timed beats inside one `[Shot 1]`; a one-sentence "swallows him whole, jaws closed" left legs and shoes hanging out of the mouth on two seeds):
+
+```
+At 00:04.000 the water heaves and <Subject 2> the creature bursts up out of the tank in one lunge, its bone-white jaws wide, and engulfs the man head first: the whole man, head, arms, torso, legs and shoes, passes inside the open mouth in one lunge. At 00:05.000 the jaws snap shut, upper teeth meeting lower teeth in a sealed line with the man entirely inside, no part of him outside the mouth, no leg, no shoe, no arm; the creature raises its closed snout and gulps twice, its throat and belly bulging as the man goes down. At 00:06.500, mouth still sealed shut, it lowers itself and slides back under the water, the closed jaws the last thing to disappear beneath the surface; the man is inside it and is never seen again. At 00:07.000 the surface churns and settles; the creature and the man are both gone ... nobody standing anywhere in the frame. The man never reappears and no second creature appears.
+```
+
+**What it fixed**: the man vanishing instead of being bitten (take 19) -> the bite written as contact ("clamps its teeth around"); the man walking back into frame at the end -> "nobody standing anywhere in the frame" plus "never reappears" as the last beat; face never landing -> a face-to-camera beat at the rail before the attack; legs out of the jaws (takes 21, 22) -> the three timed beats with the jaw seal and the gulp as their own moments.
+
+**QC method**: `frames --n 8` misses a 1.5 s swallow; pull the file (`thumb --size file`) and tile the frames around the beat with ffmpeg before marking pass.
+
+**Params**: 10 s, quarter, seed held across a wording change so the change is attributable; one reseed for a direction failure, then rewrite.

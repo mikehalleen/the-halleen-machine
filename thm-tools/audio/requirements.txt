@@ -1,0 +1,23 @@
+# The audio tool's venv (thm-tools/audio/.venv), Python 3.12, CPU only. Pinned from the install
+# of 2026-10-18 on Mike's machine. Install order matters for torch: the CPU wheels first.
+#
+#   python -m venv thm-tools/audio/.venv
+#   thm-tools/audio/.venv/Scripts/python.exe -m pip install torch==2.14.1 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+#   thm-tools/audio/.venv/Scripts/python.exe -m pip install -r thm-tools/audio/requirements.txt
+#
+# Models are fetched on first use into thm-tools/audio/models/ (HF_HOME and TORCH_HOME, set by
+# cli.py): faster-whisper small and medium, speechbrain/spkrec-ecapa-voxceleb, beat_this final0.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.1+cpu
+torchaudio==2.11.0+cpu
+faster-whisper==1.2.1
+ctranslate2==4.8.3
+librosa==1.0.0
+soundfile==0.14.0
+praat-parselmouth==0.4.7
+speechbrain==1.1.2
+jiwer==4.0.0
+numpy==2.5.4
+einops==0.8.2
+rotary-embedding-torch==0.9.1
+beat_this @ https://github.com/CPJKU/beat_this/archive/main.zip

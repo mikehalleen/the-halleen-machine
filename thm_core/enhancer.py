@@ -19,6 +19,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from .slug import handles_in
 from .workflow_names import WORKFLOWS_DIR
 
 ENHANCER_WORKFLOW_FILENAME = "prompt_enhancer.json"
@@ -56,9 +57,9 @@ into clear visual language. You may not introduce a fact they did not state. If 
 note contradicts the prompt, the note wins.
 
 TAGS
-The user names reference media with dot-tags (.ed, .band-og, .jack.2). Keep every tag
-exactly as written, in place. Never rename a tag, never convert it to "image 1" or
-"<Subject 1>", never invent one. Do not write a sentence about the tags themselves.
+The user names reference media with @-tags (@ed.png, @band-og.mp4, @jack.png.2). Keep
+every tag exactly as written, in place. Never rename a tag, never convert it to "image 1"
+or "<Subject 1>", never invent one. Do not write a sentence about the tags themselves.
 
 OUTPUT
 One paragraph of plain prose: subject and what it is doing, then setting, then framing,
@@ -85,9 +86,9 @@ into clear visual language. You may not introduce a fact they did not state. If 
 note contradicts the prompt, the note wins.
 
 TAGS
-The user names reference media with dot-tags (.ed, .band-og, .jack.2). Keep every tag
-exactly as written, in place. Never rename a tag, never convert it to "image 1" or
-"<Subject 1>", never invent one. Do not write a sentence about the tags themselves.
+The user names reference media with @-tags (@ed.png, @band-og.mp4, @jack.png.2). Keep
+every tag exactly as written, in place. Never rename a tag, never convert it to "image 1"
+or "<Subject 1>", never invent one. Do not write a sentence about the tags themselves.
 
 OUTPUT
 One paragraph of plain prose describing one continuous shot in the order it plays:
@@ -264,7 +265,6 @@ _LABEL_WORDS = ("prompt", "answer", "output", "rewrite", "result")
 # a label is the phrase followed by a colon or markdown emphasis, so "prompt rewriter" in prose is not one
 _REWRITE_LABEL_RE = re.compile(r"(?i)(?:rewritten prompt|enhanced prompt|new prompt|prompt rewrite)\s*[:*_]+")
 _TRAILING_CUTS = ("\n---", "\n\nNote:", "\n\nNotes:", "\n\n*Note", "\n\n**Note")
-_TAG_RE = re.compile(r"(?<![\w.])\.[a-z][\w-]*(?:\.\d+)?")
 ECHO_LINES = 3  # verbatim instruction lines in an output before it counts as an echo
 
 
@@ -316,9 +316,16 @@ def clean_output(text: str) -> str:
     return t.strip()
 
 
+def dropped_tags(text: str, original: str) -> list[str]:
+    """The ``@handles`` the original used that the rewrite left out. Not a failure: the rewrite
+    still lands, and the user is told which references it no longer addresses."""
+    kept = handles_in(text or "")
+    return sorted(f"@{h}" for h in handles_in(original or "") if h not in kept)
+
+
 def output_problem(text: str, system_prompt: str, original: str) -> str | None:
     """Why a cleaned output is not a usable prompt, or None: empty, an echo of the instructions
-    or the input, a refusal or an aside, or a rewrite that dropped a tag the original used."""
+    or the input, a refusal or an aside. A dropped tag is not one (``dropped_tags``)."""
     t = (text or "").strip()
     if len(t) < 12:
         return "empty"
@@ -333,8 +340,5 @@ def output_problem(text: str, system_prompt: str, original: str) -> str | None:
         return "echoed the instructions or refused"
     if t.lower().startswith(("note\n", "note:", "user note")):
         return "echoed the input"
-    missing = sorted(tag for tag in set(_TAG_RE.findall(original or "")) if tag not in t)
-    if missing:
-        return f"dropped reference tag(s) {', '.join(missing)}"
     return None
 

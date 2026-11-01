@@ -19,6 +19,7 @@ from thm_core import (
     ProjectStore,
     Reference,
     assign_handle,
+    media_ext,
 )
 
 USER = CommandContext(actor="user", now="2026-09-06T10:00:00Z")
@@ -41,7 +42,12 @@ def image_workflow(n_slots: int = 2) -> dict:
 
 
 def video_workflow(start: bool = True, end: bool = True) -> dict:
-    wf = {"1": node("THM-Prompt", "CLIPTextEncode", {"text": ""})}
+    # a canvas THM sets (width/height), as a real video workflow has: quarter size halves it
+    wf = {
+        "1": node("THM-Prompt", "CLIPTextEncode", {"text": ""}),
+        "30": node("THM-Width", "PrimitiveInt", {"value": 720}),
+        "31": node("THM-Height", "PrimitiveInt", {"value": 1280}),
+    }
     if start:
         wf["20"] = node("THM-StartFrame", "LoadImage", {"image": ""})
     if end:
@@ -160,7 +166,7 @@ def add_media(project: Project, bin_id: str | None, *, type: str = "image", path
     mid = f"m_{_n['media']:03d}"
     if origin is None:
         origin = MediaOrigin(type="upload", bin=bin_id)
-    project.media_by_id[mid] = Media(id=mid, type=type, path=path or f"C:/fake/{mid}.png", origin=origin)
+    project.media_by_id[mid] = Media(id=mid, type=type, path=path or f"C:/fake/{mid}.{'mp4' if type == 'video' else 'png'}", origin=origin)
     if bin_id:
         project.bins_by_id[bin_id].media.append(mid)
     return mid
@@ -187,7 +193,7 @@ def bind(project: Project, bin_id: str, media_id: str) -> Reference:
     bin_ = project.bins_by_id[bin_id]
     ref_bin = bin_of(project, media_id)
     _n["ref"] += 1
-    ref = Reference(id=f"r_{_n['ref']:03d}", media=media_id, bin=ref_bin.id, handle=assign_handle(bin_, ref_bin))
+    ref = Reference(id=f"r_{_n['ref']:03d}", media=media_id, bin=ref_bin.id, handle=assign_handle(bin_, ref_bin, media_ext(project.media_by_id[media_id].path)))
     bin_.references.append(ref)
     return ref
 

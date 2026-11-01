@@ -1,14 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { errorText, postJson, useCommand, useCreateProject, useDeleteProject, useProject, useWorkflows } from "../api/client";
-import type { CommandResultOut, ProjectDetail, ProjectSettingsBody, WorkflowInfo } from "../api/types";
+import { errorText, postJson, useCancelConnect, useCommand, useConnectStatus, useCreateProject, useDeleteProject, useProject, usePublishStatus, useStartConnect, useWorkflows } from "../api/client";
+import type { ChannelOut, CommandResultOut, ProjectDetail, ProjectSettingsBody, WorkflowInfo } from "../api/types";
 import { AutoTextarea } from "../components/AutoTextarea";
-import { BackLink } from "../components/BackLink";
+import { Crumbs, type Crumb } from "../components/Crumbs";
 import { ConfirmSheet } from "../components/ConfirmSheet";
-import { Tag } from "../components/Tag";
 import { useToast } from "../components/Toast";
 import { canGoBack } from "../layout/history";
-import { notificationState, sendTestNotification } from "../layout/notify";
 import { Shell } from "../layout/Shell";
 import { useBreakpoint } from "../layout/useBreakpoint";
 
@@ -93,9 +91,11 @@ interface Fields {
   imgN: string;
   vidN: string;
   private: boolean;
+  /** The YouTube channel id this project's posts go to; "" = none picked. */
+  channel: string;
 }
 
-const EMPTY: Fields = { name: "", w: 720, h: 1280, imgWf: "", vidWf: "", imgP: "", vidP: "", imgN: "", vidN: "", private: false };
+const EMPTY: Fields = { name: "", w: 720, h: 1280, imgWf: "", vidWf: "", imgP: "", vidP: "", imgN: "", vidN: "", private: false, channel: "" };
 
 function fromProject(p: ProjectDetail): Fields {
   const d = p.defaults;
@@ -110,6 +110,7 @@ function fromProject(p: ProjectDetail): Fields {
     imgN: d.image_negative ?? "",
     vidN: d.video_negative ?? "",
     private: p.private ?? false,
+    channel: p.youtube_channel ?? "",
   };
 }
 
@@ -124,22 +125,8 @@ function settingsOf(f: Fields): ProjectSettingsBody {
     image_negative: f.imgN.trim(),
     video_negative: f.vidN.trim(),
     private: f.private,
+    youtube_channel: f.channel,
   };
-}
-
-function notifyHint(): string {
-  switch (notificationState()) {
-    case "unsupported":
-      return "this browser has no notifications";
-    case "insecure":
-      return "needs https (or localhost) — the browser refuses on plain http";
-    case "denied":
-      return "blocked — allow notifications for this site in the browser's site settings";
-    case "granted":
-      return "allowed — a finished generation or a card needing your ok alerts you when this tab is not in front";
-    default:
-      return "not asked yet — the first Generate asks";
-  }
 }
 
 export function NewProjectRoute() {
@@ -257,15 +244,15 @@ function ProjectForm({ mode, slug }: { mode: "new" | "edit"; slug?: string }) {
     );
   };
 
-  const title = mode === "edit" ? "Project settings" : "New project";
+  const crumbs: Crumb[] = [{ label: "Projects", to: "/", title: "every project" }];
+  if (mode === "edit" && slug) crumbs.push({ label: project.data?.name ?? slug, to: `/p/${encodeURIComponent(slug)}`, title: "this project's bins" });
+  crumbs.push({ label: mode === "edit" ? "Settings" : "New project" });
   return (
     <Shell slug={mode === "edit" ? slug : undefined}>
       <div className="screen">
         <header className="screen-head">
-          <BackLink to={mode === "edit" && slug ? `/p/${encodeURIComponent(slug)}` : "/"} label="Back" />
-          <b>{title}</b>
+          <Crumbs items={crumbs} />
           <span className="spacer" />
-          <Tag>SETUP</Tag>
         </header>
         <div className="screen-body form-body">
           {mode === "edit" && project.isLoading && <div className="hint">loading…</div>}
@@ -392,17 +379,7 @@ function ProjectForm({ mode, slug }: { mode: "new" | "edit"; slug?: string }) {
             )}
           </div>
 
-          {mode === "edit" && (
-            <div className="field">
-              <span className="tag">NOTIFICATIONS</span>
-              <div className="row chips">
-                <button type="button" className="chip" onClick={() => void sendTestNotification().then((r) => toast(`test: ${r}`))}>
-                  send a test
-                </button>
-                <span className="hint">{notifyHint()}</span>
-              </div>
-            </div>
-          )}
+          <YouTubeField mode={mode} slug={slug} value={f.channel} onChange={(v) => set("channel", v)} />
 
           <div className="field">
             <span className="tag">PRIVATE</span>
@@ -454,6 +431,107 @@ function ProjectForm({ mode, slug }: { mode: "new" | "edit"; slug?: string }) {
         )}
       </div>
     </Shell>
+  );
+}
+
+const channelLabel = (c: ChannelOut) => (c.handle ? `${c.handle}${c.title && c.title !== c.handle ? ` · ${c.title}` : ""}` : c.title || c.id);
+
+/**
+ * The project's YouTube destination. Any client picks one of the channels already connected on
+ * the server (saved with the form, like every setting); connecting a **new** channel is a one-time
+ * consent that only a browser on the server's machine can finish (Google sends it back to a
+ * loopback port there), so the button shows only when the server says this request is local.
+ * The consent only adds the channel to the list: the project stays on "none" until it is picked
+ * here and saved.
+ */
+function YouTubeField({ mode, slug, value, onChange }: { mode: "new" | "edit"; slug?: string; value: string; onChange: (v: string) => void }) {
+  const toast = useToast();
+  const status = usePublishStatus();
+  const connect = useConnectStatus(slug, mode === "edit");
+  const start = useStartConnect(slug);
+  const cancel = useCancelConnect(slug);
+  const channels = status.data?.channels ?? [];
+  const known = channels.some((c) => c.id === value);
+  const waiting = connect.data?.status === "waiting";
+  const landed = connect.data?.status === "done" ? connect.data.channel : null;
+  // the consent came back: the channel is on the server's list. The project stays on "none"
+  // until the user picks it here and saves, like every other setting.
+  useEffect(() => {
+    if (landed) toast(`connected ${landed.handle || landed.title || "the channel"} — pick it in the list and save`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [landed?.id]);
+
+  const begin = () => {
+    // the tab is opened on the click itself (a later open is a popup to block) and pointed at
+    // Google once the server answers with the URL
+    const tab = window.open("", "_blank");
+    start.mutate(undefined, {
+      onSuccess: (out) => {
+        if (out.auth_url) {
+          if (tab) tab.location.href = out.auth_url;
+          else window.location.assign(out.auth_url);
+        }
+      },
+      onError: (e) => {
+        tab?.close();
+        toast(errorText(e));
+      },
+    });
+  };
+
+  if (status.data && !status.data.configured) {
+    return (
+      <div className="field">
+        <span className="tag">YOUTUBE</span>
+        <span className="hint">uploads are off on this server: {status.data.detail}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="field">
+      <span className="tag">YOUTUBE</span>
+      <label className="row wf-row">
+        <span className="wf-label">channel</span>
+        <select className="field-select" value={value} onChange={(e) => onChange(e.target.value)} aria-label="YouTube channel">
+          <option value="">none — no posts from this project</option>
+          {!known && value && <option value={value}>{value} (not connected here any more)</option>}
+          {channels.map((c) => (
+            <option key={c.id} value={c.id}>
+              {channelLabel(c)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {mode === "edit" && waiting && (
+        <div className="row wrap chips">
+          <span className="hint">waiting for Google — pick the channel in the tab that opened, then come back here</span>
+          {connect.data?.auth_url && (
+            <a className="chip" href={connect.data.auth_url} target="_blank" rel="noreferrer">
+              open the consent page again
+            </a>
+          )}
+          <button type="button" className="chip" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
+            cancel
+          </button>
+        </div>
+      )}
+      {mode === "edit" && !waiting && connect.data?.status === "failed" && connect.data.error !== "cancelled" && <span className="hint">could not connect: {connect.data.error}</span>}
+      {mode === "edit" && !waiting && landed && value !== landed.id && <span className="hint">connected {landed.handle || landed.title}: pick it above and save to post there</span>}
+      {mode === "edit" && !waiting && status.data?.can_connect && (
+        <div className="row chips channel-connect">
+          <button type="button" className="btn-outline" onClick={begin} disabled={start.isPending}>
+            Connect a new channel…
+          </button>
+          <span className="hint">one-time, here at the PC: Google asks which of your channels; it then joins the list above for every project</span>
+        </div>
+      )}
+      {mode === "edit" && !waiting && status.data && !status.data.can_connect && (
+        <span className="hint">
+          {channels.length ? "new channels are connected from a browser on the server's PC; pick a connected one here" : "no channel connected yet: open these settings in a browser on the server's PC to connect one"}
+        </span>
+      )}
+      {mode === "new" && <span className="hint">the agent drafts posts for this channel; new channels are connected from the project's settings once it exists</span>}
+    </div>
   );
 }
 

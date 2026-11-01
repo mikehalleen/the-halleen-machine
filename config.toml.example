@@ -1,7 +1,7 @@
 # The Halleen Machine 2.0 configuration
 #
-# Copy this file to config.toml and fill in the paths, or run `python setup.py`
-# to have it written for you. Paths use forward slashes on every platform.
+# Copy this file to config.toml (next to serve.py) and fill in the paths.
+# Paths use forward slashes on every platform. Restart serve.py after a change.
 #
 # THM does not install models or workflows. Bring your own ComfyUI workflows,
 # tag them as WORKFLOWS.md describes, and put them in workflows_image/ or
@@ -25,6 +25,12 @@ output_root = ""
 timeout_seconds = 3600
 video_timeout_seconds = 14400
 
+# Optional: your ComfyUI folder. Only used as the working directory of
+# [advanced] restart_script below; empty means the script's own folder.
+#   Windows:   "D:/ComfyUI"
+#   Linux/Mac: "/home/username/ComfyUI"
+install_path = ""
+
 [paths]
 # Where projects are stored. "./projects" keeps them inside the repo; an
 # absolute path keeps them anywhere else. `serve.py --projects-dir` overrides.
@@ -40,3 +46,12 @@ loras = ""
 # window; the oldest beyond retention are dropped.
 retention = 50
 throttle_seconds = 300
+
+[advanced]
+# Optional: your own script that stops and starts ComfyUI on this machine. With
+# it set, the server (and the agent) can restart a stuck ComfyUI; empty means
+# they cannot, and you restart ComfyUI yourself.
+#   Windows PowerShell: "D:/ComfyUI/restart.ps1"
+#   Windows Batch:      "D:/ComfyUI/restart.bat"
+#   Linux/Mac:          "/home/username/ComfyUI/restart.sh"
+restart_script = ""

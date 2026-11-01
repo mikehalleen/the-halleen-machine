@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from thm_core import AgentSession
 from thm_core_fixtures import live_session
 from thm_server_fixtures import seeded_world
 
@@ -19,6 +20,11 @@ def _png(color=(120, 60, 200), size=(32, 24)) -> bytes:
 
 def _base(world) -> str:
     return f"/api/projects/{world.slug}"
+
+
+def _cursor(world) -> str:
+    """The agent's current inbox cursor, for a post: a note that landed unread refuses the post."""
+    return str(world.client.get(f"{_base(world)}/inbox", headers=AGENT).json()["cursor"])
 
 
 def _go_live(world):
@@ -44,7 +50,7 @@ def test_upload_without_a_bin_mints_the_next_bin(tmp_path):
     media = body["media"]
     imports = world.store.files_dir(world.slug) / "imports"
     assert media["type"] == "image" and media["width"] == 32 and media["origin"] == {
-        "type": "upload", "generation": None, "bin": body["bin"]["id"], "source": None, "start_s": None, "end_s": None, "at_s": None, "note": None,
+        "type": "upload", "generation": None, "bin": body["bin"]["id"], "source": None, "start_s": None, "end_s": None, "at_s": None, "note": None, "exec_seconds": None, "layers": None,
     }
     assert media["path"].startswith(imports.resolve().as_posix()) and media["path"].endswith("_ref_one.png")
     assert body["change"]["command"] == "add_media_to_bin" and body["change"]["actor"] == "user"
@@ -118,9 +124,18 @@ def test_upload_refusals_keep_the_error_shape_and_leave_no_file(tmp_path):
     r = _upload(world, "empty.png", b"")
     assert r.status_code == 422 and r.json()["code"] == "bad_value"
 
-    # the agent uploads too, but only inside a live session
+    # the agent uploads too, but only inside a live session once the project has had one (before
+    # its first session the harness-first path lands the song a project was made from)
+    project = world.registry.get(world.slug)
+    project.agent_session = AgentSession(id="as_old", status="ended")
+    world.store.save(project)
+    world.registry.invalidate(world.slug)
     r = world.client.post(f"{_base(world)}/uploads", files={"file": ("a.png", _png(), "image/png")}, headers=AGENT)
     assert r.status_code == 409 and r.json()["code"] == "no_session"
+    project = world.registry.get(world.slug)
+    project.agent_session = None
+    world.store.save(project)
+    world.registry.invalidate(world.slug)
 
     r = _upload(world, "a.png", _png(), bin="b_nope")
     assert r.status_code == 404 and r.json()["code"] == "unknown_id"
@@ -200,13 +215,16 @@ def test_agent_change_feed_entry_and_decision(tmp_path):
     assert world.client.get(base).json()["pending_changes"] == 2
     assert world.client.get(f"{base}/jobs").json() == []
 
-    # approve the length change with a note: a decision line joins the feed with the updated change
-    r = world.client.post(f"{base}/changes/{change['id']}/decision", json={"action": "approve", "note": "good"})
+    # a note on the length change is a reply: a decision line joins the feed, the change stays as it is
+    r = world.client.post(f"{base}/changes/{change['id']}/decision", json={"action": "approve", "note": "good, keep going"})
     assert r.status_code == 200, r.text
     entry = world.client.get(f"{base}/feed").json()["entries"][-1]
-    assert entry["message"]["kind"] == "decision" and entry["message"]["status"] == "approved" and entry["message"]["note"] == "good"
-    assert entry["change"]["id"] == change["id"] and entry["change"]["decision"]["status"] == "approved"
+    assert entry["message"]["kind"] == "decision" and entry["message"]["status"] == "replied" and entry["message"]["note"] == "good, keep going"
+    assert entry["change"]["id"] == change["id"] and entry["change"]["decision"]["status"] == "replied"
     assert entry["bin"]["name"] == "Video 1"
+    assert world.client.get(base).json()["pending_changes"] == 1  # replied is not owed
+    r = world.client.post(f"{base}/changes/{change['id']}/decision", json={"action": "approve"})
+    assert r.status_code == 200 and r.json()["change"]["decision"]["status"] == "approved", r.text
 
     # reject the bind: reverted, the card still points at the media it had bound
     bind_change = [e for e in world.client.get(f"{base}/feed").json()["entries"] if e["change"] and e["change"]["command"] == "bind_reference"][0]["change"]
@@ -223,7 +241,7 @@ def test_blocker_promotes_project_detail_until_answered(tmp_path):
     world = seeded_world(tmp_path)
     base = _base(world)
     _go_live(world)
-    r = world.client.post(f"{base}/commands/post_message", json={"text": "need the logo file", "kind": "blocker"}, headers=AGENT)
+    r = world.client.post(f"{base}/commands/post_message", json={"text": "need the logo file", "kind": "blocker"}, headers={**AGENT, "X-THM-Inbox-Cursor": _cursor(world)})
     assert r.status_code == 200, r.text
     blocker_id = r.json()["messages"][0]["id"]
     detail = world.client.get(base).json()
@@ -232,7 +250,10 @@ def test_blocker_promotes_project_detail_until_answered(tmp_path):
     world.client.post(f"{base}/commands/post_message", json={"text": "uploading it now"})
     assert world.client.get(base).json()["blocker"] is None
 
-    world.client.post(f"{base}/commands/post_message", json={"text": "still stuck", "kind": "blocker"}, headers=AGENT)
+    # the user's note is unread: a post over it is refused with the note; read, then post
+    r = world.client.post(f"{base}/commands/post_message", json={"text": "still stuck", "kind": "blocker"}, headers={**AGENT, "X-THM-Inbox-Cursor": "0"})
+    assert r.status_code == 409 and r.json()["code"] == "inbox_behind" and r.json()["extra"]["messages"][-1]["text"] == "uploading it now", r.text
+    world.client.post(f"{base}/commands/post_message", json={"text": "still stuck", "kind": "blocker"}, headers={**AGENT, "X-THM-Inbox-Cursor": _cursor(world)})
     assert world.client.get(base).json()["blocker"]["text"] == "still stuck"
     world.client.post(f"{base}/commands/end_session", json={})
     assert world.client.get(base).json()["blocker"] is None

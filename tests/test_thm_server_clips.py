@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from thm_core import MediaOrigin, adopt_media
-from thm_server_fixtures import make_tiny_mp4, seeded_world
+from thm_server_fixtures import make_tiny_audio, make_tiny_mp4, seeded_world
 
 
 @pytest.fixture
@@ -66,9 +66,17 @@ def test_still_at_the_very_end_takes_the_last_frame(world):
     assert body["media"]["id"] in world.client.get(f"/api/projects/{world.slug}/bins/{world.mara}").json()["bin"]["media"]
 
 
-def test_clip_refuses_non_video_source(world):
+def test_clip_refuses_non_video_source(world, tmp_path):
     r = world.client.post(f"/api/projects/{world.slug}/clips", json={"source": world.m1, "mode": "still", "at_s": 0})
-    assert r.status_code == 422 and r.json()["code"] == "bad_value"
+    assert r.status_code == 422 and r.json()["code"] == "not_video"
+    # a GIF of an audio file: the same refusal, by its code
+    song = make_tiny_audio(tmp_path / "song.wav")
+    project = world.registry.get(world.slug)
+    audio = adopt_media(project, song, origin=MediaOrigin(type="upload", bin=world.mara))
+    world.store.save(project)
+    world.registry.invalidate(world.slug)
+    r = world.client.post(f"/api/projects/{world.slug}/clips", json={"source": audio.id, "mode": "gif"})
+    assert r.status_code == 422 and r.json()["code"] == "not_video"
 
 
 def test_clip_refuses_bad_time_range(world):
@@ -95,3 +103,52 @@ def test_clip_refuses_without_ffmpeg(world, monkeypatch):
     monkeypatch.setattr(clips_mod, "ffmpeg_available", lambda: False)
     r = world.client.post(f"/api/projects/{world.slug}/clips", json={"source": world.video_media, "mode": "still", "at_s": 0})
     assert r.status_code == 409 and r.json()["code"] == "ffmpeg_unavailable"
+
+
+def test_gif_of_a_video_lands_as_an_image_in_the_bin(world):
+    r = world.client.post(
+        f"/api/projects/{world.slug}/clips", json={"source": world.video_media, "mode": "gif", "fps": 10, "width": 64, "bin": world.mara}
+    )
+    assert r.status_code == 200, r.text
+    media = r.json()["media"]
+    assert media["type"] == "image" and media["path"].endswith(".gif") and media["width"] == 64
+    assert media["origin"]["type"] == "gif" and media["origin"]["source"] == world.video_media
+    with open(media["path"], "rb") as f:
+        assert f.read(6) in (b"GIF89a", b"GIF87a")
+    f = world.client.get(f"/media/{world.slug}/{media['id']}/file?download=1")
+    assert f.status_code == 200 and f.headers["content-type"] == "image/gif"
+    assert f.headers["content-disposition"].startswith("attachment")
+    t = world.client.get(f"/media/{world.slug}/{media['id']}/thumb?size=grid")
+    assert t.status_code == 200
+
+
+def test_gif_refuses_bad_settings(world):
+    base = f"/api/projects/{world.slug}/clips"
+    for extra in ({"fps": 0}, {"fps": 500}, {"width": 2}, {"start_s": 0.5, "end_s": 0.5}, {"end_s": 999}):
+        r = world.client.post(base, json={"source": world.video_media, "mode": "gif", **extra})
+        assert r.status_code == 422 and r.json()["code"] == "bad_value", extra
+
+
+def test_flip_makes_a_mirrored_copy_in_the_bin(tmp_path):
+    from PIL import Image
+
+    w = seeded_world(tmp_path)
+    project = w.registry.get(w.slug)
+    src_id = project.bins_by_id[w.mara].media[0]
+    src_path = project.media_by_id[src_id].path
+    # paint the left column so the mirror is visible
+    with Image.open(src_path) as im:
+        rgb = im.convert("RGB")
+        for y in range(rgb.height):
+            rgb.putpixel((0, y), (255, 255, 0))
+        rgb.save(src_path)
+    r = w.client.post(f"/api/projects/{w.slug}/media/{src_id}/flip", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["bin"]["id"] == w.mara and body["bin"]["selected"] != body["media"]["id"]  # new, not current
+    assert body["media"]["origin"]["source"] == src_id and body["media"]["origin"]["note"] == "flipped horizontally"
+    with Image.open(body["media"]["path"]) as out:
+        rgb = out.convert("RGB")
+        assert rgb.getpixel((rgb.width - 1, 0)) == (255, 255, 0) and rgb.getpixel((0, 0)) != (255, 255, 0)
+    # an unknown media is refused
+    assert w.client.post(f"/api/projects/{w.slug}/media/m_nope/flip", json={}).status_code == 404

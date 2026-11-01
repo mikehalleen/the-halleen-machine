@@ -27,7 +27,7 @@ from thm_server_fixtures import write_png
 
 def _gen(bin_id: str, **overrides) -> Generation:
     base = dict(id="g_test0001", bin=bin_id, kind="image", ts="2026-09-07T10:00:00Z", workflow="img.json",
-                prompt_typed=".mara at dawn", prompt_submitted="<Picture 1> at dawn", negative_submitted="blurry",
+                prompt_typed="@mara.png at dawn", prompt_submitted="<Picture 1> at dawn", negative_submitted="blurry",
                 prelude=["image1: mara (character)"], paths_by_slot={"10": "D:/refs/mara.png"})
     base.update(overrides)
     return Generation(**base)
@@ -196,7 +196,7 @@ def test_land_outputs_appends_takes_and_selects_newest(tmp_path):
     landed, warnings = land_outputs(p, bin_, gen, [{"path": str(a)}, {"path": str(b)}], cache_dir=cache, now="2026-09-07T10:05:00Z")
 
     assert [m.path for m in landed] == [Path(a).resolve().as_posix(), Path(b).resolve().as_posix()]
-    assert bin_.media == [m.id for m in landed] and bin_.selected == landed[-1].id
+    assert bin_.media == [m.id for m in landed] and bin_.selected == landed[-1].id  # the first take leads: nothing was chosen yet
     assert gen.status == "done" and gen.outputs == bin_.media and warnings == []
     assert all(m.origin.type == "generation" and m.origin.generation == gen.id and m.origin.bin == bin_id for m in landed)
     assert landed[0].width == 64 and landed[0].created == "2026-09-07T10:05:00Z"
@@ -212,7 +212,7 @@ def test_landing_after_uploads_keeps_the_gallery_order_and_numbers_only_takes(tm
     bin_ = p.bins_by_id[bin_id]
     a = write_png(tmp_path / "out" / "it_001_00001_.png", (64, 48), (10, 20, 30))
     landed, _ = land_outputs(p, bin_, _gen(bin_id), [{"path": str(a)}], cache_dir=tmp_path / "cache")
-    assert bin_.media == [existing, landed[0].id] and bin_.selected == landed[0].id
+    assert bin_.media == [existing, landed[0].id] and bin_.selected == landed[0].id  # no winner was chosen yet
     assert p.media_by_id[existing].take is None and landed[0].take == 1
 
 
@@ -271,3 +271,15 @@ def test_log_tail(tmp_path):
     log.write_text("\n".join(f"line {i}" for i in range(30)) + "\n\n", encoding="utf-8")
     tail = log_tail(log, lines=3)
     assert tail == "line 27\nline 28\nline 29"
+
+
+def test_a_later_take_lands_as_new_not_as_the_winner(tmp_path):
+    """Once a bin has a winner, a landing take is new and waits to be chosen; it never moves the
+    winner by itself."""
+    p = make_project()
+    bin_id = add_bin(p, "Mara", "img.json")
+    bin_ = p.bins_by_id[bin_id]
+    first, _ = land_outputs(p, bin_, _gen(bin_id), [{"path": str(write_png(tmp_path / "a.png", (32, 32), (1, 2, 3)))}], cache_dir=tmp_path / "c")
+    assert bin_.selected == first[0].id
+    second, _ = land_outputs(p, bin_, _gen(bin_id), [{"path": str(write_png(tmp_path / "b.png", (32, 32), (4, 5, 6)))}], cache_dir=tmp_path / "c")
+    assert bin_.selected == first[0].id and second[0].id in bin_.unseen

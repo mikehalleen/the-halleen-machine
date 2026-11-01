@@ -10,16 +10,17 @@ name) the upload mints the next ``bin-n``; the client passes the bin it is in.
 from __future__ import annotations
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from starlette.concurrency import run_in_threadpool
 
-from thm_core import Media, MediaOrigin, Message, Project, ProjectStore, adopt_media, ensure_thumbnails, execute, media_type_for, thumb_cache_dir
+from thm_core import CommandContext, Media, MediaOrigin, Message, Project, ProjectStore, adopt_media, ensure_thumbnails, execute, media_type_for, thumb_cache_dir
 from thm_core.commands import AddMediaToBin, RemoveMediaFromBin
 
-from ..deps import actor_context, state
+from ..deps import ServerState, actor_context, state
 from ..errors import ApiError
 from ..imports import IMPORTS_DIR, find_or_create_bin, fresh_import_path, safe_name
 from ..publish import publish_result
@@ -45,6 +46,7 @@ async def upload(
     bin_name: str | None = Form(None),
     source: str | None = Form(None),
     note: str | None = Form(None),
+    tags: str | None = Form(None),
 ):
     """Anyone with a say in the project uploads: the user from the browser, the agent (with a
     live session) after working on a fetched file locally. ``source`` and ``note`` are the
@@ -55,8 +57,11 @@ async def upload(
     st = state(request)
     ctx = actor_context(request)
     if ctx.actor == "agent":
+        # harness-first: a project the agent just made (``create --audio``) has no session yet,
+        # and the song it was made from lands before the user opens one. Once a project has
+        # had a session, an agent upload needs a live one like every other agent write.
         sess = st.registry.get(slug).agent_session
-        if sess is None or sess.status != "live":
+        if sess is not None and sess.status != "live":
             raise ApiError(409, "no_session", "an agent upload needs a live session; connect first")
     name = safe_name(file.filename)
     if media_type_for(name) is None:
@@ -72,16 +77,26 @@ async def upload(
     if source and source not in project.media_by_id:
         raise ApiError(404, "unknown_id", f"no media {source}", {"type": "media", "id": source})
     note = (note or "").strip() or None
+    tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()] or None
     dest = fresh_import_path(st.store.files_dir(project), name)
     await run_in_threadpool(_write, file.file, dest)
+    return await land_import(st, slug, ctx, dest, bin=bin, bin_name=bin_name, source=source, note=note, tags=tag_list)
 
+
+async def land_import(st: ServerState, slug: str, ctx: CommandContext, dest: Path, *, bin: str | None, bin_name: str | None, source: str | None = None, note: str | None = None, tags: list[str] | None = None) -> UploadOut:
+    """Adopt the file already written at ``dest`` (under ``imports/``) and put it in a bin: the
+    half of an upload after the bytes are down. A message file kept into a bin lands here too."""
     change = None
     messages: list[Message] = []
     async with st.registry.lock(slug):
         project = st.registry.get(slug)
         adopted_here = False
+        if ctx.actor == "agent" and project.agent_session is None:
+            # harness-first (see ``upload``): the bin and the landing are logged as the agent's
+            # with no session to gate them, exactly once per project, before its first session
+            ctx = replace(ctx, bypass_gates=True)
         try:
-            target, messages = find_or_create_bin(st.store, project, ctx, st.env, bin, bin_name)
+            target, messages = find_or_create_bin(st.store, project, ctx, st.env, bin, bin_name, tags)
             media = adopt_media(project, dest, origin=MediaOrigin(type="upload", bin=target.id, source=source, note=note))
             adopted_here = Path(media.path) == dest.resolve()
             if not adopted_here:

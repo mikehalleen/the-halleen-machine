@@ -20,6 +20,7 @@ from thm_core.commands import (
     ReorderReferences,
     SetBinField,
     SetProjectSettings,
+    StartFromMedia,
     StartSession,
     UnbindReference,
 )
@@ -110,13 +111,13 @@ def test_duplicate_bin_copies_the_recipe_and_optionally_the_gallery(world):
     bind(p, s, m)
     t = add_take(p, s)
     src = p.bins_by_id[s]
-    src.prompt, src.selected, src.tags = ".mara at dawn", t, ["hero"]
+    src.prompt, src.selected, src.tags = "@mara.png at dawn", t, ["hero"]
     r = execute(store, p, DuplicateBin(bin=s), USER, env=env)
     assert r.change.description == "duplicated Image 1 as Image 1-copy"
     copy = next(b for b in p.bins_by_id.values() if b.name == "Image 1-copy")
-    assert copy.id.startswith("b_") and copy.prompt == ".mara at dawn" and copy.tags == ["hero"]
+    assert copy.id.startswith("b_") and copy.prompt == "@mara.png at dawn" and copy.tags == ["hero"]
     assert copy.media == [] and copy.selected is None and copy.counters == {}
-    assert [(x.media, x.bin, x.handle) for x in copy.references] == [(m, mara, "mara")]
+    assert [(x.media, x.bin, x.handle) for x in copy.references] == [(m, mara, "mara.png")]
     assert copy.references[0].id != src.references[0].id
     r = execute(store, p, DuplicateBin(bin=s, with_media=True), USER, env=env)
     assert r.change.description == "duplicated Image 1 as Image 1-copy-2"
@@ -135,11 +136,24 @@ def test_set_length_logs_before_after_and_description(world):
     assert r.change.target.id == s
 
 
+def test_an_edit_stamps_the_bin_updated_outside_the_diff(world):
+    store, p, env = world
+    s = add_bin(p, "Video 1", "vid.json", length_s=5)
+    other = add_bin(p, "Video 2", "vid.json", length_s=5)
+    assert p.bins_by_id[s].updated == ""
+    r = execute(store, p, SetBinField(bin=s, field="length_s", value=8), USER, env=env)
+    assert p.bins_by_id[s].updated == r.change.ts
+    assert "updated" not in r.change.after and p.bins_by_id[other].updated == ""
+    # a no-op is not an edit
+    p.bins_by_id[s].updated = ""
+    execute(store, p, SetBinField(bin=s, field="length_s", value=8), USER, env=env)
+    assert p.bins_by_id[s].updated == ""
+
+
 @pytest.mark.parametrize(
     "code,make",
     [
         ("unknown_id", lambda p, s, m: SetBinField(bin="b_nope", field="prompt", value="x")),
-        ("wrong_kind", lambda p, s, m: SetBinField(bin=s, field="length_s", value=5)),
         ("bad_value", lambda p, s, m: SetBinField(bin=s, field="prompt", value=5)),
         ("bad_value", lambda p, s, m: SetBinField(bin=s, field="name", value="  ")),
         ("bad_value", lambda p, s, m: SetBinField(bin=s, field="loras", value=[{"strength": 1}])),
@@ -175,7 +189,7 @@ def test_bind_capacity_and_type_rules(world):
     s = add_bin(p, "Image 1", "img.json")
     execute(store, p, BindReference(bin=s, media=add_media(p, mara)), USER, env=env)
     r = execute(store, p, BindReference(bin=s, media=add_media(p, mara)), USER, env=env)
-    assert r.change.description == "Image 1 - bound .mara.2"
+    assert r.change.description == "Image 1 - bound @mara.png.2"
     refused("too_many_references", lambda: execute(store, p, BindReference(bin=s, media=add_media(p, mara)), USER, env=env))
     refused("media_type_unsupported", lambda: execute(store, p, BindReference(bin=s, media=add_media(p, mara, type="video")), USER, env=env))
     s2 = add_bin(p, "Image 2", "noref.json")
@@ -191,11 +205,11 @@ def test_bind_a_take_from_another_bin_and_from_the_bin_itself(world):
     t = add_take(p, ed)
     band = add_bin(p, "Band", "img.json")
     r = execute(store, p, BindReference(bin=band, media=t), USER, env=env)
-    assert r.change.description == "Band - bound .ed"
+    assert r.change.description == "Band - bound @ed.png"
     assert p.bins_by_id[band].references[0].bin == ed
     # the bin's own take: the handle is its own name
     r = execute(store, p, BindReference(bin=ed, media=t), USER, env=env)
-    assert r.change.description == "Ed - bound .ed" and p.bins_by_id[ed].references[0].bin == ed
+    assert r.change.description == "Ed - bound @ed.png" and p.bins_by_id[ed].references[0].bin == ed
 
 
 def test_bind_refuses_media_no_bin_holds(world):
@@ -208,7 +222,7 @@ def test_bind_refuses_media_no_bin_holds(world):
     execute(store, p, AddMediaToBin(bin=s, media=orphan), USER, env=env)
     s2 = add_bin(p, "Image 2", "img.json")
     r = execute(store, p, BindReference(bin=s2, media=orphan), USER, env=env)
-    assert r.change.description == "Image 2 - bound .image-1"
+    assert r.change.description == "Image 2 - bound @image-1.png"
 
 
 def test_bind_video_reference_accepted_when_workflow_has_video_slots(tmp_path):
@@ -219,7 +233,7 @@ def test_bind_video_reference_accepted_when_workflow_has_video_slots(tmp_path):
     s = add_bin(p, "Video 1", "vidref.json", length_s=5)
     execute(store, p, BindReference(bin=s, media=add_media(p, loc, type="video")), USER, env=env)
     r = execute(store, p, BindReference(bin=s, media=add_media(p, loc, type="video")), USER, env=env)
-    assert r.change.description == "Video 1 - bound .rail-dawn.2"
+    assert r.change.description == "Video 1 - bound @rail-dawn.mp4.2"
     refused("too_many_references", lambda: execute(store, p, BindReference(bin=s, media=add_media(p, loc, type="video")), USER, env=env))
     s2 = add_bin(p, "Image 1", "img.json")
     refused("media_type_unsupported", lambda: execute(store, p, BindReference(bin=s2, media=add_media(p, loc, type="video")), USER, env=env))
@@ -234,6 +248,82 @@ def test_video_bin_takes_start_and_end_images(world):
     refused("too_many_references", lambda: execute(store, p, BindReference(bin=s, media=add_media(p, mara)), USER, env=env))
 
 
+def test_start_from_media_into_the_same_bin_keeps_what_is_bound(world):
+    """The reference-first path: the bin's own take joins its recipe under its own name."""
+    store, p, env = world
+    mara = add_bin(p, "Mara")
+    ed = add_bin(p, "Ed", "img.json")
+    bind(p, ed, add_media(p, mara))
+    t = add_take(p, ed)
+    r = execute(store, p, StartFromMedia(media=t, bin=ed), USER, env=env)
+    assert r.change.description == "Ed - bound @ed.png from Ed take 1"
+    assert r.change.target.type == "bin" and r.change.target.id == ed
+    assert r.bin == ed
+    assert [(x.handle, x.bin) for x in p.bins_by_id[ed].references] == [("mara.png", mara), ("ed.png", ed)]
+    assert store.load(p.slug).bins_by_id[ed].references[1].media == t
+
+
+def test_start_from_media_into_another_bin_and_a_new_one(world):
+    store, p, env = world
+    ed = add_bin(p, "Ed", "img.json")
+    t = add_take(p, ed)
+    band = add_bin(p, "Band", "img.json")
+    r = execute(store, p, StartFromMedia(media=t, bin=band), USER, env=env)
+    assert r.change.description == "Band - bound @ed.png from Ed take 1" and r.bin == band
+    # no bin: one is minted, named as asked or the next bin-n, on the project's image default
+    execute(store, p, SetProjectSettings(image_workflow="img.json", video_workflow="vid.json"), USER, env=env)
+    r = execute(store, p, StartFromMedia(media=t), USER, env=env)
+    assert r.change.target.type == "project" and r.bin is not None and r.bin != band
+    made = p.bins_by_id[r.bin]
+    assert made.name == "bin-1" and made.workflow == "img.json" and made.created == "2026-09-06T10:00:00Z"
+    assert [(x.media, x.handle, x.bin) for x in made.references] == [(t, "ed.png", ed)]
+    assert r.change.description == "added bin-1 from Ed take 1 as @ed.png"
+    r = execute(store, p, StartFromMedia(media=t, bin_name=" Ed 2 ", workflow="vid.json"), USER, env=env)
+    made = p.bins_by_id[r.bin]
+    assert made.name == "Ed 2" and made.workflow == "vid.json" and made.length_s == 5.0
+    assert r.change.description == "added Ed 2 from Ed take 1 as @ed.png"
+    # an existing bin with no workflow takes the image default; the reference lands either way
+    empty = add_bin(p, "Empty", "")
+    r = execute(store, p, StartFromMedia(media=t, bin=empty), USER, env=env)
+    assert p.bins_by_id[empty].workflow == "img.json" and len(p.bins_by_id[empty].references) == 1
+    # create_bin reports its bin the same way
+    r = execute(store, p, CreateBin(), USER, env=env)
+    assert r.bin in p.bins_by_id and p.bins_by_id[r.bin].name == "bin-2"
+
+
+def test_start_from_media_never_refuses_on_capacity_or_type(world):
+    """Past the workflow's slots the reference still lands: it shows as unused until the
+    workflow fits, the way a workflow switch already leaves extra references."""
+    store, p, env = world
+    mara = add_bin(p, "Mara")
+    s = add_bin(p, "Image 1", "img.json")
+    for _ in range(3):
+        execute(store, p, StartFromMedia(media=add_media(p, mara), bin=s), USER, env=env)
+    assert [x.handle for x in p.bins_by_id[s].references] == ["mara.png", "mara.png.2", "mara.png.3"]
+    r = execute(store, p, StartFromMedia(media=add_media(p, mara, type="video"), bin=s), USER, env=env)
+    assert r.change.description == "Image 1 - bound @mara.mp4 from Mara file 4"
+    noref = add_bin(p, "Image 2", "noref.json")
+    execute(store, p, StartFromMedia(media=add_media(p, mara), bin=noref), USER, env=env)
+    assert len(p.bins_by_id[noref].references) == 1
+    # no image default and no workflow asked for: the new bin has none, and still holds the reference
+    r = execute(store, p, StartFromMedia(media=add_media(p, mara)), USER, env=env)
+    assert p.bins_by_id[r.bin].workflow == "" and len(p.bins_by_id[r.bin].references) == 1
+
+
+def test_start_from_media_refusals(world):
+    store, p, env = world
+    mara = add_bin(p, "Mara")
+    m = add_media(p, mara)
+    s = add_bin(p, "Image 1", "img.json")
+    refused("unknown_id", lambda: execute(store, p, StartFromMedia(media="m_nope", bin=s), USER, env=env))
+    refused("unknown_id", lambda: execute(store, p, StartFromMedia(media=m, bin="b_nope"), USER, env=env))
+    refused("bad_value", lambda: execute(store, p, StartFromMedia(media=m, bin_name="  "), USER, env=env))
+    refused("unknown_workflow", lambda: execute(store, p, StartFromMedia(media=m, workflow="nope.json"), USER, env=env))
+    orphan = add_media(p, None, origin={"type": "generation", "generation": "g_1", "bin": "s_gone"})
+    refused("no_bin", lambda: execute(store, p, StartFromMedia(media=orphan, bin=s), USER, env=env))
+    assert p.bins_by_id[s].references == [] and len(p.bins_by_id) == 2
+
+
 def test_unbind_and_reorder(world):
     store, p, env = world
     mara = add_bin(p, "Mara")
@@ -242,11 +332,11 @@ def test_unbind_and_reorder(world):
     r2 = bind(p, s, add_media(p, mara))
     r = execute(store, p, ReorderReferences(bin=s, order=[r2.id, r1.id]), USER, env=env)
     assert [x.id for x in p.bins_by_id[s].references] == [r2.id, r1.id]
-    assert r.change.after["references"][0]["handle"] == "mara.2"
+    assert r.change.after["references"][0]["handle"] == "mara.png.2"
     r = execute(store, p, UnbindReference(bin=s, reference=r1.id), USER, env=env)
-    assert r.change.description == "Image 1 - unbound .mara"
+    assert r.change.description == "Image 1 - unbound @mara.png"
     # the survivor closes the gap rather than sitting there as a lone .2
-    assert [x.handle for x in p.bins_by_id[s].references] == ["mara"]
+    assert [x.handle for x in p.bins_by_id[s].references] == ["mara.png"]
     assert p.media_by_id[r1.media] is not None
 
 
@@ -273,6 +363,34 @@ def test_rebind_reference_keeps_handle_swaps_media(world):
     assert ref.media == t and ref.handle == handle_before and ref.bin == ed
     orphan = add_media(p, None, origin={"type": "generation", "generation": "g_1", "bin": "s_gone"})
     refused("no_bin", lambda: execute(store, p, RebindReference(bin=s, reference=ref_id, media=orphan), USER, env=env))
+
+
+def test_rebind_reference_to_another_extension_remints_the_handle_and_rewrites_the_prompt(world):
+    """The handle spells the extension, so a still swapped for a clip cannot keep it: the reference
+    is re-minted in the clip series and the prompt follows. Same extension keeps the handle."""
+    store, p, env = world
+    mara = add_bin(p, "Mara")
+    still, clip, still2 = add_media(p, mara), add_media(p, mara, type="video"), add_media(p, mara)
+    s = add_bin(p, "Image 1", "img.json")
+    execute(store, p, BindReference(bin=s, media=still), USER, env=env)
+    ref = p.bins_by_id[s].references[0]
+    assert ref.handle == "mara.png"
+    p.bins_by_id[s].prompt = "@mara.png walks"
+    p.bins_by_id[s].negative = "not @mara.png"
+    r = execute(store, p, RebindReference(bin=s, reference=ref.id, media=clip), USER, env=env)
+    ref = p.bins_by_id[s].references[0]
+    assert ref.media == clip and ref.handle == "mara.mp4" and ref.bin == mara
+    assert p.bins_by_id[s].prompt == "@mara.mp4 walks" and p.bins_by_id[s].negative == "not @mara.mp4"
+    assert "@mara.mp4" in r.change.description
+    # back to a still: the png series is empty again, so it is plain mara.png
+    execute(store, p, RebindReference(bin=s, reference=ref.id, media=still2), USER, env=env)
+    ref = p.bins_by_id[s].references[0]
+    assert ref.media == still2 and ref.handle == "mara.png" and p.bins_by_id[s].prompt == "@mara.png walks"
+    # same extension: the handle stays put
+    r = execute(store, p, RebindReference(bin=s, reference=ref.id, media=still), USER, env=env)
+    ref = p.bins_by_id[s].references[0]
+    assert ref.media == still and ref.handle == "mara.png" and p.bins_by_id[s].prompt == "@mara.png walks"
+    assert "@mara.png" in r.change.description
 
 
 def test_generate_refuses_a_bin_with_no_workflow(world):
@@ -314,7 +432,7 @@ def test_loras_ride_the_submitted_prompt_as_tags(world):
     s = add_bin(p, "Image 1", "img.json")
     r = execute(store, p, SetBinField(bin=s, field="name", value=" Opening "), USER, env=env)
     assert p.bins_by_id[s].name == "Opening" and r.change.description == "Image 1 renamed to Opening"
-    assert r.change.target.type == "project"
+    assert r.change.target.type == "bin"
     execute(store, p, SetBinField(bin=s, field="name", value="Image 1"), USER, env=env)
     execute(store, p, SetBinField(bin=s, field="prompt", value="a cat"), USER, env=env)
     r = execute(
@@ -357,14 +475,35 @@ def test_recall_restores_references_with_their_handles(world):
     s = add_bin(p, "Image 1", "img.json")
     r = execute(
         store, p,
-        RecallGeneration(bin=s, from_media="m_take", workflow="img.json", prompt=".mara.2 first", references=[{"media": m2, "handle": "mara.2"}, {"media": m1, "handle": "mara"}]),
+        RecallGeneration(bin=s, from_media="m_take", workflow="img.json", prompt="@mara.png.2 first", references=[{"media": m2, "handle": "mara.png.2"}, {"media": m1, "handle": "mara.png"}]),
         USER, env=env,
     )
     assert r.change.description == "Image 1 - recalled the settings that made m_take"
-    assert [(x.media, x.bin, x.handle) for x in p.bins_by_id[s].references] == [(m2, mara, "mara.2"), (m1, mara, "mara")]
+    assert [(x.media, x.bin, x.handle) for x in p.bins_by_id[s].references] == [(m2, mara, "mara.png.2"), (m1, mara, "mara.png")]
+    # a second recall of the same recipe keeps the reference ids: a rebind planned by id still lands
+    ids_before = [x.id for x in p.bins_by_id[s].references]
+    execute(
+        store, p,
+        RecallGeneration(bin=s, from_media="m_take", workflow="img.json", prompt="@mara.png.2 first", references=[{"media": m2, "handle": "mara.png.2"}, {"media": m1, "handle": "mara.png"}]),
+        USER, env=env,
+    )
+    assert [x.id for x in p.bins_by_id[s].references] == ids_before
     refused("unknown_workflow", lambda: execute(store, p, RecallGeneration(bin=s, workflow="nope.json"), USER, env=env))
     orphan = add_media(p, None, origin={"type": "generation", "generation": "g_1", "bin": "s_gone"})
     refused("no_bin", lambda: execute(store, p, RecallGeneration(bin=s, references=[{"media": orphan, "handle": "x"}]), USER, env=env))
+
+
+def test_bind_position_past_the_end_appends(world):
+    """``position`` is a 0-based insert index; past the end (``1`` on an empty bin, the agent's
+    "first slot") is an append, not a refusal. Negative is out of range."""
+    store, p, env = world
+    mara = add_bin(p, "Mara")
+    m1, m2 = add_media(p, mara), add_media(p, mara)
+    s = add_bin(p, "Image 1", "img.json")
+    refused("bad_value", lambda: execute(store, p, BindReference(bin=s, media=m1, position=-1), USER, env=env))
+    execute(store, p, BindReference(bin=s, media=m1, position=1), USER, env=env)
+    execute(store, p, BindReference(bin=s, media=m2, position=0), USER, env=env)
+    assert [x.media for x in p.bins_by_id[s].references] == [m2, m1]
 
 
 def test_delete_bin_keeps_media_something_else_still_holds(world):
@@ -398,13 +537,13 @@ def test_mark_take_and_selected(world):
     assert p.media_by_id[t].qc.status == "fail" and p.media_by_id[t].qc.note == "hands" and p.media_by_id[t].qc.by == "user"
     assert r.change.description == "Image 1 take 1 - marked fail"
     r = execute(store, p, SetBinField(bin=s, field="selected", value=t), USER, env=env)
-    assert r.change.description == "Image 1 - selected take 1"
+    assert r.change.description == "Image 1 - current take is now take 1"
     assert p.bins_by_id[s].media == [t]
     u = add_media(p, s)
     r = execute(store, p, SetBinField(bin=s, field="selected", value=u), USER, env=env)
-    assert r.change.description == f"Image 1 - selected {u}"
+    assert r.change.description == f"Image 1 - current take is now {u}"
     r = execute(store, p, SetBinField(bin=s, field="selected", value=None), USER, env=env)
-    assert r.change.description == "Image 1 - selected none"
+    assert r.change.description == "Image 1 - current take is now none"
     # a take marked in the bin that now holds it, after its own bin went
     execute(store, p, AddMediaToBin(bin=add_bin(p, "Keep"), media=t), USER, env=env)
     execute(store, p, DeleteBin(bin=s), USER, env=env)
@@ -420,11 +559,19 @@ def test_rename_rewrites_referencing_bins_in_one_change(world):
     m = add_media(p, mara)
     s = add_bin(p, "Image 1", "img.json")
     execute(store, p, BindReference(bin=s, media=m), USER, env=env)
-    p.bins_by_id[s].prompt = ".mara waits"
+    p.bins_by_id[s].prompt = "@mara.png waits"
+    # a retitle is the bin's own: no handle, no prompt anywhere moves
     r = execute(store, p, SetBinField(bin=mara, field="name", value="Mara Vane"), USER, env=env)
-    assert r.change.description == "Mara renamed to Mara Vane (1 bin references it)"
-    assert p.bins_by_id[s].prompt == ".mara-vane waits"
+    assert r.change.description == "Mara renamed to Mara Vane" and r.change.target.type == "bin"
+    assert p.bins_by_id[mara].slug == "mara" and p.bins_by_id[s].prompt == "@mara.png waits"
+    # the handle itself is the user's to change, and that rewrite is one project-wide change
+    r = execute(store, p, SetBinField(bin=mara, field="slug", value="mara-vane"), USER, env=env)
+    assert r.change.description == "Mara Vane - handle @mara is now @mara-vane (1 bin references it)"
+    assert p.bins_by_id[s].prompt == "@mara-vane.png waits"
     assert r.change.target.type == "project" and "bins_by_id" in r.change.after
+    with pytest.raises(CommandRefused) as exc:
+        SetBinField(bin=mara, field="slug", value="x").check(p, AGENT, env)
+    assert exc.value.code == "wrong_actor"
     execute(store, p, SetBinField(bin=mara, field="description", value="lead singer"), USER, env=env)
     r = execute(store, p, SetBinField(bin=mara, field="tags", value=[" Hero ", "", "cast", "hero"]), USER, env=env)
     assert p.bins_by_id[mara].tags == ["hero", "cast"] and r.change.description == "Mara Vane - tags hero, cast"
@@ -559,6 +706,10 @@ def test_connect_session_rules(world):
     assert r.change.target.type == "session" and r.change.before == {"status": "waiting", "harness": None, "connected": None}
     assert [m.kind for m in r.messages] == ["system"]
     refused("no_session", lambda: execute(store, p, ConnectSession(harness="again"), AGENT, env=env))
+    # a takeover (the server sets it when the previous agent is gone) connects to a live session
+    r = execute(store, p, ConnectSession(harness="again", takeover=True), AGENT, env=env)
+    assert p.agent_session.status == "live" and p.agent_session.harness == "again"
+    assert r.change.description == "agent reconnected via again (the previous one was gone)"
 
 
 def test_remove_media_from_bin_keeps_the_record(world):
@@ -671,15 +822,15 @@ def test_generate_inbox_gate(world):
     mara = add_bin(p, "Mara")
     s = add_bin(p, "Image 1", "img.json")
     bind(p, s, add_media(p, mara))
-    p.bins_by_id[s].prompt = ".mara at dawn"
+    p.bins_by_id[s].prompt = "@mara.png at dawn"
     refused("inbox_cursor_required", lambda: execute(store, p, Generate(bin=s), AGENT, env=env))
     execute(store, p, PostMessage(text="warmer please"), USER, env=env)
     exc = refused("inbox_behind", lambda: execute(store, p, Generate(bin=s), CommandContext(actor="agent", inbox_cursor=0), env=env))
     assert [m["text"] for m in exc.extra["messages"]] == ["warmer please"] and exc.extra["cursor"] == 1
     r = execute(store, p, Generate(bin=s), CommandContext(actor="agent", inbox_cursor=1), env=env)
     g = r.generation
-    assert g.status == "queued" and g.prompt_typed == ".mara at dawn" and g.prompt_submitted == "<Picture 1> at dawn"
-    assert g.references[0].handle == "mara" and g.references[0].ordinal == 1 and g.references[0].slot == "10"
+    assert g.status == "queued" and g.prompt_typed == "@mara.png at dawn" and g.prompt_submitted == "<Picture 1> at dawn"
+    assert g.references[0].handle == "mara.png" and g.references[0].ordinal == 1 and g.references[0].slot == "10"
     assert g.paths_by_slot == {"10": p.media_by_id[g.references[0].media].path}
     assert r.change.generation == g.id
     assert store.read_generations(p)[0].id == g.id
@@ -692,7 +843,7 @@ def test_agent_own_messages_do_not_block_generate(world):
     live_session(p)
     s = add_bin(p, "Image 1", "img.json")
     cursor = store.message_cursor(p)
-    execute(store, p, PostMessage(text="working", kind="agent"), AGENT, env=env)
+    execute(store, p, PostMessage(text="working", kind="agent"), CommandContext(actor="agent", inbox_cursor=cursor), env=env)
     execute(store, p, SetBinField(bin=s, field="prompt", value="x"), AGENT, env=env)  # adds a change message
     execute(store, p, Generate(bin=s), CommandContext(actor="agent", inbox_cursor=cursor), env=env)
 
@@ -733,3 +884,46 @@ def test_unseen_clears_when_the_media_leaves(world):
     assert p.bins_by_id[mara].unseen == [m2]
     execute(store, p, DeleteMedia(media=m2), USER, env=env)
     assert p.bins_by_id[mara].unseen == []
+
+
+def test_length_and_workflow_land_in_either_order(tmp_path):
+    """A length on a still bin is kept and used once the workflow makes video; neither order refuses."""
+    from thm_core_fixtures import add_bin, image_workflow, make_env, make_project, make_store, video_workflow
+
+    store = make_store(tmp_path)
+    p = make_project(store)
+    env = make_env(tmp_path, {"img.json": image_workflow(2), "vid.json": video_workflow()})
+    b = add_bin(p, "Shot", "img.json")
+    execute(store, p, SetBinField(bin=b, field="length_s", value=7), USER, env=env)
+    assert p.bins_by_id[b].length_s == 7
+    gen = execute(store, p, Generate(bin=b), USER, env=env).generation
+    assert "length_s" not in gen.params  # a still has no length
+    execute(store, p, SetBinField(bin=b, field="workflow", value="vid.json"), USER, env=env)
+    assert execute(store, p, Generate(bin=b), USER, env=env).generation.params["length_s"] == 7
+
+
+def test_agent_repeat_post_is_said_once(world):
+    """The same words again (a retry of a post that went through) are not posted twice; the
+    answer says it was already said. Different words, or a note in between, post as usual."""
+    store, p, env = world
+    live_session(p)
+    agent = lambda: CommandContext(actor="agent", inbox_cursor=store.message_cursor(p))
+    execute(store, p, PostMessage(text="draft is up", kind="agent"), agent(), env=env)
+    r = execute(store, p, PostMessage(text="draft is up", kind="agent"), agent(), env=env)
+    assert not r.messages and r.warnings[0]["kind"] == "already_posted"
+    assert [m.text for m in store.read_messages(p) if m.kind == "agent"] == ["draft is up"]
+    execute(store, p, PostMessage(text="draft is up, take 2", kind="agent"), agent(), env=env)
+    assert len([m for m in store.read_messages(p) if m.kind == "agent"]) == 2
+
+
+def test_agent_words_never_carry_ids(world):
+    """The user never sees ids: an agent post naming one is refused with the bin name and take
+    label to write instead. The user's own notes are theirs."""
+    store, p, env = world
+    live_session(p)
+    s = add_bin(p, "the invite", "img.json")
+    m = add_take(p, s)
+    agent = CommandContext(actor="agent", inbox_cursor=store.message_cursor(p))
+    exc = refused("raw_id", lambda: execute(store, p, PostMessage(text=f"current is now {m} in {s}", kind="agent"), agent, env=env))
+    assert '"the invite", take' in exc.detail and '"the invite" instead of ' + s in exc.detail
+    execute(store, p, PostMessage(text=f"what about {m}?"), USER, env=env)

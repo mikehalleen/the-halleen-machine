@@ -1,0 +1,884 @@
+/* ---- sequences ----------------------------------------------------------------
+   An ordered list of bins (docs/design/sequences-implementation.md, the handoff's direction A).
+   Cyan is the user's selection and the open row, amber is the raw-preview note when the item
+   on screen carries agent settings, coral is a warning or a destructive action. The still / title-card fill is the handoff's #E9E4D8.
+   Loaded after base.css; builds on its .card, .shot-row, .sidebar-row, .btn-* and .tag. */
+
+.seq-section-label {
+  margin: 2px 2px 0;
+}
+
+.seq-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-sequences {
+  padding: 0 8px 6px;
+}
+
+/* BINS | SEQUENCES: the library's two halves, one showing at a time */
+.lib-tabs {
+  display: flex;
+  border-bottom: var(--b-thin) solid var(--divider);
+  margin: 0 0 8px;
+}
+
+.sidebar .lib-tabs {
+  margin: 0 8px 8px;
+}
+
+.lib-tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 4px;
+  margin-bottom: -1px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.lib-tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.lib-tab-n {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--muted-2);
+}
+
+.seq-card-glyph {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+.shot-row.seq-card .seq-card-glyph {
+  width: 56px;
+  height: 56px;
+  font-size: 22px;
+}
+
+.shot-row.seq-card {
+  align-items: center;
+}
+
+/* the sequence screen */
+.seq-player-wrap {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+/* the frame is a .preview (base.css): the bin hero's sizing (the media's own shape under the
+   same height cap, a portrait take gets a portrait frame), its veil and its reveal rules */
+.seq-player.preview {
+  background: var(--inverse-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* shrink-wrapped around the frame and its controls: the mouse leaving *this* is what drops a
+   private project's veil, not the band of background either side */
+.seq-player-zone {
+  --ar: 1.7778;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* the hero's sizing rule, on the zone: the frame fills it, the controls sit under it */
+  width: min(100%, calc(var(--preview-cap, 42vh) * var(--ar)));
+  margin-inline: auto;
+}
+
+.seq-player-zone .seq-player.preview {
+  width: 100%;
+}
+
+/* the player stays put while the rows scroll under it: stuck to the top of the scrolling body,
+   its own padding covering the body's gutter so no row shows through above the frame */
+.seq-player-wrap {
+  align-items: center;
+  position: sticky;
+  top: -12px;
+  z-index: 3;
+  width: auto; /* stretch across the body, gutters included: the first rule's 100% would stop short on the right */
+  margin: -12px -12px 0;
+  padding: 12px 12px 8px;
+  background: var(--page-bg);
+  box-shadow: 0 8px 12px -10px var(--shadow);
+}
+
+.seq-controls {
+  justify-content: center;
+}
+
+/* the pinned player's bottom edge: drag to set the frame's height (SequencePlayer) */
+.seq-player-resizer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 8px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.seq-player-resizer:hover::after,
+.is-resizing-player .seq-player-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 3px 0;
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.is-resizing-player {
+  user-select: none;
+  cursor: row-resize;
+}
+
+/* the preview is raw: the agent's settings are not in it. One line for the sequence-wide layer,
+   one for the item on screen */
+.seq-raw-notes {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+/* the agent's export-only settings, in full: a long one wraps rather than cutting off */
+.seq-raw-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 10px;
+  border: var(--b-thin) solid var(--line-soft);
+  border-radius: var(--r-card);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted-2);
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.seq-raw-glyph {
+  flex: none;
+}
+
+.seq-target {
+  gap: 8px;
+  align-items: center;
+}
+
+/* the target bin is the export card's title; Change, at the right, opens the bin chooser */
+.seq-target-title {
+  align-items: center;
+  gap: 10px;
+}
+
+.seq-target-title .card-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.seq-target-change {
+  flex: none;
+}
+
+/* the footer's bin link is as wide as its words, at the left; Export stays at the right */
+.screen-foot.is-split > .seq-open-bin {
+  flex: none;
+  margin-right: auto;
+}
+
+.seq-target-select {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.seq-sound {
+  z-index: 2;
+}
+
+.seq-card-face,
+.seq-sample-card {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: #e9e4d8;
+  color: #1a1a18;
+  font-weight: 700;
+  text-align: center;
+  padding: 8px;
+}
+
+.seq-card-no {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #6e6e68;
+}
+
+.seq-card-title {
+  font-size: 18px;
+}
+
+.seq-sample-card {
+  flex: none;
+  width: 96px;
+  height: 54px;
+  border-radius: 4px;
+  font-size: 11px;
+  gap: 1px;
+}
+
+.seq-sample-card .seq-card-no {
+  font-size: 9px;
+}
+
+.seq-player-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.seq-player-corner {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--badge-bg);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  max-width: calc(100% - 12px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seq-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--empty);
+  overflow: hidden;
+}
+
+.seq-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+.seq-controls {
+  gap: 6px;
+}
+
+.seq-ctl {
+  flex: none;
+  min-width: 36px;
+  height: 32px;
+  padding: 0 10px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.seq-ctl:disabled {
+  opacity: 0.4;
+}
+
+.seq-ctl-play {
+  min-width: 44px;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.seq-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted-3);
+  white-space: nowrap;
+}
+
+.seq-phone-meta {
+  padding: 0 2px;
+}
+
+/* the rows */
+.seq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.seq-row {
+  display: flex;
+  flex-direction: column;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.seq-row.is-open {
+  background: var(--accent-tint);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--accent);
+}
+
+.seq-row.is-dragging {
+  box-shadow: 0 6px 18px var(--shadow);
+}
+
+.seq-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 4px;
+  min-height: 56px;
+}
+
+/* the hold target: grip + number + thumbnail, one surface a thumb can land on; it is also what
+   the keyboard moves with */
+.seq-hold {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 56px;
+  margin: -6px 0 -6px -4px;
+  padding-right: 2px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* three short bars, a hamburger-style handle: wider than the dotted glyph, reads as "drag" */
+.seq-grip {
+  flex: none;
+  width: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.seq-grip i {
+  display: block;
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--muted);
+}
+
+.seq-row.is-open .seq-grip i {
+  background: var(--accent);
+}
+
+.seq-row.is-grabbable {
+  cursor: grab;
+}
+
+.seq-row.is-dragging,
+.seq-row.is-dragging .seq-hold {
+  cursor: grabbing;
+}
+
+/* a bin from the rail over the list: a line where it would land, a dashed tail for the end */
+.seq-list.is-drop {
+  outline: var(--b-thin) dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--r-card);
+}
+
+.seq-row.is-drop-before {
+  box-shadow: 0 -3px 0 0 var(--accent);
+}
+
+.seq-drop-end {
+  padding: 10px;
+  border: var(--b-thin) dashed var(--accent);
+  border-radius: var(--r-card);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+
+/* an empty sequence's drop target, before anything is in it */
+.seq-drop-empty {
+  padding: 18px 10px;
+  border: var(--b-thin) dashed var(--line);
+  border-radius: var(--r-card);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.seq-pos {
+  flex: none;
+  width: 20px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.seq-thumb-empty {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: var(--b-thin) dashed var(--line-softer);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--muted);
+  text-align: center;
+  background: repeating-linear-gradient(135deg, transparent 0 4px, var(--empty) 4px 6px);
+}
+
+.seq-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.seq-row-name {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* a past export is named by its file: long, and its end (size, rate) matters, so it wraps;
+   the line under it wraps too, using the room up to the Watch / Download pills */
+.seq-past-row .seq-row-name {
+  white-space: normal;
+  overflow-wrap: break-word;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.seq-past-row .seq-row-meta {
+  white-space: normal;
+  overflow: visible;
+  flex-wrap: wrap;
+}
+
+.seq-past-row > .thumb {
+  flex: none;
+}
+
+.seq-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.seq-trim-bar {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--empty);
+  overflow: hidden;
+}
+
+.seq-trim-kept {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+}
+
+.seq-row-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.seq-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  border: var(--b-thin) solid var(--line-soft);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--muted-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.seq-chip-warn {
+  border-color: var(--destructive);
+  color: var(--destructive);
+}
+
+.seq-chip-ro {
+  color: var(--muted-2);
+}
+
+.seq-dur {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.seq-dur.is-muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.seq-dur.is-warn {
+  color: var(--destructive);
+}
+
+.seq-stepper {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.seq-step {
+  width: 32px;
+  height: 32px;
+  border: var(--b-thin) solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.seq-step:disabled {
+  opacity: 0.4;
+}
+
+.seq-step-value {
+  min-width: 44px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.seq-row-open {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px 40px;
+  cursor: default;
+}
+
+.seq-agent-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* the agent's own words for what the export adds; the chips after it are the settings */
+.seq-agent-summary {
+  font-size: 12px;
+  color: var(--muted-3);
+}
+
+.seq-row-actions {
+  gap: 6px;
+}
+
+.seq-pill {
+  flex: none;
+  padding: 5px 12px;
+  font-size: 13px;
+  border-radius: var(--r-pill);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.seq-pill.is-armed {
+  border-color: var(--destructive);
+  color: var(--destructive);
+}
+
+/* the foot: add left, export right; the export button carries its own progress wash */
+.seq-foot {
+  align-items: center;
+}
+
+.seq-foot-add {
+  flex: none;
+  padding: 7px 14px;
+  text-decoration: none;
+}
+
+.seq-export-btn {
+  position: relative;
+  overflow: hidden;
+  min-width: 128px;
+  justify-content: center;
+}
+
+.seq-export-btn.is-exporting {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.seq-export-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent-tint);
+  transition: width 200ms linear;
+}
+
+.seq-export-label {
+  position: relative;
+}
+
+/* add bins */
+.seq-add-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.seq-add-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.seq-add-row.is-on {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.seq-add-check {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+/* the place it will take: filled in tap order */
+.seq-add-pos {
+  flex: none;
+  width: 22px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* export screen */
+.seq-export-summary {
+  gap: 4px;
+}
+
+.seq-notake-note .row {
+  align-items: center;
+  gap: 10px;
+}
+
+.seq-render-card .row {
+  align-items: center;
+  gap: 8px;
+}
+
+.seq-failed-card {
+  border-color: var(--destructive);
+}
+
+.seq-past {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.seq-past-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.seq-past-row.is-tappable {
+  cursor: pointer;
+}
+
+.seq-past-row.is-tappable:hover {
+  border-color: var(--accent);
+}
+
+/* download: a small round pill at the row's far end */
+.seq-dl {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: var(--b-thin) solid var(--line);
+  border-radius: 50%;
+  font-size: 15px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.seq-dl:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* a new export: the same blue dot every other new thing wears */
+.seq-new-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+.seq-clip-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* the delete sheet with two ways forward */
+.seq-delete-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.btn-outline.is-danger {
+  border-color: var(--destructive);
+  color: var(--destructive);
+}
+
+@media (max-width: 759px) {
+  .seq-row-open {
+    padding-left: 10px;
+  }
+}
+
+/* phone, portrait item, export-only notes: the frame to the left; the notes, and under them the
+   controls, in the room beside it -- the pinned area ends with the frame. The zone steps aside
+   (display: contents) so its frame, bar and controls take grid cells of their own */
+.seq-player-wrap.is-side {
+  display: grid;
+  grid-template-columns: min(58%, calc(var(--preview-cap, 42vh) * var(--ar))) minmax(0, 1fr);
+  grid-template-rows: 1fr auto auto;
+  grid-template-areas:
+    "frame notes"
+    "frame controls"
+    "bar .";
+  column-gap: 10px;
+  row-gap: 6px;
+  align-items: start;
+}
+
+.seq-player-wrap.is-side .seq-player-zone {
+  display: contents;
+}
+
+.seq-player-wrap.is-side .seq-player.preview {
+  grid-area: frame;
+  width: 100%;
+}
+
+.seq-player-wrap.is-side .seq-progress {
+  grid-area: bar;
+}
+
+.seq-player-wrap.is-side .seq-raw-notes {
+  grid-area: notes;
+  align-items: stretch;
+}
+
+.seq-player-wrap.is-side .seq-raw-note {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+/* the controls sit at the foot of the notes column, level with the bottom of the frame */
+.seq-player-wrap.is-side .seq-controls {
+  grid-area: controls;
+  align-self: end;
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.seq-player-wrap.is-side .seq-time {
+  flex-basis: 100%;
+  text-align: center;
+}

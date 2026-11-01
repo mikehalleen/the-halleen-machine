@@ -245,6 +245,16 @@ Sampler-like and dimension controls are now tag-first. If a workflow exposes `TH
 
 In legacy workflows (no generation tags), all matching fallback class nodes receive the same values.
 
+## Draft setting (any workflow, image or video)
+
+| THM tag | Node | Input written | Source |
+|---|---|---|---|
+| `THM-IsDraft` | a boolean switch: ComfyUI's **Switch** node (`switch`, `on_false`, `on_true`), or a boolean primitive (`value`) | `switch` (or `value`, or the node's only boolean input): **true** for a draft render, **false** otherwise | the render's Draft toggle (THM 2.0) |
+
+Wire the workflow's full-quality value into `on_false` and its cheaper draft value into `on_true` (fewer steps, a distilled model, a smaller sampler pass...), and route the switch's `output` to where that value is used. THM sets the switch on **every** render, so the value baked into the graph does not matter: off unless the render asked for draft.
+
+A workflow with this tag **supports draft**, and THM checks for it the same way it scans the other tags that change what the UI offers (reference slots, start/end frames, LoRA, negative prompt): the Generate bar shows a **Draft** button beside ¼ for a bin on that workflow, `bin`/`workflows` report `draft=supported` to the agent, and an agent session in draft mode runs that workflow with draft on (plus quarter size on video). A workflow without the tag has a single quality tier; nothing is offered.
+
 ### Multi-KSampler (Default family)
 
 When a workflow has more than one `KSampler` (e.g. left/right passes plus a heal pass with different `denoise`), retitle the sampler(s) that should follow **Keyframe Model Configuration** to **`THM-KSampler`**. Leave other samplers with a plain title (e.g. `KSampler`); their steps/cfg/sampler/scheduler stay as baked in the workflow JSON.
@@ -277,6 +287,26 @@ Legacy dimension fallback still updates known dimension classes such as `EmptyLa
 
 ---
 
+## Importing from ComfyUI (THM 2.0, no hand tagging)
+
+Run the workflow once in ComfyUI, then ask the THM agent to bring it in under a name
+(`workflows import <name>` in `thm-agent/cli.py`, `POST /api/workflows/import`). The server
+reads that run from ComfyUI's `/history`, which holds both the API graph that ran and the UI
+graph it came from (same node ids), so nothing is converted. It proposes tags from what each
+node is and feeds (the rules in this guide), keeps any `THM-*` title you already gave, inserts
+a `ModelPassThrough` `THM-Lora` marker after a single model loader, and leaves checkpoint,
+steps, cfg and sampler baked. It writes:
+
+- the tagged API graph to `workflows_image/<name>.json` or `workflows_video/<name>.json`
+- the tagged UI graph to `samples/workflows_openincomfy/THM-<name>.json`, to open in ComfyUI
+  and check or change. Nothing is written into ComfyUI itself.
+
+Every import leaves a `THM-EnhancerSystemPrompt` node. A built-in enhancer (an LLM node
+rewriting the prompt in the graph) gives up its system prompt to it and is taken out of the
+API graph (muted in the UI copy); otherwise the agent researches the model and supplies one.
+To change tags by hand, edit the samples copy in ComfyUI, run it, and import again with
+replace: your titles win. The checklist below stays the contract.
+
 ## Checklist: Adding a New Workflow
 
 - [ ] Save node titled `THM-SaveImage` or legacy `Save Image`
@@ -287,6 +317,7 @@ Legacy dimension fallback still updates known dimension classes such as `EmptyLa
 - [ ] Pose/reference `LoadImage` node titled `THM-PoseReference` or `THM-ImageReference` if THM should inject a pose/reference image
 - [ ] Optional sampler-like nodes tagged with `THM-Seed`, `THM-Steps`, `THM-CFG`, `THM-Sampler`, or `THM-Scheduler`
 - [ ] Optional dimension nodes tagged with `THM-ImageSize`, `THM-Width`, or `THM-Height`
+- [ ] Optional `THM-IsDraft` switch (Switch node: full-quality value on `on_false`, draft value on `on_true`) if the workflow has a cheaper draft setting
 - [ ] Any untagged nodes are intentionally left at their baked-in workflow values
 
 ---
@@ -512,25 +543,31 @@ Unlike the keyframe panel, this scan uses the project **Default video workflow**
 
 ## Partner API nodes (`THM-PartnerNode`)
 
-Some ComfyUI nodes wrap an entire external cloud API video call in a **single node** (e.g. `KlingStartEndFrameNode`, `ByteDanceFirstLastFrameNode`). Tag that node **`THM-PartnerNode`**. Examples: [`THM-api_kling_flf.json`](workflows/THM-api_kling_flf.json), [`THM-api_bytedace_seedance1_5_flf2v.json`](workflows/THM-api_bytedace_seedance1_5_flf2v.json).
+Some ComfyUI nodes wrap an entire external cloud API video call in a **single node** (e.g. `KlingStartEndFrameNode`, `ByteDanceFirstLastFrameNode`, `ByteDance2ReferenceNode`). Tag that node **`THM-PartnerNode`**. Examples: [`THM-api_kling_flf.json`](workflows/THM-api_kling_flf.json), [`THM-api_bytedace_seedance1_5_flf2v.json`](workflows/THM-api_bytedace_seedance1_5_flf2v.json), [`api_seedance2_5_r2v.json`](workflows_video/api_seedance2_5_r2v.json) (reference-to-video, no anchors).
 
 Because field names vary per provider, THM inspects the tagged node's `inputs` and writes **only field names it recognizes, only when already present** (no fields are ever added):
 
-| Driver | Field aliases tried |
-|--------|---------------------|
-| Positive prompt | `prompt`, `positive_prompt` |
-| Negative prompt | `negative_prompt` |
-| Frame count | `length`, `frame_count`, `num_frames`, `frames` |
-| Frame rate | `frame_rate`, `fps` |
-| Width / Height | literal `width` / `height` only |
+| Driver | Field aliases tried | Value |
+|--------|---------------------|-------|
+| Positive prompt | `prompt`, `positive_prompt` | prompt text |
+| Negative prompt | `negative_prompt` | negative text |
+| Frame count | `length`, `frame_count`, `num_frames`, `frames` | `round(length × fps) + 1` |
+| Frame rate | `frame_rate`, `fps` | project / bin fps |
+| Width / Height | literal `width` / `height` only | canvas |
+| Duration | `duration` | bin / clip length, rounded to whole seconds (min 1); the provider validates its own range |
+| Seed | `seed` | the take seed (these APIs are non-deterministic; the seed mainly stops ComfyUI returning a cached result for a repeat take) |
 
-**Never written** (stay workflow-baked — set them in ComfyUI before export): `aspect_ratio`, `resolution`, `mode`, `duration`, and any other provider enum/opaque field.
+A dotted **`model.<field>`** name counts as the field: ComfyUI's dynamic-combo nodes (Seedance 2.x) nest their widgets as `model.prompt`, `model.duration`, `model.resolution`, `model.ratio`. Nested group entries (`model.reference_images.image_1`) are never matched by a bare name.
+
+**Never written** (stay workflow-baked — set them in ComfyUI before export): `aspect_ratio` / `ratio`, `resolution`, `mode` (Kling's duration lives in its `mode` string and stays as exported), and any other provider enum/opaque field. Quality on an API node is its `resolution` enum; there are no steps.
 
 **Start/end images:** tag the upstream `LoadImage` nodes with ordinary `THM-StartFrame` / `THM-EndFrame` — same as any other video workflow.
 
+**Reference slots:** a reference-to-video partner node takes ordinary `THM-ImageReference` (`LoadImage`) and `THM-VideoReference` (core `LoadVideo` — the node wants a VIDEO input, not a VHS image batch) loaders wired into its `reference_images.image_N` / `reference_videos.video_N` group entries. The file decides how many slots exist; an unbound slot is dropped from the graph at run time (its group entry goes with it). Seedance 2.x addresses references positionally in the prompt as `Image 1`, `Video 1` — the 2.0 assembler knows this notation for `ByteDance2ReferenceNode` (`thm_core/assembler.py` `API_TOKEN_NOTATION`).
+
 **API key:** partner nodes require a Comfy API key (from [platform.comfy.org](https://platform.comfy.org)), sent as `extra_data.api_key_comfy_org` on the `/prompt` POST. Set the **`THM_COMFY_API_KEY`** environment variable before launching THM. Keys are **never** read from `config.toml` (a stray `api_key_comfy_org` there is ignored with a warning), and the key value is never logged. If a partner workflow runs without the variable set, the runner logs a `[VIDEO] WARNING` but still submits (ComfyUI may hold its own key).
 
-**Derived metadata (read-only):** THM reads baked duration/size hints from the partner node for UI display (workflow dropdown hint + debug capabilities panel): literal `duration` seconds (Seedance), duration parsed from Kling's `mode` string (e.g. "5s duration"), and size from `resolution` ("720p") + ratio-style `aspect_ratio`; `"adaptive"` means size follows the input image. These values are informational — they do not auto-set project duration or dimensions (yet).
+**Derived metadata (read-only):** THM reads duration/size hints from the partner node for UI display (workflow dropdown hint + debug capabilities panel): literal `duration` seconds (Seedance — the exported value is the default shown; the bin length overrides it at run time), duration parsed from Kling's `mode` string (e.g. "5s duration", baked), and size from `resolution` ("720p") + ratio-style `aspect_ratio` / `ratio`; `"adaptive"` means size follows the input image. Size values are informational — they do not auto-set project dimensions.
 
 **Image sizing & frame fit:** when the partner output size is known, the Dimensions panel suggests a **model-safe ~1MP generation size** — the nearest SDXL training bucket by aspect ratio, /64 dims, safe for SDXL- and Flux-class models (16:9 → **1344x768**, 9:16 → **768x1344**). Generating keyframes at the raw video size (e.g. 1920x1080, ~2MP) exceeds SDXL's training budget and distorts anatomy. At run time THM automatically injects an `ImageScale` (`lanczos`, `crop="center"` — cover then center-crop) between each wired `THM-StartFrame` / `THM-EndFrame` loader and its consumers, so keyframes of any size are fitted to the partner output size without stretching. Injected nodes are titled `Injected_PartnerScale_<loader id>`. No scaler is injected when the partner size is adaptive/unknown (the API follows the input image).
 
@@ -557,6 +594,8 @@ THM-SlowMoPrimer            optional KSamplerAdvanced primer pass
 THM-KSampler                one or more chain passes (duplicate bare titles)
 THM-PartnerNode             single-node external API call (Kling, ByteDance, ...) — replaces
                             generator/sampler tags; see "Partner API nodes" above
+THM-IsDraft                 optional Switch node — on_false = full quality, on_true = draft
+                            (fewer steps...); THM sets `switch` per render (see "Draft setting")
 ```
 
 **Do not tag:** CLIP/VAE/checkpoint loaders, baked workflow LoRAs.

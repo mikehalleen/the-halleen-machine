@@ -21,7 +21,6 @@ rem brief pause to release the port
 timeout /t 1 /nobreak >nul
 
 set "PY=%~dp0venv\Scripts\python.exe"
-if not exist "%PY%" set "PY=%~dp0the-machine-ui-venv\Scripts\python.exe"
 if not exist "%PY%" set "PY=python"
 echo Starting: "%PY%" "%APP%" --host %THM_HOST% --port %THM_PORT%
 set "PYTHONUNBUFFERED=1"

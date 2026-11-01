@@ -17,6 +17,7 @@ HEADER_ACTOR = "x-thm-actor"
 HEADER_SESSION = "x-thm-session"
 HEADER_CURSOR = "x-thm-inbox-cursor"
 HEADER_PROPOSE = "x-thm-propose"
+HEADER_MODE = "x-thm-mode"  # the session mode the agent last saw: a change since refuses with mode_changed
 HEADER_DOING = "x-thm-agent-doing"  # what the agent is doing right now, in its own words, on any call
 
 
@@ -28,11 +29,18 @@ class ServerState:
     registry: ProjectRegistry
     bus: EventBus
     jobs: JobManager
+    exports: object = None  # exports.ExportManager: sequence exports in flight, set by create_app
     workflows_cache: dict = field(default_factory=dict)
     enhance_requests: dict = field(default_factory=dict)  # id -> routes.enhance.AgentRequest, pending and answered
+    enhance_local: dict = field(default_factory=dict)  # id -> routes.enhance.LocalRun: local rewrites in flight, for cancel
     agent_activity: dict = field(default_factory=dict)  # slug -> agent_activity.Activity: the agent's last sign of life
     agent_seen: object = None  # agent_activity.ServerSeen: the agent's last call on any path, for "is an agent running"
     provenance_probed: set = field(default_factory=set)  # (slug, media id, sha) whose file recover.py already read this process
+    comfy_transport: object = None  # httpx transport for the workflow import's /history reads; tests set a mock
+    uploads: object = None  # uploads_youtube.UploadManager: post uploads in flight, set by create_app
+    connects: object = None  # youtube_connect.ConnectManager: channel consents in flight, set by create_app
+    youtube_transport: object = None  # thm_core.youtube.Transport for the uploads; tests set a fake
+    youtube_env: object = None  # the environment the YouTube credentials are read from; None = os.environ
 
 
 def state(request: Request) -> ServerState:
@@ -62,4 +70,5 @@ def actor_context(request: Request) -> CommandContext:
         except ValueError:
             raise ApiError(400, "bad_cursor", f"{HEADER_CURSOR} must be an integer") from None
     propose = (request.headers.get(HEADER_PROPOSE) or "").strip().lower() in ("1", "true", "yes")
-    return CommandContext(actor=actor, session=session, inbox_cursor=cursor, propose=propose)
+    seen_mode = (request.headers.get(HEADER_MODE) or "").strip() or None
+    return CommandContext(actor=actor, session=session, inbox_cursor=cursor, propose=propose, seen_mode=seen_mode)

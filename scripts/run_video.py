@@ -1042,6 +1042,7 @@ def run(config_path, export_only=False, status_file_override=None):
                             end_frame_path=ep,
                             seed_target_title=seed_target_title,
                             seed_exclude_title=seed_exclude_title,
+                            duration_s=float(dur),
                         )
                         wc.apply_video_injection(graph, inj_ctx)
                         _log_video_caps(vid_caps, project_fps, frames, clip_type=ctype)
@@ -1282,13 +1283,17 @@ def run_generation(spec_path, status_file_override=None):
 
         # Canvas: the project's width/height from the spec. ``params.quarter`` (a per-generation
         # draft toggle, the 2.0 form of 1.x's project-wide quarter_size_video) halves both sides,
-        # a quarter of the pixels. Plain integer halves, no rounding: any multiple-of-N rule is
-        # the workflow's own business, as it is for whatever canvas the project sets.
+        # a quarter of the pixels. The model takes sizes only in steps (LTX 32, Wan 16) and would
+        # round a size it cannot take DOWN, so the canvas written is the wanted size rounded UP
+        # and a crop before the output node brings the frames back to it.
         width = int(params["width"]) if params.get("width") else None
         height = int(params["height"]) if params.get("height") else None
         quarter = bool(params.get("quarter")) and width is not None and height is not None
         if quarter:
             width, height = width // 2, height // 2
+        want_w, want_h = width, height
+        if width is not None and height is not None:
+            width, height, size_step = wc.fit_canvas(graph, width, height)
         if ctype:
             _inject_legacy_wan_frames(graph, vid_caps, ctype, sp if need_start else None, ep if need_end else None, width, height)
 
@@ -1316,10 +1321,16 @@ def run_generation(spec_path, status_file_override=None):
 
         # LoRAs ride in the prompt text as <lora:name:strength[:strength_b]> tags (or the 1.x
         # __lora:...__ form); they come out before the text reaches the encoder.
-        raw_text = generation_spec.prompt_text_from_spec(spec)
+        # Wildcards are rolled here, once, before anything else reads the text: ComfyUI is sent
+        # a settled prompt, never a {a|b|c}, and each take drawn from the same recipe rolls its
+        # own. The roll comes before the LoRA tags are lifted out, so a wildcard may hold one.
+        submitted = generation_spec.prompt_text_from_spec(spec)
+        raw_text = expand_inline_wildcards(submitted)
+        if raw_text != submitted:
+            print("[WILDCARD] rolled: " + raw_text.replace("\n", " | "))
         lora_specs = generation_spec.lora_specs_from_spec(spec, raw_text)
         text = strip_lora_tags(raw_text)
-        negative = str(spec.get("negative") or "")
+        negative = expand_inline_wildcards(str(spec.get("negative") or ""))
         if wc.workflow_uses_ltx_text_encoder(graph):
             text = wc.sanitize_prompt_for_ltx(text)
             negative = wc.sanitize_prompt_for_ltx(negative)
@@ -1341,9 +1352,16 @@ def run_generation(spec_path, status_file_override=None):
             start_frame_path=sp if need_start else None,
             end_frame_path=ep if need_end else None,
             lora_specs=lora_specs or None,
+            duration_s=float(length_s) if length_s else None,
         )
         wc.apply_video_injection(graph, inj_ctx)
+        if want_w is not None and (width, height) != (want_w, want_h):
+            crops = wc.inject_fit_crop(graph, want_w, want_h, width, height)
+            print(f"[SIZE] {want_w}x{want_h} is not a multiple of {size_step}: rendering {width}x{height}, "
+                  + (f"cropped back to {want_w}x{want_h} before save" if crops else "no output node takes frames, so the file keeps that size"))
         _set_legacy_wan_length(graph, vid_caps, frames)
+        # the workflow's own draft branch (a THM-IsDraft switch): on only when asked, always set
+        wc.set_draft(graph, bool(params.get("draft")))
         _log_video_caps(vid_caps, fps, frames, clip_type=ctype)
         os.makedirs(output_dir, exist_ok=True)
 

@@ -147,8 +147,9 @@ def test_job_lands_take_and_publishes_events(tmp_path):
     world.registry.invalidate(world.slug)
     project = world.registry.get(world.slug)
     bin_ = project.bins_by_id[world.image]
-    assert bin_.media[-1] == job.takes[0] and bin_.selected == job.takes[0]
+    assert bin_.media[-1] == job.takes[0] and bin_.selected != job.takes[0]  # a take is chosen, never landed as the winner
     assert project.media_by_id[job.takes[0]].origin.generation == gen.id and project.media_by_id[job.takes[0]].take == 2
+    assert project.media_by_id[job.takes[0]].origin.exec_seconds == 42.3  # the take carries the timing for the gallery
 
     records = [g for g in world.store.read_generations(project) if g.id == gen.id]
     assert len(records) == 1 and records[0].status == "done" and records[0].outputs == job.takes
@@ -193,7 +194,7 @@ def test_job_lands_after_uploads_in_a_bin_that_holds_them(tmp_path):
     world.registry.invalidate(world.slug)
     project = world.registry.get(world.slug)
     mara = project.bins_by_id[world.mara]
-    assert mara.media == [world.m1, world.m2, job.takes[0]] and mara.selected == job.takes[0]
+    assert mara.media == [world.m1, world.m2, job.takes[0]] and mara.selected != job.takes[0]
     assert project.media_by_id[job.takes[0]].origin.bin == world.mara and project.media_by_id[job.takes[0]].take == 1
     assert project.bins_by_id[world.image].media == [world.take]  # untouched
 
@@ -370,7 +371,8 @@ def test_reconcile_lands_a_completed_orphan_and_fails_a_missing_one(tmp_path):
         done_job = first.prepare(world.slug, world.registry.get(world.slug), done_gen)
         _complete_on_disk(json.loads(done_job.paths.spec.read_text(encoding="utf-8")), done_job.paths.status, (1, 2, 3))
         lost_gen = _queued_generation(world, world.video)
-        first.prepare(world.slug, world.registry.get(world.slug), lost_gen)
+        lost_job = first.prepare(world.slug, world.registry.get(world.slug), lost_gen)
+        lost_job.paths.log.write_text("", encoding="utf-8")  # launched: a runner always has its log
         # a fresh manager, as after a restart
         mgr = _manager(world, crashing_launcher)
         await mgr.reconcile()
@@ -405,6 +407,14 @@ def test_reconcile_fails_a_runner_from_before_the_last_boot(tmp_path, monkeypatc
         await mgr.reconcile()
         (attached,) = mgr.for_project(world.slug)
         await asyncio.wait_for(attached.watcher, 5)
+        rebooted = (attached.status, attached.error)
+        # a reboot is an interruption: once ComfyUI (nothing_in_comfy: up, prompt gone) answers,
+        # the render is queued again by itself -- here on a crashing runner, so it fails for good
+        await asyncio.wait_for(attached.collector, 5)
+        for _ in range(200):
+            if not attached.live and (attached.watcher is None or attached.watcher.done()):
+                break
+            await asyncio.sleep(0.02)
         # a fresh status written after boot, with a boot before it, keeps waiting
         keep = _manager(world, crashing_launcher)
         job2 = keep.attach(world.slug, world.registry.get(world.slug), gen)
@@ -413,10 +423,15 @@ def test_reconcile_fails_a_runner_from_before_the_last_boot(tmp_path, monkeypatc
         await asyncio.sleep(0.05)
         waiting = job2.status
         job2.watcher.cancel()
-        return attached, waiting
+        return attached, rebooted, waiting
 
-    attached, waiting = asyncio.run(scenario())
-    assert attached.status == "failed" and "rebooted" in attached.error
+    attached, rebooted, waiting = asyncio.run(scenario())
+    assert rebooted[0] == "failed" and "rebooted" in rebooted[1]
+    assert attached.retried is True and attached.status == "failed" and "exited with code" in attached.error
+    world.registry.invalidate(world.slug)
+    rec = world.store.read_generation(world.registry.get(world.slug), attached.id)
+    notes = [w["detail"] for w in rec.warnings if w["kind"] == "runner"]
+    assert any("rebooted" in n for n in notes) and any(n.startswith("queued again") for n in notes)
     assert waiting == "running"
 
 
@@ -453,7 +468,8 @@ def test_generate_over_http_lands_take(tmp_path):
 
         after = client.get(f"{base}/bins/{world.image}").json()
         assert after["active_jobs"] == []
-        assert [t["id"] for t in after["media"]][0] == job["takes"][0] and after["selected"] == job["takes"][0]  # newest first
+        assert [t["id"] for t in after["media"]][0] == job["takes"][0]  # newest first
+        assert after["selected"] != job["takes"][0] and after["bin"]["selected"] != job["takes"][0]  # new, not the winner
         assert after["media"][0]["take"] == 2
         # a landed take is new until the user looks at it; the explorer's card says so too
         assert after["bin"]["unseen"] == job["takes"]
@@ -469,7 +485,7 @@ def test_generate_over_http_lands_take(tmp_path):
         assert rec["status"] == "done" and rec["outputs"] == job["takes"]
         assert client.get(f"{base}/generations/g_nope").status_code == 404
         card = next(c for c in client.get("/api/projects").json() if c["slug"] == world.slug)
-        assert card["image_count"] == 4 and card["hero"]["id"] == job["takes"][0]
+        assert card["image_count"] == 4 and card["hero"]["id"] == world.take  # the bin's chosen take, not the newest
 
 
 def test_generations_stack_on_a_bin_and_need_an_output_root(tmp_path):
@@ -531,9 +547,13 @@ def test_held_generations_wait_for_release(tmp_path):
         assert launch.seen == [] and client.get(f"{base}/jobs").json() == []
         held = client.get(f"{base}/generations", params={"status": "held"}).json()
         assert [g["id"] for g in held] == ids and held[0]["prompt_submitted"] == "first"
+        # a saved render's settings recall before it has a take
+        rec = client.get(f"{base}/generations/{ids[0]}/recipe").json()
+        assert rec["found"] and rec["prompt"] == "first" and rec["generation"] == ids[0]
+        assert client.get(f"{base}/generations/g_nope/recipe").status_code == 404
         assert client.get(f"{base}/bins/{world.image}").json()["active_jobs"] == []
 
-        r = client.post(f"{base}/held/release")
+        r = client.post("/api/held/release")
         assert r.status_code == 200, r.text
         assert [j["job"] for j in r.json()] == ids and all(j["queued_by"] == "user" for j in r.json())
         assert [_spec_arg(cmd)["prompt"] for cmd in launch.seen][0] == "first"
@@ -541,7 +561,7 @@ def test_held_generations_wait_for_release(tmp_path):
         jobs = _wait_for(client, f"{base}/jobs", lambda js: len(js) == 2 and all(j["status"] in ("done", "failed") for j in js))
         assert {j["job"]: j["status"] for j in jobs} == {ids[0]: "done", ids[1]: "done"}
         # nothing left to release: a no-op, not an error
-        assert client.post(f"{base}/held/release").json() == []
+        assert client.post("/api/held/release").json() == []
 
 
 def test_held_generation_discard_and_refusals(tmp_path):
@@ -574,7 +594,7 @@ def test_held_generation_discard_and_refusals(tmp_path):
     with TestClient(app2) as client:
         assert client.get(f"{base}/jobs").json() == []
         assert [g["id"] for g in client.get(f"{base}/generations", params={"status": "held"}).json()] == [orphan]
-        assert client.post(f"{base}/held/release").json() == []  # the orphan's bin is gone: discarded, not launched
+        assert client.post("/api/held/release").json() == []  # the orphan's bin is gone: discarded, not launched
         assert launch.seen == []
         rec = client.get(f"{base}/generations/{orphan}").json()
         assert rec["status"] == "cancelled" and rec["warnings"][-1]["kind"] == "discarded"
@@ -686,6 +706,7 @@ def test_runner_timeout_is_landed_late_when_comfy_finishes_anyway(tmp_path):
     project = world.registry.get(world.slug)
     take = project.media_by_id[job.takes[0]]
     assert take.origin.generation == gen.id and take.id in project.bins_by_id[world.image].media
+    assert take.origin.exec_seconds == 3725.0
     rec = world.store.read_generation(project, gen.id)
     assert rec.status == "done" and rec.outputs == job.takes
     assert rec.exec_seconds == 3725.0 and job.exec_seconds == 3725.0  # ComfyUI's clock, read off the history entry
@@ -854,3 +875,121 @@ def test_late_prompt_state_by_id_and_by_label():
     assert late_prompt_state("http://c:8188", "p", "g_pend", None, transport=tr) == ("gone", None, None)  # other project's
     assert late_prompt_state("http://c:8188", "p", "g_nope", None, transport=tr) == ("gone", None, None)
     assert late_prompt_state("http://c:8188", "p", "g_abc", "vanished", transport=tr) == ("gone", None, None)
+
+
+def test_clear_button_drops_every_new_marker_in_a_bin(tmp_path):
+    world = seeded_world(tmp_path)
+    world.settings.comfy.output_root = str(tmp_path / "comfy_out")
+    app = create_app(world.settings, web_dist=tmp_path / "nodist", jobs_kwargs={"launch": completing_launcher((5, 5, 250)), "poll_interval": 0.01})
+    base = f"/api/projects/{world.slug}"
+    with TestClient(app) as client:
+        gen = client.post(f"{base}/commands/generate", json={"bin": world.image}).json()["generation"]["id"]
+        _wait_for(client, f"{base}/jobs", lambda js: any(j["job"] == gen and j["status"] == "done" for j in js))
+        assert client.get(f"{base}/bins/{world.image}").json()["bin"]["unseen"]
+        out = client.post(f"{base}/bins/{world.image}/seen")
+        assert out.status_code == 200 and out.json()["cleared"]
+        assert client.get(f"{base}/bins/{world.image}").json()["bin"]["unseen"] == []
+        assert client.post(f"{base}/bins/{world.image}/seen").json()["cleared"] == []
+        assert client.post(f"{base}/bins/b_nope/seen").status_code == 404
+
+
+def test_agent_seen_verb_clears_named_media(tmp_path):
+    world = seeded_world(tmp_path)
+    world.settings.comfy.output_root = str(tmp_path / "comfy_out")
+    app = create_app(world.settings, web_dist=tmp_path / "nodist", jobs_kwargs={"launch": completing_launcher((5, 5, 250)), "poll_interval": 0.01})
+    base = f"/api/projects/{world.slug}"
+    with TestClient(app) as client:
+        gen = client.post(f"{base}/commands/generate", json={"bin": world.image}).json()["generation"]["id"]
+        jobs = _wait_for(client, f"{base}/jobs", lambda js: any(j["job"] == gen and j["status"] == "done" for j in js))
+        take = next(j for j in jobs if j["job"] == gen)["takes"][0]
+        assert client.post(f"{base}/media/seen", json={"media": ["m_nope"]}).status_code == 404
+        out = client.post(f"{base}/media/seen", json={"media": [take]})
+        assert out.status_code == 200 and take in out.json()["cleared"]
+        assert client.get(f"{base}/bins/{world.image}").json()["bin"]["unseen"] == []
+        assert client.post(f"{base}/media/seen", json={"media": [take]}).json()["cleared"] == []
+        gen2 = client.post(f"{base}/commands/generate", json={"bin": world.image}).json()["generation"]["id"]
+        _wait_for(client, f"{base}/jobs", lambda js: any(j["job"] == gen2 for j in js))
+        assert client.post(f"{base}/media/seen", json={"all": True}).status_code == 200
+        assert client.get(f"{base}/bins/{world.image}").json()["bin"]["unseen"] == []
+
+
+def test_release_is_one_queue_across_projects_oldest_first(tmp_path):
+    """Saving for later is GPU management: one release starts every project's saves, interleaved
+    by when they were saved, and the project cards carry each project's count for the bar."""
+    world = seeded_world(tmp_path)
+    world.settings.comfy.output_root = str(tmp_path / "comfy_out")
+    launch = completing_launcher((5, 5, 250))
+    app = create_app(world.settings, web_dist=tmp_path / "nodist", jobs_kwargs={"launch": launch, "poll_interval": 0.01})
+    a = f"/api/projects/{world.slug}"
+    with TestClient(app) as client:
+        other = client.post("/api/projects", json={"name": "Second Thing"}).json()["slug"]
+        b = f"/api/projects/{other}"
+        made = client.post(f"{b}/commands/create_bin", json={"bin_name": "Pic", "workflow": "img.json"}).json()["change"]
+        pic = next(iter(made["after"]["bins_by_id"]))
+        a1 = client.post(f"{a}/commands/generate", json={"bin": world.image, "hold": True}).json()["generation"]["id"]
+        b1 = client.post(f"{b}/commands/generate", json={"bin": pic, "hold": True}).json()["generation"]["id"]
+        a2 = client.post(f"{a}/commands/generate", json={"bin": world.image, "hold": True}).json()["generation"]["id"]
+        # saved a second apart, in the order a1, b1, a2
+        for slug, gid, ts in ((world.slug, a1, "2026-10-09T10:00:01Z"), (other, b1, "2026-10-09T10:00:02Z"), (world.slug, a2, "2026-10-09T10:00:03Z")):
+            p = world.store.load(slug)
+            g = world.store.read_generation(p, gid)
+            world.store.append_generation(p, g.model_copy(update={"ts": ts}))
+        cards = {c["slug"]: c["held"] for c in client.get("/api/projects").json()}
+        assert cards[world.slug] == 2 and cards[other] == 1
+
+        assert client.post("/api/held/release", headers={"X-THM-Actor": "agent"}).status_code == 403
+        r = client.post("/api/held/release")
+        assert r.status_code == 200, r.text
+        assert [j["job"] for j in r.json()] == [a1, b1, a2]
+        assert {c["slug"]: c["held"] for c in client.get("/api/projects").json()}[other] == 0
+        assert client.post("/api/held/release").json() == []
+
+
+def test_a_render_waits_for_comfyui_instead_of_failing(tmp_path, monkeypatch):
+    """Queued while ComfyUI is down (a restart, a reboot): the render waits, says so, and starts
+    by itself when ComfyUI answers again -- it is never failed for it."""
+    import thm_server.jobs as jobs_mod
+
+    monkeypatch.setattr(jobs_mod, "COMFY_WAIT_POLL_S", 0.05)
+    up = {"now": False}
+    world = seeded_world(tmp_path)
+    world.settings.comfy.output_root = str(tmp_path / "comfy_out")
+    launch = completing_launcher((5, 5, 250))
+    app = create_app(world.settings, web_dist=tmp_path / "nodist", jobs_kwargs={"launch": launch, "poll_interval": 0.01, "comfy_up": lambda _b: up["now"]})
+    base = f"/api/projects/{world.slug}"
+    with TestClient(app) as client:
+        gen = client.post(f"{base}/commands/generate", json={"bin": world.image}).json()["generation"]["id"]
+        jobs = _wait_for(client, f"{base}/jobs", lambda js: any(j["job"] == gen for j in js))
+        job = next(j for j in jobs if j["job"] == gen)
+        assert job["status"] == "queued" and "waiting for ComfyUI" in (job["task"] or "") and launch.seen == []
+        up["now"] = True
+        jobs = _wait_for(client, f"{base}/jobs", lambda js: any(j["job"] == gen and j["status"] == "done" for j in js))
+        assert len(launch.seen) == 1
+
+
+def test_a_render_card_counts_as_waiting_only_once_its_take_is_in(tmp_path, monkeypatch):
+    """In a review mode a render is a card, but the panel's count of cards waiting on the user
+    leaves it out while it renders (or waits for later): nothing to judge yet."""
+    import thm_server.jobs as jobs_mod
+    from thm_core_fixtures import live_session
+
+    monkeypatch.setattr(jobs_mod, "COMFY_WAIT_POLL_S", 0.05)
+    world = seeded_world(tmp_path)
+    world.settings.comfy.output_root = str(tmp_path / "comfy_out")
+    project = world.store.load(world.slug)
+    live_session(project)  # image_review: every take is a card
+    world.store.save(project)
+    world.registry.invalidate(world.slug)
+    up = {"now": False}
+    app = create_app(world.settings, web_dist=tmp_path / "nodist", jobs_kwargs={"launch": completing_launcher((7, 7, 7)), "poll_interval": 0.01, "comfy_up": lambda _b: up["now"]})
+    base = f"/api/projects/{world.slug}"
+    agent = {"X-THM-Actor": "agent", "X-THM-Session": "as_test"}
+    with TestClient(app) as client:
+        cursor = client.get(f"{base}/inbox").json()["cursor"]
+        r = client.post(f"{base}/commands/generate", json={"bin": world.image}, headers={**agent, "X-THM-Inbox-Cursor": str(cursor)})
+        assert r.status_code == 200, r.text and r.json()["change"]["decision"]["status"] == "pending"
+        gen = r.json()["generation"]["id"]
+        assert client.get(base).json()["pending_changes"] == 0  # waiting on ComfyUI: nothing to judge
+        up["now"] = True
+        _wait_for(client, f"{base}/jobs", lambda js: any(j["job"] == gen and j["status"] == "done" for j in js))
+        assert client.get(base).json()["pending_changes"] == 1  # the take is in: now it waits on you

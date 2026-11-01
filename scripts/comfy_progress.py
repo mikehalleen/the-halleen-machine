@@ -219,6 +219,7 @@ class PromptTracker:
     def wait(
         self, prompt_id: str, timeout_s: float, *, history_poll_s: float = 1.0, queue_poll_s: float = 2.0,
         settle_s: float = 0.0, get=None, lost_after_s: float = 120.0, heartbeat_s: float = 60.0,
+        stop: Callable[[], bool] | None = None,
     ):
         """Pump until ``/history/<prompt_id>`` has the entry; return it, or None when giving up.
 
@@ -227,7 +228,9 @@ class PromptTracker:
         at submission -- a prompt waiting behind others is not timing out. A prompt that is in
         neither the queue nor history for ``lost_after_s`` was dropped (ComfyUI restarted) and
         is given up on too. ``self.gave_up`` says which. ``heartbeat_s`` re-emits the unchanged
-        snapshot so the status file's ``last_update`` moves while nothing else does.
+        snapshot so the status file's ``last_update`` moves while nothing else does. ``stop``,
+        polled each turn, ends the wait early (``gave_up = "cancelled"``) when it returns True;
+        the caller has told ComfyUI to drop the prompt, or is about to.
         """
         self.prompt_id = str(prompt_id)
         getter = get or requests.get
@@ -237,6 +240,9 @@ class PromptTracker:
         self.gave_up = None
         self._emit(force=True)
         while True:
+            if stop is not None and stop():
+                self.gave_up = "cancelled"
+                return None
             now = time.time()
             if self.exec_started_at is not None and now - self.exec_started_at >= timeout_s:
                 self.gave_up = f"timed out after {timeout_s:.0f}s of execution"

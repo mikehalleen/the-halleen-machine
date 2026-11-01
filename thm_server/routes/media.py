@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
 from thm_core import Media, Project, ensure_thumbnails, thumb_cache_dir
+from thm_core.commands import CommandRefused, clear_unseen_all, clear_unseen_for
 from thm_core.media import SHEET_MAX_FRAMES, contact_sheet
 from thm_core.models import MediaType
 from thm_core.workflow_names import resolve_curated_workflow
@@ -19,7 +20,7 @@ from ..deps import state
 from ..derive import newest_first
 from ..errors import ApiError
 from ..recover import recover_media
-from ..schemas import MediaPage, RecipeOut, SeenOut
+from ..schemas import BinSeenOut, MediaPage, RecipeOut, SeenManyIn, SeenManyOut, SeenOut
 
 router = APIRouter(tags=["media"])
 
@@ -45,16 +46,63 @@ async def mark_seen(slug: str, media_id: str, request: Request):
         st.bus.publish(slug, version)
     return SeenOut(media=media_id, cleared=cleared, project_version=version)
 
+@router.post("/api/projects/{slug}/media/seen", response_model=SeenManyOut)
+async def mark_many_seen(slug: str, body: SeenManyIn, request: Request):
+    """The agent shows the user these media inside something they were given (an assembly):
+    their new markers go, and so do those of everything they were made from."""
+    st = state(request)
+    async with st.registry.lock(slug):
+        project = st.registry.get(slug)
+        try:
+            cleared = await run_in_threadpool(
+                clear_unseen_all if body.all else clear_unseen_for, st.store, project, *([] if body.all else [body.media])
+            )
+        except CommandRefused as e:
+            raise ApiError(404, e.code, e.detail) from e
+        version = st.registry.touch(slug) if cleared else st.registry.version(slug)
+    if cleared:
+        st.bus.publish(slug, version)
+    return SeenManyOut(cleared=cleared, project_version=version)
+
+
+@router.post("/api/projects/{slug}/bins/{bin_id}/seen", response_model=BinSeenOut)
+async def clear_bin_seen(slug: str, bin_id: str, request: Request):
+    """The user dismissed every new marker in this bin, whatever the media type."""
+    st = state(request)
+    async with st.registry.lock(slug):
+        project = st.registry.get(slug)
+        bin_ = project.bins_by_id.get(bin_id)
+        if bin_ is None:
+            raise ApiError(404, "unknown_id", f"no bin {bin_id}")
+        cleared = list(bin_.unseen)
+        if cleared:
+            bin_.unseen = []
+            await run_in_threadpool(st.store.save, project)
+            version = st.registry.touch(slug)
+        else:
+            version = st.registry.version(slug)
+    if cleared:
+        st.bus.publish(slug, version)
+    return BinSeenOut(bin=bin_id, cleared=cleared, project_version=version)
+
+
 _MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".gif": "image/gif",
     ".mp4": "video/mp4",
     ".m4v": "video/x-m4v",
     ".mov": "video/quicktime",
     ".webm": "video/webm",
     ".mkv": "video/x-matroska",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
 }
 IMMUTABLE = "private, max-age=31536000, immutable"
 
@@ -133,6 +181,22 @@ async def media_recipe(slug: str, media_id: str, request: Request):
             return RecipeOut()
         st.bus.publish(slug, version)
         gen = rec.generation
+    return _recipe(st, project, gen)
+
+
+@router.get("/api/projects/{slug}/generations/{gen_id}/recipe", response_model=RecipeOut)
+async def generation_recipe(slug: str, gen_id: str, request: Request):
+    """The settings of a generation that has no take yet -- rendering now, or saved for later --
+    for recall into a bin, so the bin can be used for something else meanwhile and come back."""
+    st = state(request)
+    project = st.registry.get(slug)
+    gen = st.store.read_generation(project, gen_id)
+    if gen is None:
+        raise ApiError(404, "unknown_id", f"no generation {gen_id}", {"type": "generation", "id": gen_id})
+    return _recipe(st, project, gen)
+
+
+def _recipe(st, project: Project, gen) -> RecipeOut:
     wanted = [r for r in gen.references if r.media]
     kept = [r for r in wanted if r.media in project.media_by_id]
     seed = gen.params.get("seed")
@@ -152,13 +216,19 @@ async def media_recipe(slug: str, media_id: str, request: Request):
         loras=list(gen.loras),
         seed=int(seed) if isinstance(seed, (int, float)) else None,
         length_s=float(length) if isinstance(length, (int, float)) else None,
+        width=int(gen.params["width"]) if isinstance(gen.params.get("width"), (int, float)) else None,
+        height=int(gen.params["height"]) if isinstance(gen.params.get("height"), (int, float)) else None,
+        draft=bool(gen.params.get("draft")),
+        quarter=bool(gen.params.get("quarter")),
         exec_seconds=gen.exec_seconds,
         recovered=bool(gen.recovered_from),
     )
 
 
 @router.get("/media/{slug}/{media_id}/file", include_in_schema=True)
-async def media_file(slug: str, media_id: str, request: Request):
+async def media_file(slug: str, media_id: str, request: Request, download: bool = False):
+    """The original file, byte for byte. ``download=1`` asks the browser to save it under its
+    own name and format rather than show it."""
     st = state(request)
     media = _media_or_404(st.registry.get(slug), media_id)
     path = Path(media.path)
@@ -167,7 +237,7 @@ async def media_file(slug: str, media_id: str, request: Request):
     headers = {"Cache-Control": IMMUTABLE if media.sha256 else "no-cache"}
     if media.sha256:
         headers["ETag"] = f'"{media.sha256}"'
-    return FileResponse(str(path), media_type=_mime_for(path), filename=path.name, headers=headers, content_disposition_type="inline")
+    return FileResponse(str(path), media_type=_mime_for(path), filename=path.name, headers=headers, content_disposition_type="attachment" if download else "inline")
 
 
 @router.get("/media/{slug}/{media_id}/thumb", include_in_schema=True)
@@ -185,7 +255,7 @@ async def media_thumb(slug: str, media_id: str, request: Request, size: Literal[
         async with st.registry.lock(slug):
             st.store.save(project)
             st.registry.touch(slug)
-    key = "detail" if (media.type == "image" and size == "poster") else size
+    key = "detail" if (media.type in ("image", "audio") and size == "poster") else size
     path = made.get(key)
     if path is None:
         raise ApiError(500, "thumb_failed", f"could not derive {size} for {media.path}")
@@ -202,7 +272,7 @@ async def media_frames(slug: str, media_id: str, request: Request, n: int = Quer
     project = st.registry.get(slug)
     media = _media_or_404(project, media_id)
     if media.type != "video":
-        raise ApiError(422, "bad_value", f"{media_id} is not a video; use thumb")
+        raise ApiError(422, "not_video", f"{media_id} is {media.type}, not a video; use thumb")
     cache = thumb_cache_dir(st.store, project)
     had_sha = bool(media.sha256)
     try:

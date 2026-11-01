@@ -1131,6 +1131,7 @@ class VideoWorkflowScan:
                 "workflow_baked_sigma_schedules": list(video.workflow_baked_sigma_schedules) if video else [],
                 "has_partner_node": bool(video and video.has_partner_node),
                 "partner_node_classes": list(video.partner_node_classes) if video else [],
+                "partner_duration_writable": bool(video and video.partner_duration_writable),
                 "video_reference_count": int(video.video_reference_count) if video else 0,
                 "video_reference_node_ids": list(video.video_reference_node_ids) if video else [],
             },
@@ -1295,7 +1296,9 @@ def partner_hint_texts(scan: VideoWorkflowScan | None) -> dict[str, Any] | None:
     Returns None when the scanned workflow has no partner node. Keys:
     ``summary`` (provider/duration/size line), ``api_key_warning`` (str or None),
     ``sizing`` (suggested image size line or None), ``time_locked`` (True when
-    the workflow offers no THM-drivable duration — length is baked in the node).
+    the workflow offers no THM-drivable duration — length is baked in the node;
+    a partner node with a whole-seconds ``duration`` field takes the bin's length,
+    so it is not locked and the baked value is only the default shown).
     """
     if not scan or scan.error or not scan.video:
         return None
@@ -1306,6 +1309,8 @@ def partner_hint_texts(scan: VideoWorkflowScan | None) -> dict[str, Any] | None:
     pm = scan.partner_metadata or {}
     duration = pm.get("duration_sec")
     dur_label = f"{duration:g}s" if duration is not None else "unknown"
+    duration_driven = bool(vc.partner_duration_writable)
+    dur_kind = "default duration" if duration_driven else "baked duration"
     width, height = pm.get("width"), pm.get("height")
     if width and height:
         size_label = f"{width}x{height}"
@@ -1313,7 +1318,7 @@ def partner_hint_texts(scan: VideoWorkflowScan | None) -> dict[str, Any] | None:
         size_label = f"height {height} (width adaptive)"
     else:
         size_label = "adaptive (follows input image)"
-    summary = f"Partner API workflow ({provider}) — baked duration: {dur_label} — size: {size_label}"
+    summary = f"Partner API workflow ({provider}) — {dur_kind}: {dur_label} — size: {size_label}"
 
     api_key_warning = None
     if not os.environ.get("THM_COMFY_API_KEY", "").strip():
@@ -1329,7 +1334,7 @@ def partner_hint_texts(scan: VideoWorkflowScan | None) -> dict[str, Any] | None:
             f"center-crops keyframes to fit the video at run time)."
         )
 
-    time_locked = not (vc.has_frame_count or vc.has_video_generator)
+    time_locked = not (vc.has_frame_count or vc.has_video_generator or duration_driven)
     return {
         "summary": summary,
         "api_key_warning": api_key_warning,

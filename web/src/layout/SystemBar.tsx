@@ -1,35 +1,67 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AGENT_FRESH_S, useAgentIdle } from "../api/client";
-import type { AgentActivityOut, JobOut, ProjectCard, ProjectDetail } from "../api/types";
+import { useHealth } from "../api/client";
+import type { JobOut, ProjectCard, ProjectDetail } from "../api/types";
 import { jobStepLabel } from "../components/JobProgress";
 import { LATER_GLYPH } from "../components/LaterToggle";
-import { modeLabel } from "./modes";
+import { VeilGlyph } from "../components/VeilGlyph";
 import type { Veil } from "./veil";
 
-/** The render that has the bar's line, wherever it is. */
+/** The bar's leading status dot, as a link to the ComfyUI renders go to (a new tab), when its
+ * address is known: one click from any screen to the machine's queue. */
+function StatusDot({ className, url }: { className: string; url: string }) {
+  if (!url) return <span className={`dot ${className}`} />;
+  return (
+    <a className="dot-link" href={url} target="_blank" rel="noopener noreferrer" title={`open ComfyUI (${url}) in a new tab`} aria-label="Open ComfyUI in a new tab">
+      <span className={`dot ${className}`} />
+    </a>
+  );
+}
+
+/** The render that has the bar's line: the machine's, whichever project it is for. */
 export interface BarRender {
   job: JobOut;
-  /** Named only for another project's render; this project's says the bin alone. */
-  projectName: string | null;
+  /** The project it is for; a private one gives its name and nothing more (no bin). */
+  projectName: string;
+  /** Where the names link: the project, and its bin (none for a private one). */
+  slug: string;
+  binId: string | null;
+  binName: string | null;
+  /** Everything else waiting on the machine, every project. */
   queueDepth: number;
-  isCurrent: boolean;
 }
 
 /**
- * The tenant ranking's first two rungs: a render in this project outranks one elsewhere. The
- * live list is oldest first; the running one is the line, a queued one stands in until then.
+ * The bar's line: what ComfyUI is running now, in any project, else the first thing queued.
+ * No project is favoured: the open one's live jobs (event-fed, fresher than its card) stand in
+ * for its card and are ranked with everyone else's. A private project shows its name only.
  */
 export function pickRender(slug: string | undefined, liveJobs: JobOut[] | undefined, cards: ProjectCard[] | undefined): BarRender | null {
-  if (slug && liveJobs && liveJobs.length) {
-    const job = liveJobs.find((j) => j.status === "running") ?? liveJobs[0];
-    return { job, projectName: null, queueDepth: liveJobs.length - 1, isCurrent: true };
+  const pool: { job: JobOut; card: ProjectCard }[] = [];
+  let total = 0;
+  for (const card of cards ?? []) {
+    if (card.slug === slug && liveJobs) {
+      total += liveJobs.length;
+      for (const job of liveJobs) pool.push({ job, card });
+    } else if (card.generating_job && card.generating > 0) {
+      total += card.generating;
+      pool.push({ job: card.generating_job, card });
+    }
   }
-  for (const p of cards ?? []) {
-    if (p.slug === slug || !p.generating_job || p.generating <= 0) continue;
-    return { job: p.generating_job, projectName: p.name, queueDepth: p.generating - 1, isCurrent: false };
-  }
-  return null;
+  // "running" covers a job ComfyUI has accepted but not started (phase still "queued"): the one
+  // actually executing wins, then one handed over, then the first still waiting here
+  const executing = (j: JobOut) => j.status === "running" && (j.phase ?? "") !== "queued";
+  const pick = pool.find((x) => executing(x.job)) ?? pool.find((x) => x.job.status === "running") ?? pool[0];
+  if (!pick) return null;
+  const priv = !!pick.card.private;
+  return {
+    job: pick.job,
+    projectName: pick.card.name,
+    slug: pick.card.slug,
+    binId: priv ? null : pick.job.bin || null,
+    binName: priv ? null : pick.job.bin_name || null,
+    queueDepth: Math.max(0, total - 1),
+  };
 }
 
 /** 0..100 for the wash and the edge: the step when there is one, else the runner's percent. */
@@ -43,27 +75,35 @@ export function renderProgress(job: JobOut): number {
 /** SAMPLING, DECODING, QUEUED… the phase as the bar's word. */
 export function phaseWord(job: JobOut): string {
   if (job.status === "queued") return "QUEUED";
+  if (job.stalled) return "STALLED"; // no progress for a while: the feed has the alert line
   const phase = (job.phase ?? "").trim();
   if (phase && phase !== "queued") return phase.toUpperCase();
   if (phase === "queued") return "QUEUED";
-  return (job.task ?? "rendering").toUpperCase();
+  return (job.task ?? "generating").toUpperCase();
 }
 
 export interface Elsewhere {
-  /** sessions waiting or live on other projects */
+  /** sessions waiting or live, every project */
   live: number;
-  /** pending cards + open blockers on other projects' sessions */
+  /** pending cards + open blockers on every project's session */
   needsYou: number;
 }
 
-export function summarizeElsewhere(cards: ProjectCard[] | undefined, current: string | undefined): Elsewhere {
+/** What one project is asking of you: a session that is up, and how many things it owes an
+ * answer on. The bar sums these over every project; the project list shows them per row, so
+ * `1 needs you · 3 sessions live` can be traced to the project it came from. */
+export function projectAttention(p: ProjectCard): Elsewhere {
+  const s = p.agent_session?.status;
+  if (s !== "live" && s !== "waiting") return { live: 0, needsYou: 0 };
+  return { live: 1, needsYou: p.pending_changes + (p.blocker ? 1 : 0) };
+}
+
+export function summarizeAll(cards: ProjectCard[] | undefined): Elsewhere {
   const out: Elsewhere = { live: 0, needsYou: 0 };
   for (const p of cards ?? []) {
-    if (p.slug === current) continue;
-    const s = p.agent_session?.status;
-    if (s !== "live" && s !== "waiting") continue;
-    out.live += 1;
-    out.needsYou += p.pending_changes + (p.blocker ? 1 : 0);
+    const one = projectAttention(p);
+    out.live += one.live;
+    out.needsYou += one.needsYou;
   }
   return out;
 }
@@ -74,38 +114,33 @@ interface Props {
   projects?: ProjectCard[];
   /** This project's live renders, oldest first (event-fed). */
   liveJobs?: JobOut[];
-  activity?: AgentActivityOut | null;
   /** Server-wide: is an agent CLI running. Undefined while unknown, which reads as available. */
   agentAvailable?: boolean;
   panelOpen: boolean;
   /** Below 760: the bar sheds words, the toggle reads ▣ / ▣ close. */
   phone: boolean;
   starting?: boolean;
-  /** This project's saved group: generations held for later. The pill releases them all. */
+  /** The machine's saved group: generations held for later in every project. The pill releases them all, oldest first. */
   heldCount?: number;
   releasing?: boolean;
   onRelease?: () => void;
   onTogglePanel: () => void;
   onStart: () => void;
-  /** After a session ends: `31 changes` opens the panel read-only. */
-  onOpenTranscript: () => void;
   /** A private project's veil over its pictures: on a phone the bar carries the pill that lifts it. */
   veil?: Veil;
 }
 
 /**
- * The system bar: the machine's, on every screen. It reports ComfyUI renders and queue depth
- * whether or not an agent is installed; the agent is a tenant in it. One tenant has the line
- * at a time -- render here, render elsewhere, agent phrase, counts, else `idle · 0 queued` --
- * and the loser collapses to a chip. Blockers never take the line: the whole signal is an
- * amber count on the panel toggle. The right end is the agent's only front door in the app.
+ * The system bar: the machine's, on every screen, and about no one project. It reports what
+ * ComfyUI is rendering (whichever project it is for) and how deep the queue is, how many
+ * sessions are up and how many things wait on you across every project. The open project's own
+ * state lives in the screen and its panel; the right end is only the panel's door.
  */
 export function SystemBar({
   slug,
   project,
   projects,
   liveJobs,
-  activity,
   agentAvailable,
   panelOpen,
   phone,
@@ -115,24 +150,16 @@ export function SystemBar({
   onRelease,
   onTogglePanel,
   onStart,
-  onOpenTranscript,
   veil,
 }: Props) {
   const session = project?.agent_session ?? null;
   const status = session?.status ?? "none";
   const sessionOn = status === "waiting" || status === "live";
-  const ended = status === "ended";
   const pending = (project?.pending_changes ?? 0) + (project?.blocker ? 1 : 0);
-  const idle = useAgentIdle(activity);
-  const doing = (activity?.doing ?? "").trim();
-  // "waiting for you" is the agent's watch verb: standing by, not working
-  const working = status === "live" && idle != null && idle < AGENT_FRESH_S && !!doing && !/^waiting/i.test(doing);
-  const phrase = status === "waiting" ? "connecting…" : working ? doing : pending > 0 ? `holding · ${pending} pending` : "standing by";
 
   const render = pickRender(slug, liveJobs, projects);
   const progress = render ? renderProgress(render.job) : 0;
-  const elsewhere = summarizeElsewhere(projects, slug);
-  const queued = slug ? (liveJobs?.length ?? 0) : (projects ?? []).reduce((n, p) => n + p.generating, 0);
+  const all = summarizeAll(projects);
   const absent = agentAvailable === false && !sessionOn;
   // a private project has no agent: the server hides it from the agent and refuses its calls,
   // so the bar offers no Start, the same way it offers none when no agent CLI is running
@@ -156,52 +183,43 @@ export function SystemBar({
     };
   }, [explain]);
 
-  const dotClass = working ? "is-working" : "is-standby";
+  // this project's ComfyUI when it names one, else the server's
+  const health = useHealth();
+  const comfyUrl = (project?.comfy?.api_base || health.data?.comfy_url || "").trim();
 
   const line = render ? (
     <span className="bar-line" aria-live="polite">
-      <span className={`dot ${render.isCurrent ? "is-render" : "is-render-remote"}`} />
+      <StatusDot className="is-render" url={comfyUrl} />
       <span className="bar-word">{phaseWord(render.job)}</span>
       {jobStepLabel(render.job) && <span className="bar-step">{jobStepLabel(render.job)}</span>}
       <span className="bar-sep">·</span>
-      {render.isCurrent ? (
-        <span className="bar-bin">{render.job.bin_name || binName(project, render.job.bin)}</span>
-      ) : (
+      <Link to={`/p/${encodeURIComponent(render.slug)}`} className="bar-project" title={`open ${render.projectName}`}>
+        {render.projectName}
+      </Link>
+      {render.binName && (
         <>
-          <span className="bar-project">{render.projectName}</span>
-          {/* a private project's card carries no bin name: the project alone, no "/ bin" stand-in */}
-          {render.job.bin_name && (
-            <>
-              <span className="bar-sep">/</span>
-              <span className="bar-remote-bin">{render.job.bin_name}</span>
-            </>
+          <span className="bar-sep">/</span>
+          {render.binId ? (
+            <Link to={`/p/${encodeURIComponent(render.slug)}/b/${encodeURIComponent(render.binId)}`} className="bar-remote-bin" title={`open ${render.binName}`}>
+              {render.binName}
+            </Link>
+          ) : (
+            <span className="bar-remote-bin">{render.binName}</span>
           )}
         </>
       )}
       {render.queueDepth > 0 && <span className="bar-queued">{phone ? `+${render.queueDepth}` : `+${render.queueDepth} queued`}</span>}
-      {render.isCurrent && render.job.queued_by && <span className="bar-attrib">queued by {render.job.queued_by === "agent" ? "agent" : "you"}</span>}
     </span>
-  ) : sessionOn && session ? (
-    <span className="bar-line" aria-live="polite">
-      <span className={`dot ${dotClass}`} />
-      <span className="bar-word">AGENT</span>
-      <span className="bar-phrase">{phrase}</span>
-    </span>
-  ) : ended ? (
+  ) : (
     <span className="bar-line">
-      <span className="dot is-ended" />
-      <span className="bar-ended">session ended</span>
-      <span className="bar-sep">·</span>
-      <button type="button" className="bar-link" onClick={onOpenTranscript} title="open the session's transcript">
-        {project?.session_changes ?? 0} {project?.session_changes === 1 ? "change" : "changes"}
-      </button>
+      <StatusDot className="is-standby" url={comfyUrl} />
+      <span className="bar-idle">idle</span>
     </span>
-  ) : absent || locked ? null : (
-    <span className="bar-idle">idle · {queued} queued</span>
   );
 
-  const showElsewhere = elsewhere.live > 0 || elsewhere.needsYou > 0;
-  const liveWord = slug ? "live elsewhere" : elsewhere.live === 1 ? "session live" : "sessions live";
+  const showAll = all.live > 0 || all.needsYou > 0;
+  // leaving with the panel open: Home sends a project that owes you something straight back into it
+  const homeState = panelOpen ? { fromAgent: true } : undefined;
 
   let control: JSX.Element | null = null;
   if (locked) {
@@ -219,16 +237,16 @@ export function SystemBar({
       </button>
     );
   } else if (sessionOn) {
-    const label = phone ? (panelOpen ? "▣ close" : "▣") : "▣ panel";
     control = (
       <button
         type="button"
         className={`bar-pill bar-toggle ${panelOpen ? "is-open" : ""}`}
         onClick={onTogglePanel}
         aria-pressed={panelOpen}
+        aria-label={panelOpen ? "close the agent panel" : "open the agent panel"}
         title={panelOpen ? "close the panel — the session keeps running" : pending ? `${pending} waiting for you: open the panel` : "open the agent panel"}
       >
-        {label}
+        <PanelGlyph open={panelOpen} />
         {pending > 0 && <span className="badge-amber">{pending}</span>}
       </button>
     );
@@ -242,51 +260,45 @@ export function SystemBar({
   }
 
   return (
-    <div className={`bar ${render && !render.isCurrent ? "is-remote" : ""}`} role="status">
+    <div className="bar" role="status">
       {render && (
         <>
           <span className="bar-wash" style={{ width: `${progress}%` }} aria-hidden="true" />
           <span className="bar-edge" style={{ width: `${progress}%` }} aria-hidden="true" />
         </>
       )}
-      <Link to="/" className="bar-home" aria-label="Home" title="projects">
+      <Link to="/" state={homeState} className="bar-home" aria-label="Home" title="projects">
         <img src="/apple-touch-icon.png" alt="" />
       </Link>
       {line}
       <span className="spacer" />
-      {showElsewhere && (
+      {showAll && (
         <span className="bar-elsewhere">
-          {elsewhere.live > 0 && (
-            <span className="bar-count">
-              {!slug && <span className="dot is-working" aria-hidden="true" />}
-              {elsewhere.live} {liveWord}
-            </span>
+          {all.needsYou > 0 && (
+            <Link to="/" state={homeState} className="bar-count is-link" title="projects: see which ones are waiting on you">
+              <span className="badge-amber is-small">{all.needsYou}</span>
+              {all.needsYou === 1 ? "needs you" : "need you"}
+            </Link>
           )}
-          {elsewhere.live > 0 && elsewhere.needsYou > 0 && <span className="bar-sep">·</span>}
-          {elsewhere.needsYou > 0 && (
-            <span className="bar-count">
-              <span className="badge-amber is-small">{elsewhere.needsYou}</span>
-              {elsewhere.needsYou === 1 ? "needs you" : "need you"}
-            </span>
+          {all.live > 0 && all.needsYou > 0 && <span className="bar-sep">·</span>}
+          {all.live > 0 && (
+            <Link to="/" state={homeState} className="bar-count is-link" title="projects: see which sessions are live">
+              <span className="dot is-working" aria-hidden="true" />
+              {all.live} {all.live === 1 ? "session live" : "sessions live"}
+            </Link>
           )}
         </span>
       )}
-      {render && sessionOn && session && (
-        <span className="bar-chip" title={phrase}>
-          <span className={`dot ${dotClass}`} />
-          {modeLabel(session.mode)}
-        </span>
-      )}
-      {slug && heldCount > 0 && (
+      {heldCount > 0 && (
         <button
           type="button"
           className="bar-pill bar-held"
           onClick={onRelease}
           disabled={releasing || !onRelease}
-          title={`send ${heldCount === 1 ? "the generation" : `all ${heldCount} generations`} saved for later to ComfyUI now, in the order saved`}
+          title={`send ${heldCount === 1 ? "the generation" : `all ${heldCount} generations`} waiting to generate, in every project, to ComfyUI now — oldest first`}
         >
           {LATER_GLYPH} {heldCount}
-          {!phone && " saved"}
+          {!phone && " later"}
           <span className="bar-pill-go">{releasing ? "starting…" : "start →"}</span>
         </button>
       )}
@@ -297,17 +309,9 @@ export function SystemBar({
           onClick={veil.toggle}
           aria-pressed={veil.revealed}
           aria-label={veil.revealed ? "hide this project's pictures" : "show this project's pictures"}
-          title={veil.revealed ? "unlocked — tap to hide this project's pictures again" : "locked — tap to show this project's pictures until you leave this page"}
+          title={veil.revealed ? "unlocked — tap to hide this project's pictures again; they hide on their own when you leave, press Generate, or after 20 s idle" : "locked — tap to show this project's pictures on this page"}
         >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor" />
-            {veil.revealed ? (
-              /* open shackle: swung up and to the side */
-              <path d="M5 7V4.5a3 3 0 0 1 6 0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" transform="translate(4.5 -1) rotate(20 8 5)" />
-            ) : (
-              <path d="M5 7V4.5a3 3 0 0 1 6 0V7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            )}
-          </svg>
+          <VeilGlyph open={veil.revealed} />
         </button>
       )}
       {control}
@@ -323,7 +327,7 @@ export function SystemBar({
         <div ref={explainer} className="bar-explainer" role="dialog" aria-label="No agent on this server">
           <b>No agent on this server</b>
           <span>
-            ComfyUI is connected and renders normally. The agent CLI is not running — start it on the machine and this becomes <code>✦ agent</code>.
+            ComfyUI is connected and generates normally. The agent CLI is not running — start it on the machine and this becomes <code>✦ agent</code>.
           </span>
         </div>
       )}
@@ -331,6 +335,13 @@ export function SystemBar({
   );
 }
 
-function binName(project: ProjectDetail | null | undefined, binId: string): string {
-  return project?.bins.find((b) => b.id === binId)?.name ?? "bin";
+/** The panel door: a frame with its right-hand column, filled while the column is open. */
+function PanelGlyph({ open }: { open: boolean }) {
+  return (
+    <svg viewBox="0 0 20 16" width="18" height="15" aria-hidden="true">
+      <rect x="1" y="1" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <line x1="12.5" y1="1.5" x2="12.5" y2="14.5" stroke="currentColor" strokeWidth="1.6" />
+      {open && <rect x="12.5" y="1.8" width="5.7" height="12.4" rx="1.6" fill="currentColor" />}
+    </svg>
+  );
 }

@@ -18,8 +18,8 @@ def test_project_round_trips_with_every_record_type():
     data = p.model_dump(mode="json")
     again = Project.model_validate(data)
     assert again.model_dump(mode="json") == data
-    assert again.bins_by_id[v].references[0].handle == "mara"
-    assert again.schema_version == 4
+    assert again.bins_by_id[v].references[0].handle == "mara.png"
+    assert again.schema_version == 6
 
 
 @pytest.mark.parametrize(
@@ -75,15 +75,38 @@ MINIMAL = {
     "add_media_to_bin": {"bin": "b_1", "media": "m_1"},
     "remove_media_from_bin": {"bin": "b_1", "media": "m_1"},
     "recall_generation": {"bin": "b_1"},
+    "start_from_media": {"media": "m_1"},
     "delete_media": {"media": "m_1"},
     "delete_bin": {"bin": "b_1"},
     "propose_shots": {"items": [{"name": "x", "description": "y"}]},
     "post_message": {"text": "hi"},
+    "answer_notes": {"notes": ["msg_1"], "did": "re-render queued"},
+    "withdraw_change": {"change": "ch_1"},
     "set_project_settings": {"width": 720, "height": 1280},
     "start_session": {},
     "set_session_mode": {"mode": "auto"},
     "connect_session": {"harness": "claude-code"},
     "end_session": {},
+    "add_project_rule": {"text": "the plate is in every shot"},
+    "remove_project_rule": {"rule": "rule_x"},
+    "create_sequence": {},
+    "set_sequence_field": {"sequence": "sq_1", "field": "name", "value": "Rough cut"},
+    "clone_sequence": {"sequence": "sq_1"},
+    "delete_sequence": {"sequence": "sq_1"},
+    "add_sequence_items": {"sequence": "sq_1", "bins": ["b_1"]},
+    "remove_sequence_item": {"sequence": "sq_1", "bin": "b_1"},
+    "reorder_sequence": {"sequence": "sq_1", "order": ["b_1"]},
+    "set_item_trim": {"sequence": "sq_1", "bin": "b_1", "head_s": 0.5},
+    "set_item_still": {"sequence": "sq_1", "bin": "b_1", "still_s": 3.0},
+    "set_item_agent": {"sequence": "sq_1", "bin": "b_1", "props": {"gain_db": -6}},
+    "set_sequence_agent": {"sequence": "sq_1", "props": {"walla_bed": "v5", "summary": "walla bed"}},
+    "set_sequence_layer": {"sequence": "sq_1", "layer": {"id": "music", "media": "m_1"}, "summary": "the song under it all"},
+    "remove_sequence_layer": {"sequence": "sq_1", "layer": "music", "summary": ""},
+    "set_item_mix": {"sequence": "sq_1", "bin": "b_1", "layers": {"music": -6}, "summary": "music -6 dB under the line"},
+    "create_post": {"bin": "b_1"},
+    "set_post_field": {"post": "pub_1", "field": "title", "value": "The cut"},
+    "delete_post": {"post": "pub_1"},
+    "upload_post": {"post": "pub_1"},
 }
 
 
@@ -109,7 +132,7 @@ def test_set_bin_field_refuses_unknown_field_name():
         COMMANDS["set_bin_field"].model_validate({"bin": "b_1", "field": "hue", "value": 1})
 
 
-@pytest.mark.parametrize("status", ["proposed", "pending", "approved", "rejected", "superseded", "closed"])
+@pytest.mark.parametrize("status", ["proposed", "pending", "approved", "rejected", "superseded", "closed", "replied"])
 def test_decision_statuses(status):
     assert Decision(status=status).status == status
 

@@ -11,24 +11,34 @@ import type {
   ClipBody,
   ClosePendingOut,
   CommandResultOut,
+  ConnectStatusOut,
   EnhanceBody,
+  EnhanceCancelOut,
   EnhanceOut,
   EnhanceStatusOut,
+  ExportStatusOut,
   FeedEntry,
   FeedOut,
   Generation,
+  HealthOut,
   JobOut,
   LoraFile,
   Media,
   MediaPage,
   MediaType,
+  MessageFile,
   ProjectCard,
   ProjectDetail,
   ProjectSettingsBody,
+  PublishStatusOut,
   Recipe,
+  BinSeenOut,
   SeenOut,
   ShotDecision,
   RemoveUploadOut,
+  SequenceOut,
+  PostOut,
+  UploadStatusOut,
   UploadOut,
   WorkflowInfo,
 } from "./types";
@@ -37,11 +47,13 @@ export class ApiError extends Error {
   status: number;
   code: string;
   detail: string;
+  extra: Record<string, unknown>;
   constructor(status: number, body: Partial<ApiErrorBody> | null) {
     super(body?.detail || body?.code || `HTTP ${status}`);
     this.status = status;
     this.code = body?.code ?? "http_error";
     this.detail = body?.detail ?? "";
+    this.extra = body?.extra ?? {};
   }
 }
 
@@ -96,6 +108,10 @@ export type ThumbSize = "grid" | "detail" | "poster";
 
 const enc = encodeURIComponent;
 export const mediaUrl = (slug: string, id: string) => `/media/${enc(slug)}/${enc(id)}/file`;
+/** The original file as a download: saved under its own name and format (a GIF stays a GIF). */
+export const downloadUrl = (slug: string, id: string) => `${mediaUrl(slug, id)}?download=1`;
+/** A GIF plays only from the file itself; its thumbnails are a still of the first frame. */
+export const isGif = (path: string | null | undefined) => /\.gif$/i.test(path ?? "");
 export const thumbUrl = (slug: string, id: string, size: ThumbSize = "grid") => `/media/${enc(slug)}/${enc(id)}/thumb?size=${size}`;
 
 /** The project list. No per-project event stream here, so it polls: quickly while any project
@@ -123,12 +139,25 @@ export function useProject(slug: string | undefined) {
 
 /** One bin: its recipe, its gallery (newest first), the selected media, references, capacity, active job. */
 export function useBin(slug: string | undefined, binId: string | undefined) {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: ["bin", slug, binId],
-    queryFn: () => getJson<BinDetail>(`/api/projects/${enc(slug!)}/bins/${enc(binId!)}`),
+    queryFn: async () => {
+      const detail = await getJson<BinDetail>(`/api/projects/${enc(slug!)}/bins/${enc(binId!)}`);
+      // the bin being looked at is the freshest word on its new-take count: the explorer's card
+      // for it (sidebar, project list) takes it from here, so the two never disagree on screen
+      const unseen = detail.bin.unseen ?? [];
+      const patch = (cards: BinCard[]) =>
+        cards.map((c) => (c.id === detail.bin.id && !sameIds(c.unseen ?? [], unseen) ? { ...c, unseen } : c));
+      qc.setQueryData<ProjectDetail>(["project", slug], (old) => (old ? { ...old, bins: patch(old.bins) } : old));
+      qc.setQueryData<BinCard[]>(["bins", slug], (old) => (old ? patch(old) : old));
+      return detail;
+    },
     enabled: !!slug && !!binId,
   });
 }
+
+const sameIds = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Every bin, newest first, with what it holds and the media it leads with: the explorer and the picker's filter. */
 export function useBins(slug: string | undefined) {
@@ -172,6 +201,8 @@ export function refreshProject(qc: QueryClient, slug: string | undefined, versio
   lastVersion.set(slug, version);
   void qc.invalidateQueries({ queryKey: ["project", slug] });
   void qc.invalidateQueries({ queryKey: ["bins", slug] });
+  void qc.invalidateQueries({ queryKey: ["sequence", slug] });
+  void qc.invalidateQueries({ queryKey: ["posts", slug] });
   void qc.invalidateQueries({ queryKey: ["bin", slug] });
   void qc.invalidateQueries({ queryKey: ["media", slug] });
   void qc.invalidateQueries({ queryKey: ["live-jobs", slug] });
@@ -186,6 +217,18 @@ export function useMarkSeen(slug: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (mediaId: string) => postJson<SeenOut>(`/api/projects/${enc(slug!)}/media/${enc(mediaId)}/seen`, {}),
+    onSuccess: (out) => {
+      if (!out.cleared.length) return;
+      refreshProject(qc, slug, out.project_version);
+    },
+  });
+}
+
+/** The user dismissed every new marker in a bin, whatever the media type. */
+export function useClearBinSeen(slug: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (binId: string) => postJson<BinSeenOut>(`/api/projects/${enc(slug!)}/bins/${enc(binId)}/seen`, {}),
     onSuccess: (out) => {
       if (!out.cleared.length) return;
       refreshProject(qc, slug, out.project_version);
@@ -270,7 +313,7 @@ export function useFeed(slug: string | undefined) {
 
 /** Render a bin's recipe once. The server answers with the queued generation; the job's progress
  * arrives over SSE. With `hold` the recipe is snapshotted as a held generation instead and
- * rendered only when the project's saved group is released (`useReleaseHeld`). */
+ * rendered only when the machine's saved group is released (`useReleaseHeld`). */
 export function useGenerate(slug: string | undefined, binId: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
@@ -290,14 +333,16 @@ export function useHeld(slug: string | undefined) {
   });
 }
 
-/** Start the project's saved group: every held generation goes to ComfyUI through the ordinary queue, in save order. */
-export function useReleaseHeld(slug: string | undefined) {
+/** Start the machine's saved group: every held generation in every project goes to ComfyUI
+ * through the ordinary queue, oldest save first. A GPU decision, not a project one. */
+export function useReleaseHeld() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => postJson<JobOut[]>(`/api/projects/${enc(slug!)}/held/release`, {}),
+    mutationFn: () => postJson<JobOut[]>(`/api/held/release`, {}),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["held", slug] });
-      void qc.invalidateQueries({ queryKey: ["live-jobs", slug] });
+      void qc.invalidateQueries({ queryKey: ["held"] });
+      void qc.invalidateQueries({ queryKey: ["live-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 }
@@ -318,7 +363,7 @@ export function useDiscardHeld(slug: string | undefined) {
  * done / failed; the agent engine walks queued (waiting for the agent's watch) → seen (its
  * watch listed the request) → working (it picked it up) → done / failed, with `task` in words. */
 export interface EnhanceProgress {
-  status: "queued" | "seen" | "working" | "running" | "done" | "failed";
+  status: "queued" | "seen" | "working" | "running" | "done" | "failed" | "cancelled";
   engine: "local" | "agent";
   request?: string | null;
   created?: string | null;
@@ -371,6 +416,15 @@ export const AGENT_FRESH_S = 30;
 
 /** Server-wide: is an agent CLI talking to this server at all. The system bar's `no agent`
  * pill versus its `start` control. Polled; there is no server-scoped event stream. */
+/** The server's facts: version, folders, and the ComfyUI it renders on. Rarely changes. */
+export function useHealth() {
+  return useQuery({
+    queryKey: ["health"],
+    queryFn: () => getJson<HealthOut>("/api/health"),
+    staleTime: 5 * 60_000,
+  });
+}
+
 export function useAgentStatus() {
   return useQuery({
     queryKey: ["agent-status"],
@@ -391,14 +445,116 @@ export function useEnhanceStatus(slug: string | undefined) {
   });
 }
 
-/** Rewrite a prompt through the enhancer; the caller decides what to do with the text. */
+/** Rewrite a prompt through the enhancer; the caller decides what to do with the text. The
+ * body's `request` is the caller's name for the run: `useCancelEnhance` stops it by that name. */
 export function useEnhance(slug: string | undefined) {
   return useMutation({
     mutationFn: (body: EnhanceBody) => postJson<EnhanceOut>(`/api/projects/${enc(slug!)}/enhance`, body),
   });
 }
 
+/** Stop a local rewrite in flight: the waiting `useEnhance` call fails with `enhance_cancelled`
+ * and ComfyUI is told to drop the prompt. */
+export function useCancelEnhance(slug: string | undefined) {
+  return useMutation({
+    mutationFn: (request: string) => postJson<EnhanceCancelOut>(`/api/projects/${enc(slug!)}/enhance/${enc(request)}/cancel`, {}),
+  });
+}
+
+/** A name for one enhance run, unique enough for the server's in-flight table. Not
+ * `crypto.randomUUID`: that needs a secure context, and the phone reaches THM over plain http. */
+export function newRequestId(): string {
+  return `enh_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** One sequence: its items joined to the takes that play, durations, the last export. */
+export function useSequence(slug: string | undefined, seqId: string | undefined) {
+  return useQuery({
+    queryKey: ["sequence", slug, seqId],
+    queryFn: () => getJson<SequenceOut>(`/api/projects/${enc(slug!)}/sequences/${enc(seqId!)}`),
+    enabled: !!slug && !!seqId,
+  });
+}
+
+/** Where the sequence's export stands; patched live by the `export` event. */
+export function useExportStatus(slug: string | undefined, seqId: string | undefined) {
+  return useQuery({
+    queryKey: ["export", slug, seqId],
+    queryFn: () => getJson<ExportStatusOut>(`/api/projects/${enc(slug!)}/sequences/${enc(seqId!)}/export`),
+    enabled: !!slug && !!seqId,
+  });
+}
+
+/** Render the sequence to one mp4; it lands in the output bin as the next take. */
+export function useStartExport(slug: string | undefined, seqId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => postJson<ExportStatusOut>(`/api/projects/${enc(slug!)}/sequences/${enc(seqId!)}/export`, {}),
+    onSuccess: (out) => qc.setQueryData<ExportStatusOut>(["export", slug, seqId], out),
+  });
+}
+
 /** Any command as the user: start_session, end_session, post_message, and the rest. */
+/** The posts drafted from one bin (a video with its title and description, held unpublished),
+ * newest first. Written by the agent through the command route; the bin screen lists them. */
+export function usePosts(slug: string | undefined, binId: string | undefined) {
+  return useQuery({
+    queryKey: ["posts", slug, binId],
+    queryFn: () => getJson<PostOut[]>(`/api/projects/${enc(slug!)}/posts?bin=${enc(binId!)}`),
+    enabled: !!slug && !!binId,
+  });
+}
+
+/** Where a post's upload stands: fetched once while the post says `uploading`, then kept
+ * current by the `post` event. */
+export function useUploadStatus(slug: string | undefined, postId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["upload", slug, postId],
+    queryFn: () => getJson<UploadStatusOut>(`/api/projects/${enc(slug!)}/posts/${enc(postId!)}/upload`),
+    enabled: !!slug && !!postId && enabled,
+  });
+}
+
+/** Can this server upload to YouTube, which channels are connected, and whether this browser is
+ * on the server's machine (where a new channel's consent can finish). Read fresh each time the
+ * settings open: connecting a channel changes it without a restart. */
+export function usePublishStatus(enabled = true) {
+  return useQuery({
+    queryKey: ["publish", "youtube"],
+    queryFn: () => getJson<PublishStatusOut>("/api/publish/youtube"),
+    enabled,
+    staleTime: 0,
+  });
+}
+
+/** Where a project's channel consent stands; fetched once, then kept current by the
+ * `youtube_connect` event. */
+export function useConnectStatus(slug: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["connect", slug],
+    queryFn: () => getJson<ConnectStatusOut>(`/api/projects/${enc(slug!)}/youtube/connect`),
+    enabled: !!slug && enabled,
+  });
+}
+
+/** Start the consent for a new channel: the answer carries Google's URL to open in this browser
+ * (which must be on the server's machine); the channel lands as this project's when it comes back. */
+export function useStartConnect(slug: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => postJson<ConnectStatusOut>(`/api/projects/${enc(slug!)}/youtube/connect`, {}),
+    onSuccess: (out) => qc.setQueryData<ConnectStatusOut>(["connect", slug], out),
+  });
+}
+
+export function useCancelConnect(slug: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => deleteJson<ConnectStatusOut>(`/api/projects/${enc(slug!)}/youtube/connect`),
+    onSuccess: (out) => qc.setQueryData<ConnectStatusOut>(["connect", slug], out),
+  });
+}
+
 export function useCommand(slug: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
@@ -432,20 +588,23 @@ export function useSetBinTags(slug: string | undefined, binId: string | undefine
   });
 }
 
-export type DecisionAction = "approve" | "reject" | "reopen" | "close";
+export type DecisionAction = "approve" | "reject" | "reopen" | "close" | "reply";
 
-/** Approve, reject, reopen or close an agent change, with an optional note that goes back to
- * the agent. `items` is the per-item verdict on a shots card (kept, dropped, rewritten); the
- * approval of that card makes the bins and queues the renders in one round trip. Close says
- * only "seen": no note, nothing owed. */
+/** Approve, reject, reopen, close or reply to an agent change. A note is a reply: the server
+ * lands it `replied` -- nothing runs, nothing is undone, the agent reads the words and acts;
+ * a bare approve is the go. `items` is the per-item verdict on a shots card (kept, dropped,
+ * rewritten); the approval of that card makes the bins and queues the renders in one round
+ * trip. Close says only "seen": no note, nothing owed. */
 export function useDecide(slug: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, action, note, items }: { id: string; action: DecisionAction; note?: string; items?: ShotDecision[] }) =>
+    mutationFn: ({ id, action, note, items, hold, files }: { id: string; action: DecisionAction; note?: string; items?: ShotDecision[]; hold?: boolean; files?: string[] }) =>
       postJson<CommandResultOut>(`/api/projects/${enc(slug!)}/changes/${enc(id)}/decision`, {
         action,
         note: action === "close" ? null : note?.trim() || null,
         ...(items ? { items } : {}),
+        ...(hold ? { hold: true } : {}), // a shots card answered "later": set up, render saved held
+        ...(files?.length && action !== "close" ? { files } : {}), // chat files on the reply
       }),
     onSuccess: (out) => refreshProject(qc, slug, out.project_version),
   });
@@ -478,12 +637,20 @@ export function useUpload(slug: string | undefined) {
 /** How a media was made, for recall into its bin. `found` is false for anything uploaded,
  * clipped or lifted as a still — there is no generation behind those, and the recall controls
  * stay out of the way rather than offering a button that cannot do anything. */
+/** The recipe of a take (a media id) or of a render with no take yet (a generation id, `g_…`:
+ * rendering now, or saved for later). */
 export function useRecipe(slug: string | undefined, mediaId: string | null | undefined) {
   return useQuery({
     queryKey: ["recipe", slug, mediaId],
-    queryFn: () => getJson<Recipe>(`/api/projects/${enc(slug!)}/media/${enc(mediaId!)}/recipe`),
+    queryFn: () =>
+      getJson<Recipe>(
+        mediaId!.startsWith("g_")
+          ? `/api/projects/${enc(slug!)}/generations/${enc(mediaId!)}/recipe`
+          : `/api/projects/${enc(slug!)}/media/${enc(mediaId!)}/recipe`,
+      ),
     enabled: !!slug && !!mediaId,
-    staleTime: 60_000,
+    // what made a take never changes: read once per take per page load
+    staleTime: Infinity,
   });
 }
 
@@ -564,11 +731,46 @@ export function useRemoveUpload(slug: string | undefined) {
   });
 }
 
+/** A note's own file: a pasted screenshot, a picture from elsewhere. In no bin, not project media. */
+export const chatFileUrl = (slug: string, id: string) => `/api/projects/${enc(slug)}/chat-files/${enc(id)}`;
+
+/** Upload a file for a note alone. Nothing in the project changes; the id goes in `post_message`'s `files`. */
+export function uploadChatFile(slug: string, file: File): Promise<MessageFile> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return postForm<MessageFile>(`/api/projects/${enc(slug)}/chat-files`, form);
+}
+
+/** Take back a note's file that was never sent. Best effort: a file a message carries stays. */
+export function removeChatFile(slug: string, id: string): Promise<unknown> {
+  return deleteJson(chatFileUrl(slug, id)).catch(() => undefined);
+}
+
+/** Make a note's file project media: it lands in a bin like an upload. */
+export function useKeepFile(slug: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ file, bin, binName }: { file: string; bin?: string; binName?: string }) =>
+      postJson<UploadOut>(`${chatFileUrl(slug!, file)}/keep`, { bin: bin ?? null, bin_name: binName ?? null }),
+    onSuccess: (out) => refreshProject(qc, slug, out.project_version),
+  });
+}
+
 /** Cut a segment or lift a still frame from an existing video; lands like an upload, no bind. */
 export function useCreateClip(slug: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: ClipBody) => postJson<UploadOut>(`/api/projects/${enc(slug!)}/clips`, body),
+    onSuccess: (out) => refreshProject(qc, slug, out.project_version),
+  });
+}
+
+/** A horizontally flipped copy of a still, as new media in the bin (selected on arrival). */
+export function useFlipMedia(slug: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ media, bin }: { media: string; bin?: string }) =>
+      postJson<UploadOut>(`/api/projects/${enc(slug!)}/media/${enc(media)}/flip`, { bin: bin ?? null }),
     onSuccess: (out) => refreshProject(qc, slug, out.project_version),
   });
 }
@@ -629,6 +831,14 @@ export function useProjectEvents(slug: string | undefined) {
   useEffect(() => {
     if (!slug || typeof EventSource === "undefined") return;
     const es = new EventSource(`/api/projects/${enc(slug)}/events`);
+    // a (re)connected stream may have missed events, and a restarted server counts versions from
+    // 1 again, so an old remembered version can match a new one and skip a refresh: start over
+    es.onopen = () => {
+      lastVersion.delete(slug);
+      void qc.invalidateQueries({ queryKey: ["project", slug] });
+      void qc.invalidateQueries({ queryKey: ["bins", slug] });
+      void qc.invalidateQueries({ queryKey: ["bin", slug] });
+    };
     const parse = <T,>(ev: Event): T | null => {
       try {
         return JSON.parse((ev as MessageEvent).data as string) as T;
@@ -648,7 +858,11 @@ export function useProjectEvents(slug: string | undefined) {
       const liveNow = nextLive(qc.getQueryData<JobOut[]>(["live-jobs", slug]));
       qc.setQueryData<JobOut[]>(["live-jobs", slug], liveNow);
       applyTitle(slug, liveNow, live ? null : job); // straight from the stream: a hidden tab's timers are throttled, its events are not
-      if (!live && wasLive) notifyJob({ slug, project: qc.getQueryData<ProjectDetail>(["project", slug]), bins: qc.getQueryData<BinCard[]>(["bins", slug]) }, job);
+      if (!live && wasLive)
+        notifyJob(
+          { slug, project: qc.getQueryData<ProjectDetail>(["project", slug]), bins: qc.getQueryData<BinCard[]>(["bins", slug]), feed: qc.getQueryData<FeedOut>(["feed", slug])?.entries },
+          job,
+        );
       qc.setQueryData<LiveBinDetail>(["bin", slug, job.bin], (old) => {
         if (!old) return old;
         const rest = (old.active_jobs ?? []).filter((j) => j.job !== job.job);
@@ -681,7 +895,7 @@ export function useProjectEvents(slug: string | undefined) {
         const change = entry.change;
         // a shots card's items and a card's media move with its change: the approval writes both
         let entries = change
-          ? old.entries.map((e) => (e.change && e.change.id === change.id ? { ...e, change, shots: entry.shots ?? e.shots, media: entry.media ?? e.media, bin: entry.bin ?? e.bin } : e))
+          ? old.entries.map((e) => (e.change && e.change.id === change.id ? { ...e, change, shots: entry.shots ?? e.shots, media: entry.media ?? e.media, bin: entry.bin ?? e.bin, render: entry.render ?? e.render } : e))
           : old.entries;
         if (!seen) entries = [...entries, entry];
         return { entries, cursor: seen ? old.cursor : old.cursor + 1 };
@@ -692,19 +906,52 @@ export function useProjectEvents(slug: string | undefined) {
       const p = parse<EnhanceProgress>(ev);
       if (p) qc.setQueryData<EnhanceProgress | null>(["enhance-progress", slug], p);
     };
+    // a sequence export's progress and its landing: patched in place, then the sequence refetched
+    // once it is done so the last-export card and the output bin read the new take
+    const onExport = (ev: Event) => {
+      const x = parse<ExportStatusOut>(ev);
+      if (!x) return;
+      qc.setQueryData<ExportStatusOut>(["export", slug, x.sequence], x);
+      if (x.status !== "running") void qc.invalidateQueries({ queryKey: ["sequence", slug, x.sequence] });
+    };
+    // a post's upload: progress patched in place, the posts refetched once it lands or fails so
+    // the strip reads the record (uploaded with its Studio link, or failed with the reason)
+    const onPostUpload = (ev: Event) => {
+      const u = parse<UploadStatusOut>(ev);
+      if (!u) return;
+      qc.setQueryData<UploadStatusOut>(["upload", slug, u.post], u);
+      if (u.status !== "running") void qc.invalidateQueries({ queryKey: ["posts", slug] });
+    };
     const onAgent = (ev: Event) => {
       const a = parse<AgentActivityOut>(ev);
       if (a) qc.setQueryData<AgentActivityOut>(["agent-activity", slug], a);
     };
+    // a channel consent: patched in place; once it lands, the server's channel list and this
+    // project's detail (its new channel) are read again
+    const onConnect = (ev: Event) => {
+      const c = parse<ConnectStatusOut>(ev);
+      if (!c) return;
+      qc.setQueryData<ConnectStatusOut>(["connect", slug], c);
+      if (c.status !== "waiting") {
+        void qc.invalidateQueries({ queryKey: ["publish", "youtube"] });
+        void qc.invalidateQueries({ queryKey: ["project", slug] });
+      }
+    };
+    es.addEventListener("youtube_connect", onConnect);
     es.addEventListener("project", onProject);
     es.addEventListener("job", onJob);
     es.addEventListener("enhance", onEnhance);
+    es.addEventListener("export", onExport);
+    es.addEventListener("post", onPostUpload);
     es.addEventListener("agent", onAgent);
     es.addEventListener("message", onMessage);
     return () => {
       es.removeEventListener("project", onProject);
       es.removeEventListener("job", onJob);
       es.removeEventListener("enhance", onEnhance);
+      es.removeEventListener("export", onExport);
+      es.removeEventListener("post", onPostUpload);
+      es.removeEventListener("youtube_connect", onConnect);
       es.removeEventListener("agent", onAgent);
       es.removeEventListener("message", onMessage);
       es.close();

@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { errorText, useEnhance, useEnhanceProgress, useEnhanceStatus, type EnhanceProgress } from "../api/client";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ApiError, errorText, newRequestId, useCancelEnhance, useEnhance, useEnhanceProgress, useEnhanceStatus, type EnhanceProgress } from "../api/client";
 import type { EnhanceEngine, Kind } from "../api/types";
 import { AutoTextarea } from "./AutoTextarea";
 import { JobStatusLine, jobStepLabel } from "./JobProgress";
@@ -32,9 +32,13 @@ interface Draft {
   note: string;
   /** An explicit pick; null means the default — the agent whenever a session is live, else local. */
   engine: EnhanceEngine | null;
+  /** Why the last rewrite failed; shown in the sheet until the next Enhance press. */
+  error: string | null;
+  /** What the enhancer wrote that was thrown away, one per attempt, shown under the error. */
+  replies: string[];
 }
 
-const EMPTY: Draft = { open: false, note: "", engine: null };
+const EMPTY: Draft = { open: false, note: "", engine: null, error: null, replies: [] };
 
 function engineOf(p: { engine?: string } | null | undefined): string | null {
   return p?.engine ?? null;
@@ -51,7 +55,7 @@ function readDraft(key: string): Draft {
 
 function writeDraft(key: string, draft: Draft) {
   try {
-    if (draft.open || draft.note) sessionStorage.setItem(`thm.enhance.${key}`, JSON.stringify(draft));
+    if (draft.open || draft.note || draft.error) sessionStorage.setItem(`thm.enhance.${key}`, JSON.stringify(draft));
     else sessionStorage.removeItem(`thm.enhance.${key}`);
   } catch {
     /* storage unavailable: the sheet still works for this visit */
@@ -61,13 +65,17 @@ function writeDraft(key: string, draft: Draft) {
 /**
  * The `✦ Enhance` pill beside a prompt label and the sheet it opens: a note, an engine choice
  * when there is one, and Enhance / Close. The rewrite replaces the prompt and the sheet closes;
- * nothing is generated. One undo is kept in memory until the prompt is edited again.
+ * nothing is generated. One undo is kept in memory until the prompt is edited again. While the
+ * local model works, Close becomes Cancel: the run is stopped and ComfyUI drops the prompt.
  *
  * Hidden entirely when no engine can serve — no local enhancer workflow, ComfyUI down, no agent.
  */
 export function EnhancePrompt({ label, children, slug, kind, workflow, value, references, onReplace, agentLive, storageKey, binId }: Props) {
   const status = useEnhanceStatus(slug);
   const enhance = useEnhance(slug);
+  const cancel = useCancelEnhance(slug);
+  // the name this run was sent under, so Cancel can stop it; null between runs
+  const requestId = useRef<string | null>(null);
   // the local engine's live phase and step count, while this request is in flight
   const progress = useEnhanceProgress(slug).data;
   const live =
@@ -88,13 +96,15 @@ export function EnhancePrompt({ label, children, slug, kind, workflow, value, re
     : undefined;
   const toast = useToast();
   const [draft, setDraft] = useState<Draft>(() => readDraft(storageKey));
-  const { open, note, engine: picked } = draft;
+  const { open, note, engine: picked, error, replies = [] } = draft;
+  const setError = (error: string | null) => setDraft((d) => ({ ...d, error, replies: [] }));
   const setOpen = (open: boolean) => setDraft((d) => ({ ...d, open }));
   const setNote = (note: string) => setDraft((d) => ({ ...d, note }));
   const setEngine = (engine: EnhanceEngine) => setDraft((d) => ({ ...d, engine }));
   useEffect(() => writeDraft(storageKey, draft), [storageKey, draft]);
-  /** `{ before, after }` of the last rewrite: undo restores `before` while the prompt still reads `after`. */
-  const [undo, setUndo] = useState<{ before: string; after: string } | null>(null);
+  /** `{ before, after }` of the last rewrite: undo restores `before` while the prompt still reads `after`.
+   * `dropped` names the reference tags the rewrite left out; the warning lives as long as the undo. */
+  const [undo, setUndo] = useState<{ before: string; after: string; dropped: string[] } | null>(null);
 
   const local = !!status.data?.local;
   const agent = agentLive && !!status.data?.agent;
@@ -121,18 +131,39 @@ export function EnhancePrompt({ label, children, slug, kind, workflow, value, re
   const canSubmit = !enhance.isPending && !!(value.trim() || note.trim());
   const submit = () => {
     if (!slug || !canSubmit) return;
+    const request = newRequestId();
+    requestId.current = request;
+    setError(null);
     enhance.mutate(
-      { kind, workflow, prompt: value, note, engine, references, bin: binId ?? null },
+      { kind, workflow, prompt: value, note, engine, references, bin: binId ?? null, request },
       {
         onSuccess: (r) => {
-          setUndo({ before: value, after: r.prompt });
+          setUndo({ before: value, after: r.prompt, dropped: r.dropped_tags ?? [] });
           onReplace(r.prompt);
           setDraft(EMPTY);
           toast(r.system_source === "workflow" ? `enhanced with ${workflow.replace(/\.json$/, "")}'s instructions` : "enhanced");
         },
-        onError: (err) => toast(errorText(err)),
+        // a cancel is the user's own doing: the prompt stays as it was, no error to report. A real
+        // failure stays in the sheet (opened if it was closed) until the next Enhance press
+        onError: (err) => {
+          if (err instanceof ApiError && err.code === "enhance_cancelled") toast("enhance cancelled");
+          else {
+            const raw = err instanceof ApiError ? err.extra.replies : undefined;
+            const replies = Array.isArray(raw) ? raw.filter((r): r is string => typeof r === "string" && !!r.trim()) : [];
+            setDraft((d) => ({ ...d, open: true, error: errorText(err), replies }));
+          }
+        },
+        onSettled: () => {
+          requestId.current = null;
+        },
       },
     );
+  };
+  // only the local model can be stopped: the agent engine has no run to interrupt
+  const cancellable = enhance.isPending && engine === "local" && !!requestId.current;
+  const doCancel = () => {
+    if (!requestId.current || cancel.isPending) return;
+    cancel.mutate(requestId.current, { onError: (err) => setError(errorText(err)) });
   };
 
   return (
@@ -140,7 +171,13 @@ export function EnhancePrompt({ label, children, slug, kind, workflow, value, re
       <div className="row">
         {label}
         <span className="spacer" />
-        {undo && <span className="enhance-done">prompt updated</span>}
+        {undo && (undo.dropped.length > 0 ? (
+          <span className="enhance-dropped" title="the rewrite no longer mentions these references, so the generation will not use them where the prompt placed them; undo, or add the tags back">
+            prompt updated · dropped {undo.dropped.join(", ")}
+          </span>
+        ) : (
+          <span className="enhance-done">prompt updated</span>
+        ))}
         {undo && (
           <button
             type="button"
@@ -190,11 +227,28 @@ export function EnhancePrompt({ label, children, slug, kind, workflow, value, re
               );
             })}
           </div>
+          {error && !enhance.isPending && (
+            <div className="enhance-error" role="alert">
+              <b>enhance failed</b> {error}
+              {replies.map((r, i) => (
+                <div key={i} className="enhance-reply">
+                  <div className="enhance-reply-label">{replies.length > 1 ? `what it wrote (try ${i + 1})` : "what it wrote"}</div>
+                  <div className="enhance-reply-text veil-text veil-read" tabIndex={0}>{r}</div>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="row enhance-actions">
             {live && <JobStatusLine job={live} />}
-            <button type="button" className="btn-outline" onClick={() => setOpen(false)} disabled={enhance.isPending}>
-              Close
-            </button>
+            {cancellable ? (
+              <button type="button" className="btn-outline" onClick={doCancel} disabled={cancel.isPending} title="stop the rewrite — the prompt stays as it is">
+                {cancel.isPending ? "cancelling…" : "Cancel"}
+              </button>
+            ) : (
+              <button type="button" className="btn-outline" onClick={() => setOpen(false)} disabled={enhance.isPending}>
+                Close
+              </button>
+            )}
             <button type="button" className="btn-primary" onClick={submit} disabled={!canSubmit} title={agentTitle ?? "Enter in the note"}>
               {enhance.isPending ? (
                 <>

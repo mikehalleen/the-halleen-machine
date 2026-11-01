@@ -42,5 +42,5 @@ async def set_activity(slug: str, body: AgentActivityBody, request: Request):
     doing = body.doing.strip()
     if not doing:
         raise ApiError(422, "bad_value", "doing is empty")
-    agent_activity.note(st, slug, doing)
+    agent_activity.note(st, slug, doing, session=ctx.session)
     return AgentActivityOut(**agent_activity.out(st, slug))

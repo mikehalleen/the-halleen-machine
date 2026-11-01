@@ -31,13 +31,21 @@ from .models import Media, MediaOrigin, MediaType, Project
 if TYPE_CHECKING:  # pragma: no cover
     from .store import ProjectStore
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+# a GIF is an image: Pillow thumbnails its first frame, and the browser plays the file itself
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 GRID_EDGE = 320
 DETAIL_EDGE = 1280
 THUMB_SIZES = ("grid", "detail", "poster")
 _EDGES = {"grid": GRID_EDGE, "detail": DETAIL_EDGE}
 _EMPTY_PROBE = {"width": None, "height": None, "duration_s": None, "fps": None, "frames": None}
+_EMPTY_AUDIO_PROBE = {"duration_s": None, "sample_rate": None, "channels": None}
+# the waveform tiles: a square for the grid (the tile is square, audio has no shape of its own)
+# and a wide strip for the detail, which is also the player's picture
+WAVE_SIZES = {"grid": (GRID_EDGE, GRID_EDGE), "detail": (DETAIL_EDGE, 256)}
+WAVE_COLOR = "0x3ad8ff"  # the app's default accent
+WAVE_BACKGROUND = (0x17, 0x17, 0x1C)  # the app's dark surface, consistent with the tiles
 
 
 # -- identity ------------------------------------------------------------------
@@ -49,6 +57,8 @@ def media_type_for(path) -> MediaType | None:
         return "image"
     if ext in VIDEO_EXTS:
         return "video"
+    if ext in AUDIO_EXTS:
+        return "audio"
     return None
 
 
@@ -138,6 +148,39 @@ def probe_video(path) -> dict:
     return out
 
 
+def probe_audio(path) -> dict:
+    """``{"duration_s", "sample_rate", "channels"}`` of the first audio stream; every value
+    None on any failure. Width, height and fps are not an audio file's to have."""
+    out = dict(_EMPTY_AUDIO_PROBE)
+    exe = shutil.which("ffprobe")
+    if not exe:
+        return out
+    cmd = [
+        exe, "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=sample_rate,channels,duration",
+        "-show_entries", "format=duration",
+        "-of", "json", str(path),
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        data = json.loads(r.stdout or "{}")
+    except Exception:
+        return out
+    if not isinstance(data, dict):
+        return out
+    streams = data.get("streams") or []
+    stream = streams[0] if streams and isinstance(streams[0], dict) else {}
+    fmt = data.get("format") if isinstance(data.get("format"), dict) else {}
+    out["duration_s"] = _positive(stream.get("duration")) or _positive(fmt.get("duration"))
+    for key in ("sample_rate", "channels"):
+        try:
+            v = int(stream.get(key) or 0)
+            out[key] = v if v > 0 else None
+        except (TypeError, ValueError):
+            out[key] = None
+    return out
+
+
 # -- thumbnails ----------------------------------------------------------------
 
 
@@ -191,6 +234,43 @@ def _make_poster(media: Media, final: Path) -> bool:
         if tmp.exists():
             tmp.unlink()
     return False
+
+
+def _make_waveform(media: Media, size: str, final: Path) -> bool:
+    """The audio tile: ffmpeg's ``showwavespic`` in the accent colour over the app's dark
+    surface, saved as the webp the thumb route serves. False when ffmpeg is missing or fails."""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        return False
+    w, h = WAVE_SIZES[size]
+    tmp = _tmp_for(final.with_suffix(".png"))
+    graph = f"aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors={WAVE_COLOR}:scale=sqrt"
+    # the tmp name has no .png suffix, so the codec is named: image2 would otherwise pick one with no alpha
+    cmd = [exe, "-y", "-v", "error", "-i", media.path, "-filter_complex", graph, "-frames:v", "1", "-c:v", "png", "-f", "image2", str(tmp)]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=120)
+    except Exception:
+        pass
+    if not (tmp.is_file() and tmp.stat().st_size > 0):
+        if tmp.exists():
+            tmp.unlink()
+        return False
+    try:
+        with Image.open(tmp) as im:
+            im.load()
+            wave = im.convert("RGBA")
+        back = Image.new("RGBA", wave.size, (*WAVE_BACKGROUND, 255))
+        # a hairline at zero so a silent file still reads as a waveform tile
+        mid = wave.height // 2
+        for x in range(wave.width):
+            back.putpixel((x, mid), (0x3A, 0xD8, 0xFF, 90))
+        out = Image.alpha_composite(back, wave).convert("RGB")
+        tmp_webp = _tmp_for(final)
+        out.save(tmp_webp, "WEBP", quality=82, method=4)
+        os.replace(tmp_webp, final)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return final.is_file()
 
 
 SHEET_MAX_FRAMES = 8
@@ -274,7 +354,8 @@ def ensure_thumbnails(media: Media, cache_dir, *, sizes=None) -> dict[str, Path]
     """Make the missing derived files for ``media``; return ``{size: path}`` for the ones that exist.
 
     Idempotent. Raises ``FileNotFoundError`` when the source file is gone. Sets
-    ``media.sha256`` when it was missing. For an image, ``poster`` means ``detail``.
+    ``media.sha256`` when it was missing. For an image or an audio file, ``poster`` means
+    ``detail``; an audio file's thumbnails are its waveform.
     """
     src = Path(media.path)
     if not src.is_file():
@@ -286,7 +367,7 @@ def ensure_thumbnails(media: Media, cache_dir, *, sizes=None) -> dict[str, Path]
     paths = thumb_paths(cache, media.sha256)
 
     wanted = list(sizes or THUMB_SIZES)
-    if media.type == "image":
+    if media.type in ("image", "audio"):
         wanted = ["detail" if s == "poster" else s for s in wanted]
     wanted = [s for s in dict.fromkeys(wanted) if s in THUMB_SIZES]
     missing = [s for s in wanted if not paths[s].is_file()]
@@ -296,6 +377,9 @@ def ensure_thumbnails(media: Media, cache_dir, *, sizes=None) -> dict[str, Path]
             im.load()
             for s in missing:
                 _save_webp_thumb(im, _EDGES[s], paths[s])
+    elif missing and media.type == "audio":
+        for s in missing:
+            _make_waveform(media, s, paths[s])
     elif missing:
         poster = paths["poster"]
         if not poster.is_file():
@@ -322,7 +406,7 @@ def adopt_media(project: Project, path, *, type: MediaType | None = None, origin
     if not p.is_file():
         raise FileNotFoundError(str(path))
     mtype = type or media_type_for(p)
-    if mtype not in ("image", "video"):
+    if mtype not in ("image", "video", "audio"):
         raise ValueError(f"unsupported media type: {p.suffix or p.name}")
     sha = sha256_file(p)
     for existing in project.media_by_id.values():
@@ -335,6 +419,8 @@ def adopt_media(project: Project, path, *, type: MediaType | None = None, origin
             fields = {"width": w, "height": h}
         except Exception:
             fields = {}
+    elif mtype == "audio":
+        fields = probe_audio(p)
     else:
         fields = probe_video(p)
     media = Media(
